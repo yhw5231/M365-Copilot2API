@@ -1,0 +1,4 @@
+# This directory is tracked so it exists after `git clone` and before the first
+# deployment. The container turns it into the /data bind mount; keep it writable
+# so the non-root runtime user (m365) can write tokens / keys / config on first
+# run without a manual chmod or a second redeploy.

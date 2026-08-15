@@ -13,10 +13,18 @@ services:
       M365_TOKEN_CACHE: /data/token-cache.json
       M365_SESSION_CACHE: /data/sessions.json
       M365_API_KEYS: /data/api-keys.json
+      # 管理员密码直接从环境变量读取（优先），也支持从 .env 文件注入。
+      # 留空表示采用内置默认密码 admin123（首次登录仍会强制修改）。
+      M365_ADMIN_PASSWORD: ${M365_ADMIN_PASSWORD:-}
+      # 以下两个密码文件字段保留给需要文件注入的部署方式：
+      #  - /data/admin-password 持久化文件（web 修改后自动写入）
+      #  - /run/secrets/m365_admin_password 只读 bootstrap 密钥文件
       M365_ADMIN_PASSWORD_FILE: /data/admin-password
       M365_ADMIN_PASSWORD_BOOTSTRAP_FILE: /run/secrets/m365_admin_password
       M365_CHAT_TIMEOUT_SECONDS: "120"
       M365_IMAGE_TIMEOUT_SECONDS: "150"
     volumes:
+      # 挂载前请确保宿主机的 ./data 和 ./secrets 目录存在且可写
+      #（项目源码已自带空的 data/ 与 secrets/ 目录，clone 后即可直接部署）。
       - ./data:/data
       - ./secrets/m365_admin_password:/run/secrets/m365_admin_password:ro

@@ -31,8 +31,11 @@ __pycache__/
 /m365-copilot2api.service
 /m365-copilot2api.rollback*
 /m365-copilot2api.exe~
-/data/
-/secrets/
+# Keep the pre-existing empty dirs (for first-deploy permissions) but ignore runtime content.
+/data/*
+!/data/.gitkeep
+/secrets/*
+!/secrets/.gitkeep
 .runtime-backups/
 backups/
 runtime.pid
