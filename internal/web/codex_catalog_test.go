@@ -184,6 +184,78 @@ func TestChatRejectsInvalidReasoningBeforeUpstream(t *testing.T) {
 	}
 }
 
+func TestDisabledMappingRemovesModelFromCatalog(t *testing.T) {
+	off := false
+	mappings := []modelMapping{{PublicModel: "gpt-5.4", UpstreamTone: "Gpt_5_4_Chat", DisplayName: "GPT-5.4", DefaultReasoningLevel: "low", Enabled: &off}}
+	models := configuredModelSpecs(mappings)
+	for _, m := range models {
+		if strings.EqualFold(m.ID, "gpt-5.4") {
+			t.Fatalf("disabled gpt-5.4 still advertised: %#v", m)
+		}
+	}
+	if len(models) != len(gatewayModels)-1 {
+		t.Fatalf("expected %d models, got %d", len(gatewayModels)-1, len(models))
+	}
+}
+
+func TestModelAvailabilityAndDefaults(t *testing.T) {
+	off := false
+	mappings := []modelMapping{
+		{PublicModel: "gpt-5.2", UpstreamTone: "Gpt_5_2_Chat", DisplayName: "GPT-5.2", DefaultReasoningLevel: "high", Enabled: &off},
+		{PublicModel: "gpt-5.3", UpstreamTone: "Gpt_5_3_Chat", DisplayName: "GPT-5.3", DefaultReasoningLevel: "low"},
+	}
+	if err := checkModelAvailable("gpt-5.2", mappings); err == nil {
+		t.Fatal("disabled model must be rejected")
+	}
+	if err := checkModelAvailable("gpt-5.3", mappings); err != nil {
+		t.Fatalf("enabled model rejected: %v", err)
+	}
+	if err := checkModelAvailable("auto", mappings); err != nil {
+		t.Fatalf("unknown permissive model rejected: %v", err)
+	}
+	if lvl, ok := defaultReasoningLevel("gpt-5.3", mappings); !ok || lvl != "low" {
+		t.Fatalf("default=%q ok=%t", lvl, ok)
+	}
+	if _, ok := defaultReasoningLevel("does-not-exist", mappings); ok {
+		t.Fatal("unknown model must not claim a default level")
+	}
+}
+
+func TestChatRejectsDisabledModel(t *testing.T) {
+	off := false
+	prior := openSettingsStore().v.ModelMappings
+	openSettingsStore().mu.Lock()
+	openSettingsStore().v.ModelMappings = []modelMapping{{PublicModel: "gpt-5.2", UpstreamTone: "Gpt_5_2_Chat", DisplayName: "GPT-5.2", Enabled: &off}}
+	openSettingsStore().mu.Unlock()
+	defer func() {
+		openSettingsStore().mu.Lock()
+		openSettingsStore().v.ModelMappings = prior
+		openSettingsStore().mu.Unlock()
+	}()
+
+	s := &Server{}
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.2","messages":[{"role":"user","content":"hi"}]}`))
+	w := httptest.NewRecorder()
+	s.openaiChat(w, r)
+	if w.Code != 404 || !strings.Contains(w.Body.String(), "disabled") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDefaultModelMappingStillAdvertised(t *testing.T) {
+	// The stock gpt-5.6-* mappings keep their defaults and stay enabled.
+	mappings := defaultModelMappings
+	for _, m := range mappings {
+		if !m.enabled() {
+			t.Fatalf("default mapping %q unexpectedly disabled", m.PublicModel)
+		}
+	}
+	models := configuredModelSpecs(mappings)
+	if len(models) != len(gatewayModels)+len(defaultModelMappings) {
+		t.Fatalf("expected all defaults advertised, got %d", len(models))
+	}
+}
+
 func TestResponsesReasoningConvertsToOpenAI(t *testing.T) {
 	r := responsesRequest{Model: "gpt-5.6-reasoning", Input: "hello", Reasoning: &reasoningConfig{Effort: "high"}}
 	o, err := r.openAI()

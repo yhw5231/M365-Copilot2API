@@ -616,6 +616,13 @@ if (response.output_text) {
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
         <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:4141"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div></div></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div><h2 style="font-size:18px;font-weight:700">Model routing</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Enable or disable model routes and set each model's default reasoning level. Disabled models are hidden from the model list and rejected at request time.</p></div>
+          <button class="btn primary" onclick="saveModelRoutes()"><i data-lucide="save" style="width:14px;height:14px"></i> Save model routing</button>
+        </div>
+        <div class="card">
+          <div style="overflow-x:auto"><table class="table"><thead><tr><th>Model</th><th>Display name</th><th>Upstream tone</th><th>Default reasoning level</th><th>Enabled</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table></div>
+        </div>
       </section>
     </div>
   </main>
@@ -842,6 +849,15 @@ const localeText={
   'Language': {'zh-CN':'语言','zh-TW':'語言','ja':'言語','ko':'언어','es':'Idioma','fr':'Langue','de':'Sprache','pt-BR':'Idioma','ru':'Язык','ar':'اللغة'},
   'Save settings': {'zh-CN':'保存设置','zh-TW':'儲存設定','ja':'設定を保存','ko':'설정 저장','es':'Guardar ajustes','fr':'Enregistrer les paramètres','de':'Einstellungen speichern','pt-BR':'Salvar configurações','ru':'Сохранить настройки','ar':'حفظ الإعدادات'},
   'Choose the language used by the administration console.': {'zh-CN':'选择管理控制台使用的语言。','zh-TW':'選擇管理主控台使用的語言。','ja':'管理コンソールで使用する言語を選択してください。','ko':'관리 콘솔에서 사용할 언어를 선택하세요.','es':'Elija el idioma que usará la consola de administración.','fr':'Choisissez la langue utilisée par la console d\'administration.','de':'Wählen Sie die Sprache, die von der Administrationskonsole verwendet wird.','pt-BR':'Escolha o idioma usado pelo console de administração.','ru':'Выберите язык, используемый консолью администратора.','ar':'اختر اللغة المستخدمة في وحدة تحكم الإدارة.'},
+  'Model routing': {'zh-CN':'模型路由','zh-TW':'模型路由','ja':'モデルルーティング','ko':'모델 라우팅','es':'Enrutamiento de modelos','fr':'Routage des modèles','de':'Modell-Routing','pt-BR':'Roteamento de modelos','ru':'Маршрутизация моделей','ar':'توجيه النماذج'},
+  'Enable or disable model routes and set each model\'s default reasoning level. Disabled models are hidden from the model list and rejected at request time.': {'zh-CN':'启用或禁用模型路由，并设置每个模型的默认推理等级。被禁用的模型将从模型列表中隐藏，并在请求时被拒绝。','zh-TW':'啟用或禁用模型路由，並設定每個模型的預設推理等級。被禁用的模型將從模型清單中隱藏，並在請求時被拒絕。','ja':'モデルルートの有効/無効を切り替え、各モデルのデフォルト推論レベルを設定します。無効なモデルはモデル一覧から非表示になり、リクエスト時に拒否されます。','ko':'모델 라우팅을 활성화/비활성화하고 각 모델의 기본 추론 수준을 설정합니다. 비활성화된 모델은 모델 목록에서 숨겨지고 요청 시 거부됩니다.','es':'Habilite o deshabilite las rutas de modelos y establezca el nivel de razonamiento predeterminado de cada modelo. Los modelos deshabilitados se ocultan de la lista y se rechazan al solicitarlos.','fr':'Activez ou désactivez les routes de modèles et définissez le niveau de raisonnement par défaut de chaque modèle. Les modèles désactivés sont masqués de la liste et rejetés à la demande.','de':'Aktivieren oder deaktivieren Sie Modellrouten und legen Sie die Standard-Argumentationstiefe jedes Modells fest. Deaktivierte Modelle werden aus der Liste ausgeblendet und bei Anfragen abgelehnt.','pt-BR':'Habilite ou desabilite rotas de modelos e defina o nível de raciocínio padrão de cada modelo. Modelos desabilitados ficam ocultos na lista e são rejeitados na solicitação.','ru':'Включайте и отключайте маршруты моделей и задайте уровень рассуждений по умолчанию для каждой. Отключённые модели скрываются из списка и отклоняются при запросе.','ar':'قم بتمكين أو تعطيل مسارات النماذج وضبط مستوى الاستدلال الافتراضي لكل نموذج. تُخفى النماذج المعطلة من القائمة وتُرفض عند الطلب.'},
+  'Display name': {'zh-CN':'显示名称','zh-TW':'顯示名稱','ja':'表示名','ko':'표시 이름','es':'Nombre visible','fr':'Nom d\'affichage','de':'Anzeigename','pt-BR':'Nome de exibição','ru':'Отображаемое имя','ar':'الاسم المعروض'},
+  'Upstream tone': {'zh-CN':'上游音色','zh-TW':'上游音色','ja':'アップストリームトーン','ko':'업스트림 톤','es':'Tono del proveedor','fr':'Ton du fournisseur','de':'Upstream-Ton','pt-BR':'Tom do provedor','ru':'Тон провайдера','ar':'نغمة المنبع'},
+  'Default reasoning level': {'zh-CN':'默认推理等级','zh-TW':'預設推理等級','ja':'デフォルト推論レベル','ko':'기본 추론 수준','es':'Nivel de razonamiento predeterminado','fr':'Niveau de raisonnement par défaut','de':'Standard-Argumentationstiefe','pt-BR':'Nível de raciocínio padrão','ru':'Уровень рассуждений по умолчанию','ar':'مستوى الاستدلال الافتراضي'},
+  'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
+  'Save model routing': {'zh-CN':'保存模型路由','zh-TW':'儲存模型路由','ja':'モデルルーティングを保存','ko':'모델 라우팅 저장','es':'Guardar enrutamiento','fr':'Enregistrer le routage','de':'Routing speichern','pt-BR':'Salvar roteamento','ru':'Сохранить маршрутизацию','ar':'حفظ التوجيه'},
+  'Model routing saved': {'zh-CN':'模型路由已保存','zh-TW':'模型路由已儲存','ja':'モデルルーティングを保存しました','ko':'모델 라우팅이 저장되었습니다','es':'Enrutamiento guardado','fr':'Routage enregistré','de':'Routing gespeichert','pt-BR':'Roteamento salvo','ru':'Маршрутизация сохранена','ar':'تم حفظ التوجيه'},
+  'No models available': {'zh-CN':'没有可用模型','zh-TW':'沒有可用模型','ja':'利用可能なモデルがありません','ko':'사용 가능한 모델이 없습니다','es':'No hay modelos disponibles','fr':'Aucun modèle disponible','de':'Keine Modelle verfügbar','pt-BR':'Nenhum modelo disponível','ru':'Нет доступных моделей','ar':'لا توجد نماذج متاحة'},
   'Create API key': {'zh-CN':'创建 API Key','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
   'The key is shown only once. Store it securely.': {'zh-CN':'密钥只显示一次，请妥善保存','zh-TW':'金鑰只顯示一次，請妥善保存','ja':'キーは一度だけ表示されます。安全に保管してください。','ko':'키는 한 번만 표시됩니다. 안전하게 보관하세요.','es':'La clave solo se muestra una vez. Guárdela de forma segura.','fr':'La clé n\'est affichée qu\'une fois. Conservez-la en lieu sûr.','de':'Der Schlüssel wird nur einmal angezeigt. Bewahren Sie ihn sicher auf.','pt-BR':'A chave só é mostrada uma vez. Guarde-a com segurança.','ru':'Ключ отображается только один раз. Храните его безопасно.','ar':'يظهر المفتاح مرة واحدة فقط. احفظه بأمان.'},
   'Cancel': {'zh-CN':'取消','zh-TW':'取消','ja':'キャンセル','ko':'취소','es':'Cancelar','fr':'Annuler','de':'Abbrechen','pt-BR':'Cancelar','ru':'Отмена','ar':'إلغاء'},
@@ -961,6 +977,7 @@ function showPage(p){
   if(p==='conversations')loadConversations();
   if(p==='proxies')loadProxies();
   if(p==='modeltest')loadModelTest();
+  if(p==='settings')loadSettings();
 }
 
 let onboardingHidden=false;
@@ -1607,6 +1624,49 @@ async function saveSettings(){  try{
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
     showNotice('Settings saved','success');
+  }catch(e){showNotice(e.message,'error');}
+}
+
+let routeTones=[],routeLevels=[];
+function escAttr(s){return esc(String(s==null?'':s)).replace(/"/g,'&quot;');}
+async function loadSettings(){
+  try{
+    const d=await api('/api/admin/settings');
+    const s=d.settings||{};
+    $('setListen').value=s.listenAddress||'';
+    $('setTimeout').value=s.chatTimeoutSeconds!=null?s.chatTimeoutSeconds:'';
+    routeTones=d.upstreamTones||[];
+    routeLevels=(d.reasoningLevels||[]).map(x=>x&&x.effort).filter(Boolean);
+    renderModelRoutes(d.catalogModels||[]);
+  }catch(e){showNotice(e.message,'error');}
+}
+function renderModelRoutes(rows){
+  if(!rows.length){$('modelRouteRows').innerHTML='<tr><td colspan="5" class="empty">No models available</td></tr>';return;}
+  const levels=routeLevels.length?routeLevels:['none','minimal','low','medium','high','xhigh'];
+  $('modelRouteRows').innerHTML=rows.map(row=>{
+    const toneSel=routeTones.map(t=>`<option value="${escAttr(t)}"${t===row.upstreamTone?' selected':''}>${esc(t)}</option>`).join('')||`<option value="${escAttr(row.upstreamTone)}">${esc(row.upstreamTone)}</option>`;
+    const levelSel=levels.map(l=>`<option value="${escAttr(l)}"${l===row.defaultReasoningLevel?' selected':''}>${esc(l)}</option>`).join('');
+    return `<tr>
+      <td><code>${esc(row.model)}</code></td>
+      <td><input class="form-input" style="min-width:150px" data-f="displayName" value="${escAttr(row.displayName)}"></td>
+      <td><select class="form-input" style="min-width:170px" data-f="upstreamTone">${toneSel}</select></td>
+      <td><select class="form-input" data-f="defaultReasoningLevel">${levelSel}</select></td>
+      <td><label style="display:inline-flex;align-items:center;min-height:36px"><input type="checkbox" data-f="enabled"${row.enabled?' checked':''}></label></td>
+    </tr>`;
+  }).join('');
+}
+async function saveModelRoutes(){
+  try{
+    const rows=[...document.querySelectorAll('#modelRouteRows tr')].map(tr=>{
+      const model=tr.querySelector('code')?.textContent.trim();
+      if(!model)return null;
+      const g=f=>{const el=tr.querySelector(`[data-f="${f}"]`);return el?(el.type==='checkbox'?el.checked:el.value.trim()):undefined;};
+      return {publicModel:model,displayName:g('displayName')||model,upstreamTone:g('upstreamTone'),defaultReasoningLevel:g('defaultReasoningLevel'),enabled:g('enabled')};
+    }).filter(Boolean);
+    if(!rows.length)throw new Error('No models to save');
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({modelMappings:rows})});
+    showNotice('Model routing saved','success');
+    loadSettings();
   }catch(e){showNotice(e.message,'error');}
 }
 

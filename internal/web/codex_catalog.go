@@ -96,9 +96,46 @@ func configuredModelTone(model string, mappings []modelMapping) (string, bool) {
 	return mapping.UpstreamTone, true
 }
 
+// checkModelAvailable rejects requests for models explicitly switched off in
+// model route settings. Unknown model ids stay permissive on purpose so
+// existing clients that pass model aliases ("auto", "m365-copilot", ...) keep
+// working unchanged.
+func checkModelAvailable(model string, mappings []modelMapping) error {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return nil
+	}
+	if mapping, ok := configuredModelMapping(m, mappings); ok && !mapping.enabled() {
+		return fmt.Errorf("model %q is disabled in model routing settings", strings.TrimSpace(mapping.PublicModel))
+	}
+	return nil
+}
+
+// defaultReasoningLevel returns the configured default level for a model, used
+// when a request omits reasoning_effort. Only mappings that explicitly set a
+// level influence routing; everything else falls back to the historic permissive
+// tone behavior.
+func defaultReasoningLevel(model string, mappings []modelMapping) (string, bool) {
+	mapping, ok := configuredModelMapping(model, mappings)
+	if !ok {
+		return "", false
+	}
+	level := strings.TrimSpace(mapping.DefaultReasoningLevel)
+	return level, level != ""
+}
+
 func configuredModelSpecs(mappings []modelMapping) []modelSpec {
 	models := append([]modelSpec(nil), gatewayModels...)
+	disabled := make(map[string]bool, len(mappings))
 	for _, mapping := range mappings {
+		if !mapping.enabled() {
+			disabled[strings.ToLower(strings.TrimSpace(mapping.PublicModel))] = true
+		}
+	}
+	for _, mapping := range mappings {
+		if !mapping.enabled() {
+			continue
+		}
 		spec := modelSpec{
 			ID: strings.TrimSpace(mapping.PublicModel), Owner: "microsoft-365", Tools: true,
 			DisplayName: strings.TrimSpace(mapping.DisplayName), DefaultReasoningLevel: strings.TrimSpace(mapping.DefaultReasoningLevel),
@@ -115,7 +152,17 @@ func configuredModelSpecs(mappings []modelMapping) []modelSpec {
 			models = append(models, spec)
 		}
 	}
-	return models
+	if len(disabled) == 0 {
+		return models
+	}
+	filtered := models[:0]
+	for _, m := range models {
+		if disabled[strings.ToLower(m.ID)] {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	return filtered
 }
 
 func positiveEnvInt(name string, fallback int) int {

@@ -3,6 +3,7 @@ package web
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,52 @@ func TestModelMappingsValidate(t *testing.T) {
 	v.ModelMappings = []modelMapping{{PublicModel: "custom-codex-route", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "Custom Codex Route", DefaultReasoningLevel: "medium"}}
 	if err := validateSettings(v); err != nil {
 		t.Fatalf("rejected custom public model: %v", err)
+	}
+}
+
+func TestModelMappingsValidateWithEnabledFlag(t *testing.T) {
+	off := false
+	v := defaultRuntimeSettings()
+	v.ModelMappings = []modelMapping{
+		{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low", Enabled: &off},
+		{PublicModel: "gpt-5.4", UpstreamTone: "Gpt_5_4_Chat", DisplayName: "GPT-5.4", DefaultReasoningLevel: "high"},
+	}
+	if err := validateSettings(v); err != nil {
+		t.Fatalf("routing mappings rejected: %v", err)
+	}
+	if v.ModelMappings[0].enabled() || !v.ModelMappings[1].enabled() {
+		t.Fatalf("enabled semantics wrong: explicit-off=%t nil-default=%t", v.ModelMappings[0].enabled(), v.ModelMappings[1].enabled())
+	}
+	v.ModelMappings[1].DefaultReasoningLevel = "ultra"
+	if err := validateSettings(v); err == nil {
+		t.Fatal("accepted invalid default reasoning level")
+	}
+}
+
+func TestModelRouteTableCoversConfigurableModels(t *testing.T) {
+	off := false
+	mappings := []modelMapping{
+		{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low", Enabled: &off},
+		{PublicModel: "custom-route", UpstreamTone: "Gpt_5_4_Chat", DisplayName: "Custom", DefaultReasoningLevel: "high"},
+	}
+	rows := modelRouteTable(mappings)
+	byID := make(map[string]modelRouteConfig, len(rows))
+	for _, r := range rows {
+		byID[strings.ToLower(r.Model)] = r
+	}
+	if row, ok := byID["gpt-5.6-sol"]; !ok || row.Enabled || row.DefaultReasoningLevel != "low" {
+		t.Fatalf("sol row=%+v ok=%t", row, ok)
+	}
+	if row, ok := byID["custom-route"]; !ok || !row.Enabled || row.UpstreamTone != "Gpt_5_4_Chat" || row.DefaultReasoningLevel != "high" {
+		t.Fatalf("custom row=%+v ok=%t", row, ok)
+	}
+	if row, ok := byID["gpt-5.4"]; !ok || row.UpstreamTone != "Gpt_5_4_Chat" || row.DefaultReasoningLevel != "medium" {
+		t.Fatalf("built-in default row=%+v ok=%t", row, ok)
+	}
+	for _, id := range configurableCodexModels {
+		if _, ok := byID[strings.ToLower(id)]; !ok {
+			t.Fatalf("configurable model %q missing from route table", id)
+		}
 	}
 }
 

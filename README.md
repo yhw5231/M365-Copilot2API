@@ -1,7 +1,7 @@
 # M365 Copilot2API
 
 <p align="center">
-  <img src="https://img.shields.io/github/license/HEXUXIU/M365-Copilot2API" alt="License">
+  <img src="https://img.shields.io/github/license/yhw5231/M365-Copilot2API" alt="License">
   <img src="https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go" alt="Go Version">
   <img src="https://img.shields.io/badge/API-OpenAI%20Compatible-412991?logo=openai" alt="OpenAI Compatible">
   <img src="https://img.shields.io/badge/API-Anthropic%20Compatible-FF6B6B?logo=anthropic" alt="Anthropic Compatible">
@@ -93,7 +93,7 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 ### 源码编译
 
 ```powershell
-git clone https://github.com/HEXUXIU/M365-Copilot2API.git
+git clone https://github.com/yhw5231/M365-Copilot2API.git
 cd M365-Copilot2API
 
 # 设置管理员密码（可选，默认 admin123），生产环境务必设置强密码
@@ -324,7 +324,7 @@ curl http://127.0.0.1:4141/v1/messages \
 
 ## 可用模型
 
-网关默认内置模型映射（可在控制台「设置」页增删与调整默认推理级别）：
+网关默认内置模型映射（可在控制台「设置」页的「模型路由」界面启用/禁用上游模型、设置每个模型的默认推理等级与上游 tone）：
 
 | 模型 | 默认推理级别 | 说明 |
 |------|-------------|------|
@@ -332,9 +332,10 @@ curl http://127.0.0.1:4141/v1/messages \
 | `gpt-5.6-terra` | `medium` | 推理折中 |
 | `gpt-5.6-luna` | `medium` | 推理折中 |
 
-- 模型映射把公开模型名翻译成上游 tone；控制台可增删映射、调整默认推理级别。
-- 推理强度还可通过请求内的 `reasoning_effort` 参数调整。
-- M365 订阅会上线的新模型名（如 `gpt-5.2`、`gpt-5.4`、`codex` 系）以实际目录为准，可在控制台配置导入。
+- 模型路由把公开模型名翻译成上游 tone；控制台「设置 → 模型路由」可启用/禁用模型、调整显示名称、上游 tone 与默认推理等级。
+- 被禁用的模型会从 `/v1/models` 目录隐藏，请求时返回 `model_not_found`。
+- 请求未携带 `reasoning_effort` 时，网关采用该模型配置的默认推理等级；请求可随时用 `reasoning_effort` 参数覆盖。
+- M365 订阅会上线的新模型名（如 `gpt-5.2`、`gpt-5.4`、`codex` 系）以实际目录为准，可在控制台路由界面启用配置。
 
 ## 内容键会话复用原理
 

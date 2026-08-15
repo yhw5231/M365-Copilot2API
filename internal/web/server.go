@@ -970,6 +970,10 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json: model required", http.StatusBadRequest)
 		return
 	}
+	if err := checkModelAvailable(b.Model, currentSettings().ModelMappings); err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "model_not_found", err.Error())
+		return
+	}
 	acc, err := s.resolveAccount("")
 	if err != nil {
 		writeUpstreamError(w, err)
@@ -1109,9 +1113,21 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	responseFormat := body.ResponseFormat
+	mappings := currentSettings().ModelMappings
+	if err := checkModelAvailable(body.Model, mappings); err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "model_not_found", err.Error())
+		return
+	}
 	effort := body.ReasoningEffort
 	if body.Reasoning != nil && strings.TrimSpace(body.Reasoning.Effort) != "" {
 		effort = body.Reasoning.Effort
+	}
+	// A request that omits reasoning_effort takes the model's configured default
+	// reasoning level from model route settings.
+	if strings.TrimSpace(effort) == "" {
+		if level, ok := defaultReasoningLevel(body.Model, mappings); ok {
+			effort = level
+		}
 	}
 	tone, toneErr := reasoningTone(body.Model, effort)
 	if toneErr != nil {

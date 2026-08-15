@@ -20,7 +20,13 @@ type modelMapping struct {
 	UpstreamTone          string `json:"upstreamTone"`
 	DisplayName           string `json:"displayName"`
 	DefaultReasoningLevel string `json:"defaultReasoningLevel"`
+	// Enabled lets the model-routing UI switch a route off without deleting the
+	// mapping. A nil value means enabled (default) so settings files saved by
+	// earlier versions never silently hide every configured model.
+	Enabled *bool `json:"enabled,omitempty"`
 }
+
+func (m modelMapping) enabled() bool { return m.Enabled == nil || *m.Enabled }
 
 var defaultModelMappings = []modelMapping{
 	{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"},
@@ -39,6 +45,68 @@ var configurableCodexModels = []string{
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
 	"codex-auto-review",
+}
+
+// modelRouteConfig is the row shape the "Model routing" console section edits:
+// one entry per configurable model with the enabled switch and the default
+// reasoning level the gateway applies when a request omits reasoning_effort.
+type modelRouteConfig struct {
+	Model                 string `json:"model"`
+	DisplayName           string `json:"displayName"`
+	UpstreamTone          string `json:"upstreamTone"`
+	DefaultReasoningLevel string `json:"defaultReasoningLevel"`
+	Enabled               bool   `json:"enabled"`
+}
+
+const defaultRouteTone = "Gpt_5_4_Chat"
+
+func modelRouteTable(mappings []modelMapping) []modelRouteConfig {
+	seen := make(map[string]bool, len(configurableCodexModels)+len(mappings))
+	rows := make([]modelRouteConfig, 0, len(configurableCodexModels)+len(mappings))
+	servable := func(id string) bool {
+		for _, spec := range gatewayModels {
+			if strings.EqualFold(spec.ID, id) {
+				return true
+			}
+		}
+		return false
+	}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		key := strings.ToLower(id)
+		if id == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		var tone, display, level string
+		enabled := servable(id) // routes not served today stay off until enabled
+		if m, ok := configuredModelMapping(id, mappings); ok {
+			tone = strings.TrimSpace(m.UpstreamTone)
+			display = strings.TrimSpace(m.DisplayName)
+			level = strings.TrimSpace(m.DefaultReasoningLevel)
+			enabled = m.enabled()
+		}
+		if tone == "" {
+			tone = modelTone(id)
+		}
+		if tone == "" || tone == "magic" {
+			tone = defaultRouteTone
+		}
+		if display == "" {
+			display = id
+		}
+		if level == "" {
+			level = "medium"
+		}
+		rows = append(rows, modelRouteConfig{Model: id, DisplayName: display, UpstreamTone: tone, DefaultReasoningLevel: level, Enabled: enabled})
+	}
+	for _, id := range configurableCodexModels {
+		add(id)
+	}
+	for _, m := range mappings {
+		add(m.PublicModel)
+	}
+	return rows
 }
 
 type runtimeSettings struct {
@@ -192,7 +260,7 @@ func (s *settingsStore) save(v runtimeSettings) error {
 func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		jsonOut(w, map[string]any{"settings": s.settings.get(), "codexModels": configurableCodexModels, "upstreamTones": knownUpstreamTones(), "restartRequiredFields": []string{"listenAddress", "configPath", "tokenCachePath", "sessionCachePath", "outboundProxy", "proxyPool", "clientId", "authority", "redirectUri", "scope", "debugLogPath"}})
+		jsonOut(w, map[string]any{"settings": s.settings.get(), "codexModels": configurableCodexModels, "upstreamTones": knownUpstreamTones(), "catalogModels": modelRouteTable(s.settings.get().ModelMappings), "reasoningLevels": advertisedReasoningEfforts, "restartRequiredFields": []string{"listenAddress", "configPath", "tokenCachePath", "sessionCachePath", "outboundProxy", "proxyPool", "clientId", "authority", "redirectUri", "scope", "debugLogPath"}})
 	case http.MethodPut:
 		// 前端可能只修改一个字段（如监听地址），其余字段以零值提交。
 		// 逐字段合并到当前设置再校验，避免"改一个字段弄丢其他配置"。
