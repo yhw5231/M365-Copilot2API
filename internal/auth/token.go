@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,14 @@ import (
 	"strings"
 	"time"
 )
+
+// TokenExchangeTimeout bounds a single OAuth token-endpoint call. The PKCE
+// code exchange runs in the background (see Server.callbackPKCE), so a slow
+// Microsoft token endpoint must never hold the browser's connection open and
+// surface as a gateway/proxy HTTP timeout — a failure mode seen on ARM64 hosts
+// over long or overseas network paths. A hard deadline keeps the background
+// exchange from hanging forever and reports a clear error instead.
+const TokenExchangeTimeout = 60 * time.Second
 
 type TokenSet struct {
 	AccessToken  string    `json:"access_token"`
@@ -41,7 +50,10 @@ func (t TokenSet) Valid() bool {
 	return t.AccessToken != "" && time.Now().Before(t.ExpiresAt.Add(-30*time.Second))
 }
 
-func ExchangeCode(code, verifier, redirect string) (TokenSet, error) {
+// ExchangeCode exchanges an authorization code for tokens. The passed context
+// bounds the whole network call; use TokenExchangeTimeout when no richer
+// deadline is available.
+func ExchangeCode(ctx context.Context, code, verifier, redirect string) (TokenSet, error) {
 	form := url.Values{}
 	form.Set("client_id", ClientID())
 	form.Set("grant_type", "authorization_code")
@@ -49,7 +61,7 @@ func ExchangeCode(code, verifier, redirect string) (TokenSet, error) {
 	form.Set("redirect_uri", redirect)
 	form.Set("code_verifier", verifier)
 	form.Set("scope", Scope())
-	return requestToken(form)
+	return requestToken(ctx, form)
 }
 
 func Refresh(refreshToken string) (TokenSet, error) {
@@ -58,7 +70,7 @@ func Refresh(refreshToken string) (TokenSet, error) {
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("scope", Scope())
-	return requestToken(form)
+	return requestToken(context.Background(), form)
 }
 
 func ROPC(username, password string) (TokenSet, error) {
@@ -68,11 +80,11 @@ func ROPC(username, password string) (TokenSet, error) {
 	form.Set("username", username)
 	form.Set("password", password)
 	form.Set("scope", Scope())
-	return requestTokenTenant(form, Authority()+"/organizations/oauth2/v2.0/token")
+	return requestTokenTenant(context.Background(), form, Authority()+"/organizations/oauth2/v2.0/token")
 }
 
-func requestTokenTenant(form url.Values, endpoint string) (TokenSet, error) {
-	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+func requestTokenTenant(ctx context.Context, form url.Values, endpoint string) (TokenSet, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return TokenSet{}, err
 	}
@@ -114,8 +126,8 @@ func requestTokenTenant(form url.Values, endpoint string) (TokenSet, error) {
 	return set, nil
 }
 
-func requestToken(form url.Values) (TokenSet, error) {
-	req, err := http.NewRequest(http.MethodPost, TokenEndpoint(), strings.NewReader(form.Encode()))
+func requestToken(ctx context.Context, form url.Values) (TokenSet, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, TokenEndpoint(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return TokenSet{}, err
 	}

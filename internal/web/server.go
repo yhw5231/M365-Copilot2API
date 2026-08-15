@@ -605,49 +605,119 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing state or code", http.StatusBadRequest)
 		return
 	}
+	browserNav := strings.Contains(r.Header.Get("Accept"), "text/html")
 	s.mu.Lock()
 	p, ok := s.pkce[state]
+	if ok && time.Since(p.Created) > 10*time.Minute {
+		delete(s.pkce, state)
+		ok = false
+	}
+	if ok && (p.Status == "exchanging" || p.Status == "authenticated") {
+		// A retry (double click, browser re-POST) must not re-run the exchange:
+		// a code can be redeemed only once and a second attempt fails with
+		// invalid_grant, clobbering the first success.
+		s.mu.Unlock()
+		if browserNav {
+			servePKCECompletionPage(w, state)
+			return
+		}
+		jsonOut(w, map[string]any{"status": p.Status})
+		return
+	}
+	// Capture everything the background exchange needs, then release the lock
+	// and let the exchange run without holding the HTTP handler open.
+	var verifier string
+	if ok {
+		verifier = p.Verifier
+		p.Status = "exchanging"
+		p.Created = time.Now() // fresh expiry window for the exchange itself
+		s.pkce[state] = p
+	}
 	s.mu.Unlock()
-	if !ok || time.Since(p.Created) > 10*time.Minute {
+	if !ok {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}
-	tok, err := auth.ExchangeCode(code, p.Verifier, auth.RedirectURI())
-	if err != nil {
+	go s.exchangePKCE(state, code, verifier)
+	// The manual/pasted-callback flow must never wait on the Microsoft token
+	// endpoint inside the request: slow token endpoints (frequent on ARM64 and
+	// other long-latency deployments) otherwise surface as a timeout from the
+	// browser or a fronting reverse proxy. Poll /api/auth/status instead.
+	if browserNav {
+		servePKCECompletionPage(w, state)
+		return
+	}
+	jsonOut(w, map[string]any{
+		"status":  "exchanging",
+		"state":   state,
+		"note":    "Token exchange is running in the background. Poll /api/auth/status?state=" + state + " until status is authenticated or error.",
+		"timeout": int(auth.TokenExchangeTimeout.Seconds()),
+	})
+}
+
+// exchangePKCE runs the OAuth code exchange off the HTTP request path. Every
+// state mutation happens under s.mu so pkceStatus observes a consistent view.
+func (s *Server) exchangePKCE(state, code, verifier string) {
+	ctx, cancel := context.WithTimeout(context.Background(), auth.TokenExchangeTimeout)
+	defer cancel()
+
+	fail := func(err error) {
 		s.mu.Lock()
-		p.Status = "error"
-		p.Error = err.Error()
-		s.pkce[state] = p
-		s.mu.Unlock()
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		defer s.mu.Unlock()
+		if p, ok := s.pkce[state]; ok {
+			p.Status = "error"
+			p.Error = err.Error()
+			s.pkce[state] = p
+		}
+	}
+
+	tok, err := auth.ExchangeCode(ctx, code, verifier, auth.RedirectURI())
+	if err != nil {
+		log.Printf("pkce exchange failed state=%s err=%v", state, err)
+		fail(err)
 		return
 	}
 	acc, err := s.tokens.Upsert(tok)
 	if err != nil {
-		s.mu.Lock()
-		p.Status = "error"
-		p.Error = err.Error()
-		s.pkce[state] = p
-		s.mu.Unlock()
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("pkce upsert failed state=%s err=%v", state, err)
+		fail(err)
 		return
 	}
 	s.mu.Lock()
-	p.Status = "authenticated"
-	p.Account = map[string]any{"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName, "status": acc.Status, "oid": acc.OID, "tid": acc.TID}
-	s.pkce[state] = p
-	s.mu.Unlock()
-	// Browser loopback callbacks should finish in a friendly page instead of
-	// displaying a raw JSON response. Keep JSON for the manual/API flow.
-	if strings.HasPrefix(auth.RedirectURI(), "http://127.0.0.1:") || strings.HasPrefix(auth.RedirectURI(), "http://localhost:") {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><meta charset="utf-8"><title>M365 Copilot2API 授权完成</title><style>body{font:16px system-ui;text-align:center;padding:15vh 20px;color:#242424}main{max-width:520px;margin:auto}h1{font-size:26px}</style><main><h1>授权完成</h1><p>账号已经自动加入账号池，可以关闭此页面。</p><script>if(window.opener){window.opener.postMessage({type:"m365-auth-complete"},window.location.origin);setTimeout(()=>window.close(),300)}</script></main>`)
-		return
+	defer s.mu.Unlock()
+	if p, ok := s.pkce[state]; ok {
+		p.Status = "authenticated"
+		p.Account = map[string]any{"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName, "status": acc.Status, "oid": acc.OID, "tid": acc.TID}
+		s.pkce[state] = p
 	}
-	jsonOut(w, map[string]any{
-		"status":  "authenticated",
-		"account": map[string]any{"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName, "status": acc.Status, "oid": acc.OID, "tid": acc.TID},
-	})
+}
+
+// servePKCECompletionPage renders a small page for direct browser callbacks
+// (custom M365_REDIRECT_URI pointing at this server, loopback or not). It
+// polls the background exchange result and reports success/failure instead of
+// leaving the user staring at a raw JSON response or a proxy timeout page.
+func servePKCECompletionPage(w http.ResponseWriter, state string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>M365 Copilot2API 授权确认</title>
+<style>body{font:16px system-ui;text-align:center;padding:15vh 20px;color:#242424}main{max-width:520px;margin:auto}h1{font-size:24px;margin-bottom:8px}.muted{color:#666;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}#msg{font-size:15px}</style>
+<main><h1>正在确认授权</h1><p id="msg" class="muted">正在向 Microsoft 兑换令牌，请稍候…</p></main>
+<script>
+(async function(){
+  const state=%q,box=document.getElementById('msg');
+  for(let i=0;i<180;i++){
+    let d={};
+    try{const r=await fetch('/api/auth/status?state='+encodeURIComponent(state));d=await r.json();}catch(e){}
+    if(d.status==='authenticated'){box.textContent='授权完成，账号已加入账号池，可以关闭此页面。';box.className='';}
+    else if(d.status==='error'){box.textContent='授权失败：'+(d.error||'未知错误');box.className='muted';box.style.color='#c0392b';}
+    else if(d.status==='expired'){box.textContent='授权已过期，请重新开始授权。';box.className='muted';box.style.color='#b9770e';}
+    else {await new Promise(x=>setTimeout(x,1000));continue;}
+    try{if(window.opener)window.opener.postMessage({type:'m365-auth-complete',state:state},window.location.origin);}catch(e){}
+    if(d.status==='authenticated'){setTimeout(()=>window.close(),400);}
+    return;
+  }
+  box.textContent='等待授权超时，请重新开始授权。';box.className='muted';box.style.color='#b9770e';
+})();
+</script>`, state)
 }
 
 func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {

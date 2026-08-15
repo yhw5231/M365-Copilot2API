@@ -2,9 +2,11 @@ package web
 
 import (
 	"encoding/json"
+	"m365-copilot2api/internal/outbound"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,5 +109,85 @@ func TestPKCEStatusReportsPendingAndExpired(t *testing.T) {
 				t.Fatalf("status = %v, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCallbackPKCEExchangesInBackground guards against the timeout regression
+// seen on slow / ARM64 deployments: pasting the callback URL used to block the
+// HTTP handler on Microsoft's token endpoint, so any fronting reverse proxy or
+// browser with a read deadline reported an HTTP timeout. The exchange must run
+// off the request path and the handler must return immediately.
+func TestCallbackPKCEExchangesInBackground(t *testing.T) {
+	// Token-endpoint traffic goes through a proxy that never answers; if the
+	// handler were synchronous it would be stuck here far past the assertion
+	// window.
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	defer blocked.Close()
+	if err := outbound.Configure(blocked.URL); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = outbound.Configure("") }()
+
+	s := &Server{pkce: map[string]pendingPKCE{
+		"async-state": {Verifier: "verifier", Created: time.Now(), Status: "pending"},
+	}}
+	rr := httptest.NewRecorder()
+	start := time.Now()
+	r := httptest.NewRequest(http.MethodGet, "/api/auth/callback?state=async-state&code=invalid-code", nil)
+	r.Header.Set("Accept", "*/*")
+	s.callbackPKCE(rr, r)
+	if latency := time.Since(start); latency >= 3*time.Second {
+		t.Fatalf("callbackPKCE blocked for %v; token exchange must run in the background", latency)
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "exchanging" {
+		t.Fatalf("status = %q, want %q", resp.Status, "exchanging")
+	}
+	s.mu.Lock()
+	p, ok := s.pkce["async-state"]
+	s.mu.Unlock()
+	if !ok || p.Status != "exchanging" {
+		t.Fatalf("session present=%v status=%q, want %q", ok, p.Status, "exchanging")
+	}
+}
+
+// TestCallbackPKCEServesBrowserPage ensures a direct browser navigation to the
+// callback endpoint (M365_REDIRECT_URI pointing at this server) gets the
+// polling completion page instead of a raw JSON blob, and still returns fast.
+func TestCallbackPKCEServesBrowserPage(t *testing.T) {
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	defer blocked.Close()
+	if err := outbound.Configure(blocked.URL); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = outbound.Configure("") }()
+
+	s := &Server{pkce: map[string]pendingPKCE{
+		"browser-state": {Verifier: "verifier", Created: time.Now(), Status: "pending"},
+	}}
+	rr := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/auth/callback?state=browser-state&code=invalid-code", nil)
+	r.Header.Set("Accept", "text/html,application/xhtml+xml")
+	s.callbackPKCE(rr, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html page for browser callbacks", ct)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "api/auth/status") {
+		t.Fatalf("completion page must poll /api/auth/status, got: %.200s", body)
 	}
 }

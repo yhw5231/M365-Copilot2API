@@ -387,7 +387,7 @@ curl http://127.0.0.1:4141/v1/messages \
 | `/api/admin/settings` | 运行时设置查看与修改 |
 | `/api/admin/proxy-pool` | 代理池管理 |
 | `/api/accounts` · `/refresh` · `/delete` | 账号管理 |
-| `/api/auth/start` · `status` · `callback` | PKCE 授权流程 |
+| `/api/auth/start` · `status` · `callback` | PKCE 授权流程（`callback` 立即返回 `{"status":"exchanging"}`，令牌兑换在后台进行，调用方按 `state` 轮询 `/api/auth/status` 直到 `authenticated` 或 `error`；避免慢速/海外网络下被浏览器或反向代理的读超时打断） |
 | `/api/conversations` · `/api/m365/conversations` | 本地 / 云端对话列表、删除、清理、白名单 |
 | `/api/stats` · `/stats/reset` | 缓存命中统计 |
 | `/api/usage` · `/usage/logs` | 用量统计仪表盘与明细 |

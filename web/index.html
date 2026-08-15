@@ -507,9 +507,17 @@ if (response.output_text) {
               </div>
             </div>
             <button class="btn primary" onclick="startPKCE()" style="width:100%;margin-bottom:12px;"><i data-lucide="link" style="width:15px;height:15px"></i> Start authorization</button>
+            <div id="authUrlBox" class="highlight-box" style="display:none;margin-top:0;margin-bottom:16px">
+              <div class="highlight-box-title"><i data-lucide="link-2" style="width:14px;height:14px"></i> Authorization address</div>
+              <div class="copy-field" style="margin:8px 0 0">
+                <input class="form-input" id="authUrlInput" readonly autocomplete="off" onclick="openAuthUrl()" title="Open the authorization page in a new tab">
+                <button class="btn primary" onclick="copyAuthUrl()" style="min-width:88px"><i data-lucide="copy" style="width:14px;height:14px;margin-right:4px"></i>Copy</button>
+              </div>
+              <p style="margin:6px 0 0;font-size:12px;color:var(--muted)">If the login page does not open automatically, click the address above to open it in a new tab.</p>
+            </div>
             <div class="highlight-box warning" style="margin-top:0;margin-bottom:16px">
               <div class="highlight-box-title"><i data-lucide="alert-circle" style="width:14px;height:14px"></i> Important</div>
-              <p>After authorization, <strong>ignore the content of the popup page</strong> and copy the full callback URL from the browser address bar, including the <code>code</code> and <code>state</code> parameters.</p>
+              <p>After authorization, <strong>ignore the content of the authorization page</strong> and copy the full callback URL from the browser address bar, including the <code>code</code> and <code>state</code> parameters.</p>
             </div>
             <label class="form-label">Callback URL</label>
             <div class="copy-field">
@@ -774,6 +782,25 @@ const localeText={
   'Callback URL': {'zh-CN':'回调地址','zh-TW':'回呼位址','ja':'コールバック URL','ko':'콜백 URL','es':'URL de devolución','fr':'URL de rappel','de':'Callback-URL','pt-BR':'URL de retorno','ru':'URL обратного вызова','ar':'عنوان URL لإعادة التوجيه'},
   'Paste the full callback URL, e.g. https://app.example.com/api/auth/callback?code=...&state=...': {'zh-CN':'粘贴完整回调地址，例如 https://app.example.com/api/auth/callback?code=...&state=...','zh-TW':'貼上完整回呼位址，例如 https://app.example.com/api/auth/callback?code=...&state=...','ja':'完全なコールバック URL を貼り付け（例: https://app.example.com/api/auth/callback?code=...&state=...）','ko':'전체 콜백 URL 붙여넣기 (예: https://app.example.com/api/auth/callback?code=...&state=...)','es':'Pegue la URL de devolución completa, p. ej. https://app.example.com/api/auth/callback?code=...&state=...','fr':'Collez l\'URL de rappel complète, p. ex. https://app.example.com/api/auth/callback?code=...&state=...','de':'Vollständige Callback-URL einfügen, z. B. https://app.example.com/api/auth/callback?code=...&state=...','pt-BR':'Cole a URL de retorno completa, ex.: https://app.example.com/api/auth/callback?code=...&state=...','ru':'Вставьте полный URL обратного вызова, напр. https://app.example.com/api/auth/callback?code=...&state=...','ar':'الصق عنوان URL الكامل لإعادة التوجيه، مثل https://app.example.com/api/auth/callback?code=...&state=...'},
   'Confirm and add': {'zh-CN':'确认添加','zh-TW':'確認新增','ja':'確認して追加','ko':'확인 및 추가','es':'Confirmar y añadir','fr':'Confirmer et ajouter','de':'Bestätigen und hinzufügen','pt-BR':'Confirmar e adicionar','ru':'Подтвердить и добавить','ar':'تأكيد وإضافة'},
+  'Authorization address': {'zh-CN':'授权地址','zh-TW':'授權位址','ja':'認可アドレス','ko':'인증 주소','es':'Dirección de autorización','fr':'Adresse d\'autorisation','de':'Autorisierungsadresse','pt-BR':'Endereço de autorização','ru':'Адрес авторизации','ar':'عنوان التفويض'},
+  'If the login page does not open automatically, click the address above to open it in a new tab.': {'zh-CN':'若登录页未自动打开，请点击上方授权地址在新标签页打开。','zh-TW':'若登入頁未自動開啟，請點擊上方授權位址在新分頁開啟。','ja':'ログインページが自動的に開かない場合は、上の認可アドレスをクリックして新しいタブで開いてください。','ko':'로그인 페이지가 자동으로 열리지 않으면 위 인증 주소를 클릭해 새 탭에서 여세요.','es':'Si la página de inicio de sesión no se abre automáticamente, haga clic en la dirección de arriba para abrirla en una pestaña nueva.','fr':'Si la page de connexion ne s\'ouvre pas automatiquement, cliquez sur l\'adresse ci-dessus pour l\'ouvrir dans un nouvel onglet.','de':'Falls sich die Anmeldeseite nicht automatisch öffnet, klicken Sie auf die obige Adresse, um sie in einem neuen Tab zu öffnen.','pt-BR':'Se a página de login não abrir automaticamente, clique no endereço acima para abri-lo em uma nova aba.','ru':'Если страница входа не открылась автоматически, нажмите на адрес выше, чтобы открыть его в новой вкладке.','ar':'إذا لم تفتح صفحة تسجيل الدخول تلقائيًا، انقر على العنوان أعلاه لفتحه في تبويب جديد'},
+  'ignore the content of the authorization page': {'zh-CN':'忽略授权页面上的内容','zh-TW':'忽略授權頁面上的內容','ja':'認可ページの内容は無視してください','ko':'인증 페이지 내용 무시','es':'ignore el contenido de la página de autorización','fr':'ignorez le contenu de la page d\'autorisation','de':'ignorieren Sie den Inhalt der Autorisierungsseite','pt-BR':'ignore o conteúdo da página de autorização','ru':'игнорируйте содержимое страницы авторизации','ar':'تجاهل محتوى صفحة التفويض'},
+  'Authorization opened in a new tab': {'zh-CN':'授权页面已在新标签页打开','zh-TW':'授權頁面已在新分頁開啟','ja':'認可ページを新しいタブで開きました','ko':'인증 페이지가 새 탭에서 열렸습니다','es':'Autorización abierta en una pestaña nueva','fr':'Autorisation ouverte dans un nouvel onglet','de':'Autorisierung in neuem Tab geöffnet','pt-BR':'Autorização aberta em uma nova aba','ru':'Авторизация открыта в новой вкладке','ar':'تم فتح التفويض في تبويب جديد'},
+  'Complete the sign-in in the browser tab, then paste the full callback URL from the address bar into the field above.': {'zh-CN':'请在浏览器标签页中完成登录，然后复制地址栏中的完整回调地址粘贴到上方输入框。','zh-TW':'請在瀏覽器分頁中完成登入，然後複製網址列中的完整回呼位址貼到上方輸入框。','ja':'ブラウザタブでサインインを完了し、アドレスバーの完全なコールバック URL を上の入力欄に貼り付けてください。','ko':'브라우저 탭에서 로그인을 완료한 후 주소창의 전체 콜백 URL을 위 입력란에 붙여넣으세요.','es':'Complete el inicio de sesión en la pestaña del navegador y luego pegue la URL de devolución completa de la barra de direcciones en el campo de arriba.','fr':'Terminez la connexion dans l\'onglet du navigateur, puis collez l\'URL de rappel complète depuis la barre d\'adresse dans le champ ci-dessus.','de':'Schließen Sie die Anmeldung im Browser-Tab ab und fügen Sie dann die vollständige Callback-URL aus der Adressleiste in das Feld oben ein.','pt-BR':'Conclua o login na aba do navegador e cole a URL de retorno completa da barra de endereços no campo acima.','ru':'Завершите вход в браузере, затем вставьте полный URL обратного вызова из адресной строки в поле выше.','ar':'أكمل تسجيل الدخول في تبويب المتصفح، ثم الصق عنوان URL الكامل لإعادة التوجيه من شريط العنوان في الحقل أعلاه'},
+  'Exchanging authorization code': {'zh-CN':'正在兑换授权码','zh-TW':'正在兌換授權碼','ja':'認可コードを交換中','ko':'인증 코드 교환 중','es':'Intercambiando código de autorización','fr':'Échange du code d\'autorisation','de':'Autorisierungscode wird umgetauscht','pt-BR':'Trocando código de autorização','ru':'Обмен кода авторизации','ar':'جارٍ تبادل رمز التفويض'},
+  'Confirming with Microsoft... the account will be added when finished.': {'zh-CN':'正在与 Microsoft 确认...完成后账号将自动加入账号池。','zh-TW':'正在與 Microsoft 確認...完成後帳號將自動加入帳號池。','ja':'Microsoft と確認中...完了するとアカウントが自動的に追加されます。','ko':'Microsoft와 확인 중... 완료되면 계정이 자동으로 추가됩니다.','es':'Confirmando con Microsoft... la cuenta se añadirá al finalizar.','fr':'Confirmation avec Microsoft... le compte sera ajouté à la fin.','de':'Verifizierung mit Microsoft... das Konto wird anschließend hinzugefügt.','pt-BR':'Confirmando com a Microsoft... a conta será adicionada ao concluir.','ru':'Подтверждение с Microsoft... по завершении аккаунт будет добавлен.','ar':'جارٍ التأكيد مع Microsoft... سيُضاف الحساب عند الانتهاء'},
+  'No authorization address yet': {'zh-CN':'尚无授权地址','zh-TW':'尚無授權位址','ja':'認可アドレスがありません','ko':'인증 주소가 아직 없음','es':'Aún no hay dirección de autorización','fr':'Aucune adresse d\'autorisation pour le moment','de':'Noch keine Autorisierungsadresse','pt-BR':'Nenhum endereço de autorização ainda','ru':'Адреса авторизации пока нет','ar':'لا يوجد عنوان تفويض بعد'},
+  'Copied': {'zh-CN':'已复制','zh-TW':'已複製','ja':'コピーしました','ko':'복사됨','es':'Copiado','fr':'Copié','de':'Kopiert','pt-BR':'Copiado','ru':'Скопировано','ar':'تم النسخ'},
+  'Copy failed': {'zh-CN':'复制失败','zh-TW':'複製失敗','ja':'コピーに失敗しました','ko':'복사 실패','es':'Error al copiar','fr':'Échec de la copie','de':'Kopieren fehlgeschlagen','pt-BR':'Falha ao copiar','ru':'Не удалось скопировать','ar':'فشل النسخ'},
+  'Missing authorization state': {'zh-CN':'缺少授权状态参数','zh-TW':'缺少授權狀態參數','ja':'認可状態パラメータがありません','ko':'인증 상태 매개변수 누락','es':'Falta el estado de autorización','fr':'État d\'autorisation manquant','de':'Autorisierungsstatus fehlt','pt-BR':'Estado de autorização ausente','ru':'Отсутствует состояние авторизации','ar':'حالة التفويض مفقودة'},
+  'Authorization failed or expired': {'zh-CN':'授权失败或已过期','zh-TW':'授權失敗或已過期','ja':'認可に失敗したか期限切れです','ko':'인증 실패 또는 만료됨','es':'Autorización fallida o caducada','fr':'Autorisation échouée ou expirée','de':'Autorisierung fehlgeschlagen oder abgelaufen','pt-BR':'Autorização falhou ou expirou','ru':'Авторизация не удалась или истекла','ar':'فشل التفويض أو انتهت صلاحيته'},
+  'The authorization window was closed before completion': {'zh-CN':'授权窗口在完成前被关闭','zh-TW':'授權視窗在完成前被關閉','ja':'承認ウィンドウは完了前に閉じられました','ko':'인증 창이 완료 전에 닫힘','es':'La ventana de autorización se cerró antes de completarse','fr':'La fenêtre d\'autorisation a été fermée avant la fin','de':'Das Autorisierungsfenster wurde vor Abschluss geschlossen','pt-BR':'A janela de autorização foi fechada antes da conclusão','ru':'Окно авторизации было закрыто до завершения','ar':'أُغلقت نافذة التفويض قبل الاكتمال'},
+  'If you already finished signing in, paste the callback URL above; otherwise click "Start authorization" again.': {'zh-CN':'若已完成登录，请将回调地址粘贴到上方；否则请重新点击"开始授权"。','zh-TW':'若已完成登入，請將回呼位址貼到上方；否則請重新點擊「開始授權」。','ja':'サインインが完了している場合は、上のコールバック URL を貼り付けてください。完了していない場合は、もう一度「承認を開始」をクリックしてください。','ko':'이미 로그인을 완료했다면 위에 콜백 URL을 붙여넣으세요. 그렇지 않으면 "인증 시작"을 다시 클릭하세요.','es':'Si ya inició sesión, pegue la URL de devolución arriba; de lo contrario, haga clic de nuevo en "Iniciar autorización".','fr':'Si vous avez déjà terminé la connexion, collez l\'URL de rappel ci-dessus ; sinon, cliquez à nouveau sur « Démarrer l\'autorisation ».','de':'Wenn Sie die Anmeldung bereits abgeschlossen haben, fügen Sie die Callback-URL oben ein; andernfalls klicken Sie erneut auf „Autorisierung starten".','pt-BR':'Se já concluiu o login, cole a URL de retorno acima; caso contrário, clique em "Iniciar autorização" novamente.','ru':'Если вы уже завершили вход, вставьте URL обратного вызова выше; в противном случае нажмите «Начать авторизацию» ещё раз.','ar':'إذا كنت قد أكملت تسجيل الدخول، الصق عنوان URL لإعادة التوجيه أعلاه؛ وإلا فانقر على "بدء التفويض" مرة أخرى'},
+  'Authorization successful': {'zh-CN':'授权成功','zh-TW':'授權成功','ja':'認可に成功しました','ko':'인증 성공','es':'Autorización exitosa','fr':'Autorisation réussie','de':'Autorisierung erfolgreich','pt-BR':'Autorização bem-sucedida','ru':'Авторизация успешна','ar':'تم التفويض بنجاح'},
+  'Authorization timed out. Start authorization again.': {'zh-CN':'授权超时，请重新开始授权。','zh-TW':'授權逾時，請重新開始授權。','ja':'認可がタイムアウトしました。もう一度開始してください。','ko':'인증 시간 초과. 인증을 다시 시작하세요.','es':'La autorización expiró. Inicie la autorización de nuevo.','fr':'Autorisation expirée. Recommencez l\'autorisation.','de':'Autorisierung abgelaufen. Starten Sie die Autorisierung erneut.','pt-BR':'Tempo de autorização esgotado. Inicie a autorização novamente.','ru':'Время авторизации истекло. Начните авторизацию заново.','ar':'انتهت مهلة التفويض. أعد بدء التفويض'},
+  'Paste the callback URL': {'zh-CN':'请粘贴回调地址','zh-TW':'請貼上回呼位址','ja':'コールバック URL を貼り付けてください','ko':'콜백 URL을 붙여넣으세요','es':'Pegue la URL de devolución','fr':'Collez l\'URL de rappel','de':'Callback-URL einfügen','pt-BR':'Cole a URL de retorno','ru':'Вставьте URL обратного вызова','ar':'الصق عنوان URL لإعادة التوجيه'},
+  'Account added to the account pool.': {'zh-CN':'账号已加入账号池。','zh-TW':'帳號已加入帳號池。','ja':'アカウントがアカウントプールに追加されました。','ko':'계정이 계정 풀에 추가되었습니다.','es':'Cuenta añadida al grupo de cuentas.','fr':'Compte ajouté au pool de comptes.','de':'Konto zum Kontopool hinzugefügt.','pt-BR':'Conta adicionada ao pool de contas.','ru':'Аккаунт добавлен в пул аккаунтов.','ar':'تمت إضافة الحساب إلى مجمع الحسابات'},
+  'Open the authorization page in a new tab': {'zh-CN':'在新标签页打开授权页面','zh-TW':'在新分頁開啟授權頁面','ja':'認可ページを新しいタブで開く','ko':'새 탭에서 인증 페이지 열기','es':'Abrir la página de autorización en una pestaña nueva','fr':'Ouvrir la page d\'autorisation dans un nouvel onglet','de':'Autorisierungsseite in einem neuen Tab öffnen','pt-BR':'Abrir a página de autorização em uma nova aba','ru':'Открыть страницу авторизации в новой вкладке','ar':'افتح صفحة التفويض في تبويب جديد'},
   'Authorized accounts': {'zh-CN':'已授权账号','zh-TW':'已授權帳號','ja':'承認済みアカウント','ko':'인증된 계정','es':'Cuentas autorizadas','fr':'Comptes autorisés','de':'Autorisierte Konten','pt-BR':'Contas autorizadas','ru':'Авторизованные аккаунты','ar':'الحسابات المفوضة'},
   'Search accounts…': {'zh-CN':'搜索账号…','zh-TW':'搜尋帳號…','ja':'アカウントを検索…','ko':'계정 검색…','es':'Buscar cuentas…','fr':'Rechercher des comptes…','de':'Konten suchen…','pt-BR':'Pesquisar contas…','ru':'Поиск аккаунтов…','ar':'البحث عن الحسابات…'},
   'All': {'zh-CN':'全部','zh-TW':'全部','ja':'すべて','ko':'전체','es':'Todos','fr':'Tous','de':'Alle','pt-BR':'Todos','ru':'Все','ar':'الكل'},
@@ -978,6 +1005,13 @@ async function api(path,opts={}){
   return d;
 }
 
+// A browser-direct auth callback (custom M365_REDIRECT_URI pointing at this
+// server) posts this message back to the console once the background exchange
+// finishes. Refresh the account list so the pool reflects the new account.
+window.addEventListener('message',e=>{
+  if(e.data&&e.data.type==='m365-auth-complete'){loadAccounts();}
+});
+
 $('loginForm')?.addEventListener('submit',async e=>{
   e.preventDefault();
   try{
@@ -1058,31 +1092,94 @@ async function startPKCE(){
   try{
     const d=await api('/api/auth/start');
     $('callbackInput').dataset.state=d.state;
-    const popup=window.open(d.url,'pkce','width=600,height=800');
-    $('authStatus').innerHTML='<div class="highlight-box"><div class="highlight-box-title"><i data-lucide="info" style="width:14px;height:14px"></i>Authorization page opened</div><p>Complete the sign-in in your browser, then paste the full callback URL from the address bar into the field above.</p></div>';
+    // Show the authorization address with one-click copy, then open it in a
+    // new tab (popup windows get blocked by browser settings far too often).
+    $('authUrlInput').value=d.url;
+    $('authUrlBox').style.display='block';
+    const tab=window.open(d.url,'_blank');
+    $('authStatus').innerHTML='<div class="highlight-box"><div class="highlight-box-title"><i data-lucide="external-link" style="width:14px;height:14px"></i>Authorization opened in a new tab</div><p>Complete the sign-in in the browser tab, then paste the full callback URL from the address bar into the field above.</p></div>';
+    try{lucide.createIcons();}catch(e){}
     $('callbackInput').focus();
-    $('callbackInput').placeholder='Paste the full callback URL from the address bar…';
+    $('callbackInput').placeholder='Paste the full callback URL from the address bar\u2026';
     if(pkceTimer)clearInterval(pkceTimer);
     const start=Date.now();
     pkceTimer=setInterval(async()=>{
       if(Date.now()-start>600000){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>Authorization timed out. Start authorization again.</b></div>';return;}
-      if(popup&&popup.closed){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>The authorization window was closed before completion.</b></div>';return;}
       try{const s=await api('/api/auth/status?state='+d.state);
-        if(s.status==='authenticated'){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box success"><div class="highlight-box-title"><i data-lucide="check-circle" style="width:14px;height:14px"></i>Authorization successful</div><p>Account added to the account pool.</p></div>';showNotice('Authorization successful','success');loadAccounts();}
-        if(s.status==='error'||s.status==='expired'){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>Authorization failed or expired</b></div>';}
+        if(s.status==='authenticated'){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box success"><div class="highlight-box-title"><i data-lucide="check-circle" style="width:14px;height:14px"></i>Authorization successful</div><p>Account added to the account pool.</p></div>';showNotice('Authorization successful','success');$('callbackInput').value='';loadAccounts();}
+        else if(s.status==='error'||s.status==='expired'){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>Authorization failed or expired</b>'+(s.error?'<p>'+esc(s.error)+'</p>':'')+'</div>';showNotice(s.error||'Authorization failed or expired','error');}
+        // The loopback completion page closes its own tab after success, so only
+        // surface the "closed" warning while the authorization is still pending.
+        else if(tab&&tab.closed){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>The authorization window was closed before completion</b><p>If you already finished signing in, paste the callback URL above; otherwise click "Start authorization" again.</p></div>';}
       }catch(e){}
     },2000);
   }catch(e){showNotice(e.message,'error');}
 }
 
+function openAuthUrl(){
+  const v=$('authUrlInput').value;
+  if(v)window.open(v,'_blank');
+}
+
+async function copyAuthUrl(){
+  const v=$('authUrlInput').value;
+  if(!v)return showNotice('No authorization address yet','error');
+  try{await navigator.clipboard.writeText(v);showNotice('Copied','success');}
+  catch(e){
+    $('authUrlInput').focus();$('authUrlInput').select();$('authUrlInput').setSelectionRange(0,v.length);
+    try{document.execCommand('copy');showNotice('Copied','success');}catch(_){showNotice('Copy failed','error');}
+  }
+}
+
 async function submitCallback(){
   const raw=$('callbackInput').value.trim();
   if(!raw)return showNotice('Paste the callback URL','error');
+  const state=$('callbackInput').dataset.state||'';
   try{
     let u='/api/auth/callback?';
     if(raw.includes('://')){u+='url='+encodeURIComponent(raw);}
-    else{u+=raw.replace(/^\?/,'');if(!raw.includes('state='))$('callbackInput').dataset.state&&(u+='&state='+$('callbackInput').dataset.state);}
-    await api(u);showNotice('Authorization successful','success');$('callbackInput').value='';loadAccounts();showPage('dashboard');
+    else{u+=raw.replace(/^\?/,'');if(!raw.includes('state=')&&state)u+='&state='+state;}
+    const d=await api(u);
+    // The callback endpoint returns as soon as the exchange is queued; the
+    // token exchange runs in the background so a slow Microsoft token
+    // endpoint can never surface as a browser/proxy timeout. Poll the status
+    // endpoint until the background exchange reports success or failure.
+    if(pkceTimer)clearInterval(pkceTimer);
+    if(d.status==='authenticated'){
+      // Edge case: the exchange already completed (e.g. a retry of a previous
+      // submission); finish immediately instead of waiting for the next poll.
+      $('authStatus').innerHTML='<div class="highlight-box success"><div class="highlight-box-title"><i data-lucide="check-circle" style="width:14px;height:14px"></i>Authorization successful</div><p>Account added to the account pool.</p></div>';
+      showNotice('Authorization successful','success');
+      $('callbackInput').value='';
+      loadAccounts();showPage('dashboard');
+      return;
+    }
+    let pollState=state;
+    if(!pollState){const m=raw.match(/[?&]state=([^&#]+)/);if(m)pollState=decodeURIComponent(m[1]);}
+    if(!pollState){showNotice('Missing authorization state','error');return;}
+    $('authStatus').innerHTML='<div class="highlight-box"><div class="highlight-box-title"><i data-lucide="loader" style="width:14px;height:14px"></i>Exchanging authorization code</div><p>Confirming with Microsoft... the account will be added when finished.</p></div>';
+    try{lucide.createIcons();}catch(e){}
+    const start=Date.now();
+    pkceTimer=setInterval(async()=>{
+      if(Date.now()-start>600000){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>Authorization timed out. Start authorization again.</b></div>';return;}
+      try{
+        const s=await api('/api/auth/status?state='+pollState);
+        if(s.status==='authenticated'){
+          clearInterval(pkceTimer);
+          $('authStatus').innerHTML='<div class="highlight-box success"><div class="highlight-box-title"><i data-lucide="check-circle" style="width:14px;height:14px"></i>Authorization successful</div><p>Account added to the account pool.</p></div>';
+          showNotice('Authorization successful','success');
+          $('callbackInput').value='';
+          loadAccounts();showPage('dashboard');
+          return;
+        }
+        if(s.status==='error'||s.status==='expired'){
+          clearInterval(pkceTimer);
+          $('authStatus').innerHTML='<div class="highlight-box warning"><b>Authorization failed or expired</b>'+(s.error?'<p>'+esc(s.error)+'</p>':'')+'</div>';
+          showNotice(s.error||'Authorization failed or expired','error');
+          return;
+        }
+      }catch(e){}
+    },2000);
   }catch(e){showNotice(e.message,'error');}
 }
 

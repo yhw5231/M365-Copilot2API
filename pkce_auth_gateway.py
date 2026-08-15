@@ -195,7 +195,10 @@ def exchange_code(code: str, verifier: str) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        # 60s: token exchange to Microsoft can be slow over long/overseas links
+        # (common on ARM64/low-cost hosts); a 30s cap was falsely reported as a
+        # timeout after pasting the callback URI.
+        with urllib.request.urlopen(req, timeout=60) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
