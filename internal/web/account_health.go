@@ -1,4 +1,4 @@
-﻿package web
+package web
 
 import (
 	"errors"
@@ -37,6 +37,10 @@ func IsRateLimited(err error) bool {
 	if errors.As(err, &httpErr) {
 		return httpErr.Status == 429 || httpErr.Status == 503
 	}
+	var dialErr *chathub.DialError
+	if errors.As(err, &dialErr) {
+		return dialErr.Status == 429 || dialErr.Status == 503
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "429") ||
 		strings.Contains(msg, "too many requests") ||
@@ -54,6 +58,10 @@ func IsAuthFailure(err error) bool {
 	if errors.As(err, &httpErr) {
 		return httpErr.Status == 401 || httpErr.Status == 403
 	}
+	var dialErr *chathub.DialError
+	if errors.As(err, &dialErr) {
+		return dialErr.Status == 401 || dialErr.Status == 403
+	}
 	return false
 }
 
@@ -64,6 +72,10 @@ func RetryAfterSeconds(err error) int {
 	var httpErr *UpstreamHTTPError
 	if errors.As(err, &httpErr) {
 		return httpErr.RetryAfter
+	}
+	var dialErr *chathub.DialError
+	if errors.As(err, &dialErr) {
+		return dialErr.RetryAfter
 	}
 	return 0
 }
@@ -83,6 +95,8 @@ func newAccountHealth() *accountHealth {
 
 // MarkFailure records the outcome of a request for one account.
 // rateLimited cools the account down for window; authFailed pins it.
+// When the error carries an upstream Retry-After hint, that value is used
+// instead of the caller-supplied window (capped at 30 minutes).
 func (h *accountHealth) MarkFailure(accountID string, err error, window time.Duration) {
 	if window <= 0 {
 		window = 60 * time.Second
@@ -100,7 +114,14 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 	}
 	if IsRateLimited(err) {
 		delete(h.authFail, accountID)
-		h.cooldown[accountID] = time.Now().Add(window)
+		cd := window
+		if ra := RetryAfterSeconds(err); ra > 0 {
+			cd = time.Duration(ra) * time.Second
+			if cd > 30*time.Minute {
+				cd = 30 * time.Minute
+			}
+		}
+		h.cooldown[accountID] = time.Now().Add(cd)
 	}
 }
 

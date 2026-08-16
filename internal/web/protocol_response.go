@@ -23,6 +23,7 @@ func openAIChoice(v map[string]any) (map[string]any, string) {
 func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src map[string]any) {
 	id := "msg_" + uuid.NewString()
 	msg, finish := openAIChoice(src)
+	sanitizePublicAssistantMessage(msg, model)
 	blocks := []any{}
 	stop := "end_turn"
 	if reasoning, _ := msg["reasoning_content"].(string); reasoning != "" {

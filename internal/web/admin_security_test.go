@@ -124,20 +124,23 @@ func TestExpiredLoginWindowResets(t *testing.T) {
 
 func chdirRepoRoot(t *testing.T) {
 	t.Helper()
+	original, _ := os.Getwd()
+	var root string
 	dir, _ := os.Getwd()
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "web", "index.html")); err == nil {
-			if err := os.Chdir(dir); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.Chdir(dir) })
-			return
+			root = dir
+			break
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			t.Skip("repo root with web/ not found")
 		}
 		dir = parent
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
 	}
 }
 

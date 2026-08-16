@@ -137,6 +137,23 @@ var toolRefusalPatterns = []string{
 	"不会虚构",
 	"不会!转入",
 	"不会转入",
+	"execution environment has changed",
+	"执行环境已经切换",
+	"无法访问上一会话",
+	"/mnt/data",
+	"current execution environment has changed",
+	"linux sandbox",
+	"linux container",
+	"running in a container",
+	"cannot modify source code",
+	"没有连接到",
+	"Windows 执行接口",
+	"I can run that for you",
+	"running in sandbox",
+	"executing in sandbox",
+	"code interpreter",
+	"python sandbox",
+	"sandbox environment",
 }
 
 func isToolRefusal(text string) bool {
@@ -147,4 +164,48 @@ func isToolRefusal(text string) bool {
 		}
 	}
 	return false
+}
+
+type rejectedToolCall struct {
+	Name   string
+	Reason string
+}
+
+// validateDetectedToolCalls is the final trust boundary before a model-selected
+// call is serialized to the client. ChatHub/native events and model-generated
+// routing text are both untrusted: an undeclared name such as "unknown_tool"
+// must never escape to Claude Code, Codex, or another local tool runner.
+func validateDetectedToolCalls(calls []detectedToolCall, tools []map[string]any, choice any) ([]detectedToolCall, []rejectedToolCall) {
+	valid := make([]detectedToolCall, 0, len(calls))
+	rejected := make([]rejectedToolCall, 0)
+	for _, call := range calls {
+		fn := toolFunction(call.Name, tools)
+		if fn == nil {
+			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "tool was not declared by the client"})
+			continue
+		}
+		if !toolChoiceAllows(choice, call.Name) {
+			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "tool_choice does not allow this tool"})
+			continue
+		}
+		args := map[string]any{}
+		if len(call.Arguments) == 0 || string(call.Arguments) == "null" {
+			call.Arguments = json.RawMessage(`{}`)
+		} else if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "arguments are not a JSON object"})
+			continue
+		}
+		if err := schemaValid(args, fn); err != nil {
+			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: err.Error()})
+			continue
+		}
+		if call.ID == "" {
+			call.ID = callID(call.Name, string(call.Arguments), len(valid))
+		}
+		if call.Type == "" {
+			call.Type = toolType(call.Name, tools)
+		}
+		valid = append(valid, call)
+	}
+	return valid, rejected
 }

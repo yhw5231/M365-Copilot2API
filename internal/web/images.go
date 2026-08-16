@@ -1,24 +1,49 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"m365-copilot2api/internal/auth"
 	"m365-copilot2api/internal/chathub"
+	"m365-copilot2api/internal/outbound"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type imageGenerationRequest struct {
-	Prompt         string `json:"prompt"`
-	N              int    `json:"n"`
-	Size           string `json:"size"`
-	ResponseFormat string `json:"response_format"`
-	Model          string `json:"model"`
-	AccountID      string `json:"accountId"`
-	User           string `json:"user"`
+	Prompt         string               `json:"prompt"`
+	N              int                  `json:"n"`
+	Size           string               `json:"size"`
+	ResponseFormat string               `json:"response_format"`
+	Model          string               `json:"model"`
+	AccountID      string               `json:"accountId"`
+	User           string               `json:"user"`
+	Operation      string               `json:"operation,omitempty"`
+	Attachments    []chathub.Attachment `json:"attachments,omitempty"`
+}
+
+const (
+	designerAppServiceScope  = "https://designerappservice.officeapps.live.com/.default"
+	maxGeneratedImageBytes   = 20 << 20
+	maxImageEditRequestBytes = maxGeneratedImageBytes + (2 << 20)
+	generatedImageTTL        = 15 * time.Minute
+	maxGeneratedImages       = 128
+)
+
+type generatedImage struct {
+	Data        []byte
+	ContentType string
+	ExpiresAt   time.Time
 }
 
 func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +64,11 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "n must be between 1 and 4", 400)
 		return
 	}
-	if b.ResponseFormat != "" && !strings.EqualFold(b.ResponseFormat, "url") && !strings.EqualFold(b.ResponseFormat, "b64_json") {
+	format := strings.ToLower(strings.TrimSpace(b.ResponseFormat))
+	if format == "" {
+		format = "url"
+	}
+	if format != "url" && format != "b64_json" {
 		http.Error(w, `{"error":{"message":"response_format must be url or b64_json","type":"invalid_request_error"}}`, 400)
 		return
 	}
@@ -61,15 +90,24 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	if size == "" {
 		size = "1024x1024"
 	}
+	endpoint := "/v1/images/generations"
 	prompt := fmt.Sprintf("Generate an image with the Flux model. Size: %s. Description: %s. Return the image URL directly.", size, b.Prompt)
-	res, err := s.chat.Chat(ctx, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{Text: prompt, Tone: "magic", BindAccount: acc.ID})
+	if b.Operation == "edit" {
+		if len(b.Attachments) == 0 {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "image is required")
+			return
+		}
+		endpoint = "/v1/images/edits"
+		prompt = fmt.Sprintf("Edit the first attached image with the Flux model. Size: %s. Instructions: %s. Preserve everything not requested to change. Return the edited image URL directly.", size, b.Prompt)
+	}
+	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{Text: prompt, Tone: "magic", Attachments: b.Attachments, BindAccount: acc.ID})
 	if err != nil {
 		s.usage.record(UsageRecord{
 			Time:         time.Now(),
 			APIKeyPrefix: apiKeyPrefix(r),
 			AccountEmail: acc.Email,
 			Model:        firstNonEmpty(b.Model, "flux"),
-			Endpoint:     "/v1/images/generations",
+			Endpoint:     endpoint,
 			DurationMs:   time.Since(startedAt).Milliseconds(),
 			Status:       502,
 			Error:        truncatedError(err),
@@ -91,6 +129,12 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(res.Images) == 0 {
+		refusalText := strings.Join([]string{res.Text, res.RawResult}, "\n")
+		if isImageQuotaRefusal(refusalText) {
+			w.Header().Set("Retry-After", "86400")
+			writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "M365 image generation quota is exhausted; try again later or use another account")
+			return
+		}
 		// Debug: log the response to understand what the model returned
 		textPreview := res.Text
 		if len(textPreview) > 500 {
@@ -119,17 +163,50 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	if len(images) > b.N {
 		images = images[:b.N]
 	}
+
+	var designerToken string
 	data := make([]map[string]string, 0, len(images))
-	for _, u := range images {
-		if strings.EqualFold(b.ResponseFormat, "b64_json") {
-			if !strings.HasPrefix(u, "data:image/") {
+	for _, sourceURL := range images {
+		if strings.HasPrefix(strings.ToLower(sourceURL), "data:image/") {
+			if format == "b64_json" {
+				parts := strings.SplitN(sourceURL, ",", 2)
+				if len(parts) != 2 {
+					http.Error(w, `{"error":{"message":"invalid upstream image data","type":"upstream_error"}}`, 502)
+					return
+				}
+				data = append(data, map[string]string{"b64_json": parts[1]})
+			} else {
+				data = append(data, map[string]string{"url": sourceURL})
+			}
+			continue
+		}
+		if !isDesignerImageURL(sourceURL) {
+			if format == "b64_json" {
 				http.Error(w, `{"error":{"message":"upstream returned URL, not b64_json","type":"unsupported_response_format"}}`, 502)
 				return
 			}
-			data = append(data, map[string]string{"b64_json": strings.SplitN(u, ",", 2)[1]})
-		} else {
-			data = append(data, map[string]string{"url": u})
+			data = append(data, map[string]string{"url": sourceURL})
+			continue
 		}
+		if designerToken == "" {
+			designerToken, err = s.designerAccessToken(acc)
+			if err != nil {
+				http.Error(w, upstreamError(err), 502)
+				return
+			}
+		}
+		imageData, contentType, err := downloadDesignerImage(ctx, sourceURL, designerToken)
+		if err != nil {
+			log.Printf("[image-gen-download] err=%v", err)
+			http.Error(w, upstreamError(err), 502)
+			return
+		}
+		if format == "b64_json" {
+			data = append(data, map[string]string{"b64_json": base64.StdEncoding.EncodeToString(imageData)})
+			continue
+		}
+		id := s.storeGeneratedImage(imageData, contentType)
+		data = append(data, map[string]string{"url": generatedImageURL(r, id)})
 	}
 	s.usage.record(UsageRecord{
 		Time:         time.Now(),
@@ -180,4 +257,305 @@ func extractImageURLs(raw string) []string {
 	}
 	walk(v)
 	return out
+}
+
+// imageEdits implements POST /v1/images/edits by converting the multipart form
+// into an image-generation request with an embedded attachment.
+func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxImageEditRequestBytes)
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid multipart image edit request")
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	prompt := strings.TrimSpace(r.FormValue("prompt"))
+	if prompt == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "prompt is required")
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		file, header, err = r.FormFile("image[]")
+	}
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "image is required")
+		return
+	}
+	defer file.Close()
+	imageData, err := io.ReadAll(io.LimitReader(file, maxGeneratedImageBytes+1))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "could not read image")
+		return
+	}
+	if len(imageData) > maxGeneratedImageBytes {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "image exceeds 20 MiB")
+		return
+	}
+	contentType := http.DetectContentType(imageData)
+	ext := ""
+	switch contentType {
+	case "image/png":
+		ext = "png"
+	case "image/jpeg":
+		ext = "jpg"
+	case "image/webp":
+		ext = "webp"
+	default:
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "image must be PNG, JPEG, or WebP")
+		return
+	}
+	name := strings.TrimSpace(header.Filename)
+	if name == "" {
+		name = "image." + ext
+	}
+	n := 1
+	if rawN := strings.TrimSpace(r.FormValue("n")); rawN != "" {
+		n, err = strconv.Atoi(rawN)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "n must be an integer")
+			return
+		}
+	}
+	body := imageGenerationRequest{
+		Prompt:         prompt,
+		N:              n,
+		Size:           strings.TrimSpace(r.FormValue("size")),
+		ResponseFormat: strings.TrimSpace(r.FormValue("response_format")),
+		Model:          strings.TrimSpace(r.FormValue("model")),
+		AccountID:      firstNonEmpty(strings.TrimSpace(r.FormValue("accountId")), strings.TrimSpace(r.FormValue("account_id"))),
+		User:           strings.TrimSpace(r.FormValue("user")),
+		Operation:      "edit",
+		Attachments: []chathub.Attachment{{
+			Type:     "image",
+			URL:      "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(imageData),
+			Name:     name,
+			MimeType: contentType,
+		}},
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "internal_error", "could not encode image edit request")
+		return
+	}
+	next := r.Clone(r.Context())
+	next.Body = io.NopCloser(bytes.NewReader(encoded))
+	next.ContentLength = int64(len(encoded))
+	next.Header = r.Header.Clone()
+	next.Header.Set("Content-Type", "application/json")
+	next.Form = nil
+	next.PostForm = nil
+	next.MultipartForm = nil
+	s.imageGenerations(w, next)
+}
+
+func (s *Server) designerAccessToken(acc auth.AccountToken) (string, error) {
+	if strings.TrimSpace(acc.RefreshToken) == "" {
+		return "", fmt.Errorf("account has no refresh token for Designer image download")
+	}
+	clientID := firstNonEmpty(acc.ClientID, auth.ClientID())
+	set, err := auth.RefreshWithScope(acc.RefreshToken, clientID, designerAppServiceScope)
+	if err != nil {
+		return "", fmt.Errorf("obtain Designer image token: %w", err)
+	}
+	if set.RefreshToken != "" && set.RefreshToken != acc.RefreshToken {
+		if err := s.tokens.UpdateRefreshToken(acc.ID, set.RefreshToken); err != nil {
+			log.Printf("[image-gen] rotated refresh token could not be persisted account=%s err=%v", acc.ID, err)
+		}
+	}
+	return set.AccessToken, nil
+}
+
+func isDesignerImageURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && strings.EqualFold(u.Scheme, "https") && strings.EqualFold(u.Hostname(), "designerapp.officeapps.live.com")
+}
+
+func downloadDesignerImage(ctx context.Context, rawURL, accessToken string) ([]byte, string, error) {
+	if !isDesignerImageURL(rawURL) {
+		return nil, "", fmt.Errorf("not a Designer image URL")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	client := outbound.HTTPClient()
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var via []*url.URL
+		if resp.Request != nil {
+			via = append(via, resp.Request.URL)
+		}
+		if len(via) >= 3 || !isDesignerImageURL(resp.Request.URL.String()) {
+			return nil, "", fmt.Errorf("Designer image download HTTP %d", resp.StatusCode)
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxGeneratedImageBytes+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) > maxGeneratedImageBytes {
+		return nil, "", fmt.Errorf("Designer image exceeds size limit")
+	}
+	contentType := http.DetectContentType(data)
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, "", fmt.Errorf("Designer returned non-image content")
+	}
+	return data, contentType, nil
+}
+
+func (s *Server) storeGeneratedImage(data []byte, contentType string) string {
+	s.generatedImagesMu.Lock()
+	defer s.generatedImagesMu.Unlock()
+	// evict old entries
+	now := time.Now()
+	for id, img := range s.generatedImages {
+		if img.ExpiresAt.Before(now) {
+			delete(s.generatedImages, id)
+		}
+	}
+	if len(s.generatedImages) >= maxGeneratedImages {
+		// remove oldest
+		var oldest string
+		var oldestTime time.Time
+		for id, img := range s.generatedImages {
+			if oldest == "" || img.ExpiresAt.Before(oldestTime) {
+				oldest = id
+				oldestTime = img.ExpiresAt
+			}
+		}
+		if oldest != "" {
+			delete(s.generatedImages, oldest)
+		}
+	}
+	id := uuid.NewString()
+	s.generatedImages[id] = &generatedImage{
+		Data:        data,
+		ContentType: contentType,
+		ExpiresAt:   now.Add(generatedImageTTL),
+	}
+	return id
+}
+
+func (s *Server) generatedImageFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/images/files/")
+	if _, err := uuid.Parse(id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	now := time.Now()
+	s.generatedImagesMu.Lock()
+	img, ok := s.generatedImages[id]
+	if ok && now.After(img.ExpiresAt) {
+		delete(s.generatedImages, id)
+		ok = false
+	}
+	s.generatedImagesMu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", img.ContentType)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("Content-Length", fmt.Sprint(len(img.Data)))
+	_, _ = w.Write(img.Data)
+}
+
+func generatedImageURL(r *http.Request, id string) string {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host + "/v1/images/files/" + id
+}
+
+func isImageQuotaRefusal(text string) bool {
+	low := strings.ToLower(strings.TrimSpace(text))
+	for _, phrase := range []string{
+		"generate any more images",
+		"image generation quota",
+		"daily image limit",
+		"try again tomorrow",
+		"无法再生成图片",
+		"请明天再试",
+	} {
+		if strings.Contains(low, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func downloadImageAsBase64(url string) (b64, contentType string, err error) {
+	return downloadImageAsBase64WithToken(url, "")
+}
+
+func downloadImageAsBase64WithToken(url, token string) (b64, contentType string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := outbound.HTTPClient()
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", "", fmt.Errorf("download returned %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	if err != nil {
+		return "", "", err
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = http.DetectContentType(body)
+	}
+	enc := base64.StdEncoding.EncodeToString(body)
+	return enc, ct, nil
+}
+
+func downloadImageAsDataURI(url string) (string, error) {
+	b64, ct, err := downloadImageAsBase64(url)
+	if err != nil {
+		return url, nil
+	}
+	return "data:" + ct + ";base64," + b64, nil
+}
+
+func downloadImageAsDataURIWithToken(url, token string) (string, error) {
+	b64, ct, err := downloadImageAsBase64WithToken(url, token)
+	if err != nil {
+		log.Printf("[image-download] failed url=%s token_len=%d err=%v", url[:minInt(len(url), 80)], len(token), err)
+		return url, nil
+	}
+	log.Printf("[image-download] ok url=%s ct=%s size=%d", url[:minInt(len(url), 80)], ct, len(b64))
+	return "data:" + ct + ";base64," + b64, nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -1,9 +1,12 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+
+	"m365-copilot2api/internal/chathub"
 )
 
 // upstreamError keeps transport details, including URLs and credentials, out
@@ -29,9 +32,19 @@ func upstreamStatus(err error) int {
 	return http.StatusBadGateway
 }
 
+// IsEmptyCompletion reports whether the upstream returned an empty completion
+// because the requested tone is unavailable for this tenant.
+func IsEmptyCompletion(err error) bool {
+	return errors.Is(err, chathub.ErrEmptyCompletion)
+}
+
 // writeUpstreamError renders a failed upstream call as an HTTP response,
 // surfacing the Retry-After hint for rate limits so clients can back off.
 func writeUpstreamError(w http.ResponseWriter, err error) {
+	if IsEmptyCompletion(err) {
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream returned empty completion; the requested model may be unavailable for this tenant")
+		return
+	}
 	if retry := RetryAfterSeconds(err); retry > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))
 	}

@@ -73,6 +73,22 @@ func Refresh(refreshToken string) (TokenSet, error) {
 	return requestToken(context.Background(), form)
 }
 
+// RefreshWithScope redeems the same account refresh token for a separately
+// consented Microsoft resource, such as the Designer App Service used to
+// download generated images. The caller must persist a rotated refresh token.
+func RefreshWithScope(refreshToken, clientID, scope string) (TokenSet, error) {
+	form := url.Values{}
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		clientID = ClientID()
+	}
+	form.Set("client_id", clientID)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("scope", scope)
+	return requestToken(context.Background(), form)
+}
+
 func ROPC(username, password string) (TokenSet, error) {
 	form := url.Values{}
 	form.Set("client_id", ClientID())

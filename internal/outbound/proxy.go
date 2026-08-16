@@ -57,10 +57,36 @@ var (
 
 func init() { proxyMode.Store(ProxyModeStrict) }
 
+// directClients builds the shared direct (proxy-free) client pair. The HTTP
+// transport and the WebSocket dialer share one TLS ClientSessionCache so TLS
+// session resumption benefits both layers (upstream perf: ~30-80ms saved per
+// warm request). The WS dialer also pins ALPN to http/1.1: negotiating h2 on
+// the WebSocket upgrade produces "protocol h2 not supported" failures (upstream
+// h2 ALPN fix), and smaller buffers cut per-connection memory (35MB -> 19MB).
 func directClients() *Clients {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy = nil
-	return &Clients{HTTP: &http.Client{Transport: t}, WebSocket: &websocket.Dialer{HandshakeTimeout: 20 * time.Second, ReadBufferSize: 1024 * 1024, WriteBufferSize: 64 * 1024}}
+	tlsCache := tls.NewLRUClientSessionCache(32)
+	httpTLSConf := &tls.Config{ClientSessionCache: tlsCache}
+	wsTLSConf := &tls.Config{ClientSessionCache: tlsCache, NextProtos: []string{"http/1.1"}}
+	t := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+		TLSClientConfig:       httpTLSConf,
+	}
+	return &Clients{
+		HTTP: &http.Client{Transport: t},
+		WebSocket: &websocket.Dialer{
+			HandshakeTimeout: 20 * time.Second,
+			ReadBufferSize:   256 * 1024,
+			WriteBufferSize:  16 * 1024,
+			NetDialContext:   t.DialContext,
+			TLSClientConfig:  wsTLSConf,
+		},
+	}
 }
 
 // normalizeProxyMode maps any input to one of the three supported modes,

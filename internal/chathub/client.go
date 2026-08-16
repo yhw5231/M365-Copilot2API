@@ -11,6 +11,7 @@ import (
 	"m365-copilot2api/internal/outbound"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,22 @@ import (
 // ChatHub sometimes sends through the text channel instead of HTTP 429.
 // Callers must independently probe the account before marking it unhealthy.
 var ErrRateLimitNotice = errors.New("upstream rate-limit notice")
+
+// DialError carries the HTTP status and optional Retry-After from a failed
+// WebSocket dial so the web layer can route it into the correct cooldown.
+type DialError struct {
+	Status     int
+	RetryAfter int
+}
+
+func (e *DialError) Error() string {
+	return fmt.Sprintf("ws dial: upstream %d", e.Status)
+}
+
+// ErrEmptyCompletion indicates upstream returned an empty completion because
+// the requested tone is not available for this tenant. The web layer can
+// fall back to "magic" and retry.
+var ErrEmptyCompletion = errors.New("upstream returned empty completion; tone may be unavailable for this tenant")
 
 func minInt(a, b int) int {
 	if a < b {
@@ -192,11 +209,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		httpClient = outbound.HTTPClientFor(req.BindAccount)
 		dialer = outbound.WebSocketDialerFor(req.BindAccount)
 	}
-	if err := c.uploadAttachments(ctx, acc, req.ConversationID, req.Attachments, httpClient); err != nil {
-		if c.OnUpstream != nil {
-			c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": err.Error()})
-		}
-		return Result{}, fmt.Errorf("upload attachment: %w", err)
+	// Attachment upload and the WebSocket dial are independent network round
+	// trips. Run them concurrently so total latency is max(upload, dial) instead
+	// of upload+dial (upstream perf fix: saves ~200ms when images are present).
+	attachCh := make(chan error, 1)
+	if len(req.Attachments) > 0 {
+		go func() { attachCh <- c.uploadAttachments(ctx, acc, req.ConversationID, req.Attachments, httpClient) }()
 	}
 
 	wsURL, err := buildWSURL(acc, req.SessionID, req.ConversationID, requestID)
@@ -205,15 +223,35 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 
 	dialStarted := time.Now()
-	conn, _, err := dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
+	conn, resp, err := dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
 	log.Printf("chathub timing ws_dial_ms=%d total_ms=%d", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds())
 	if err != nil {
+		if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403) {
+			retryAfter := 0
+			if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
+				retryAfter = v
+			}
+			log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
+			if c.OnUpstream != nil {
+				c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": fmt.Sprintf("ws dial: upstream %d", resp.StatusCode)})
+			}
+			return Result{}, &DialError{Status: resp.StatusCode, RetryAfter: retryAfter}
+		}
 		if c.OnUpstream != nil {
 			c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "ws dial: " + err.Error()})
 		}
 		return Result{}, fmt.Errorf("ws dial: %w", err)
 	}
 	defer conn.Close()
+
+	if len(req.Attachments) > 0 {
+		if attachErr := <-attachCh; attachErr != nil {
+			if c.OnUpstream != nil {
+				c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": attachErr.Error()})
+			}
+			return Result{}, fmt.Errorf("upload attachment: %w", attachErr)
+		}
+	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))

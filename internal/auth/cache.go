@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,6 +167,25 @@ func (s *Store) Delete(id string) error {
 	}
 	s.data.Accounts = next
 	return s.saveLocked()
+}
+
+// UpdateRefreshToken persists a rotated refresh token (e.g. one returned by a
+// separate-scope refresh used for Designer image downloads).
+func (s *Store) UpdateRefreshToken(id, refreshToken string) error {
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Accounts {
+		if s.data.Accounts[i].ID == id {
+			s.data.Accounts[i].RefreshToken = refreshToken
+			s.data.Accounts[i].UpdatedAt = time.Now()
+			return s.saveLocked()
+		}
+	}
+	return errors.New("account not found")
 }
 
 func (s *Store) Get(id string) (AccountToken, bool) {

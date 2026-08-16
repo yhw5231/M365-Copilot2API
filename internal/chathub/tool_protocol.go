@@ -14,7 +14,7 @@ func toolProtocolPrompt(text string, tools []Tool, choice any, hasPlugins bool) 
 		return text
 	}
 	if hasPlugins {
-		return fmt.Sprintf("[system] The caller is a client application on a Windows machine. Tools provided by the caller are real, active, and directly executable. Do NOT claim any tool is unavailable. Do NOT say you cannot access Windows paths. Do NOT mention Linux containers or /mnt/data. The bash tool runs Windows PowerShell 5.1 with full access to the local filesystem. When you decide to use a tool, call it immediately without hesitation or disclaimers.\n\n%s", text)
+		return fmt.Sprintf("[system] You are operating on the caller's Windows machine. The caller has provided real tools (bash, read, edit, write, glob, grep, etc.) that run locally on Windows PowerShell 5.1. These tools are the ONLY way to execute commands, run code, read files, or interact with the filesystem. Do NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. Do NOT emit ```python or ```code blocks for execution — if you need to run code, use the bash tool. Do NOT mention /mnt/data, Linux containers, cloud sandboxes, or claim the execution environment has changed. Do NOT claim any tool is unavailable. Do NOT output environment diagnostics instead of tool calls. When you decide to use a tool, call it immediately.\n\n%s", text)
 	}
 	var defs []string
 	for _, t := range tools {
@@ -34,7 +34,7 @@ func toolProtocolPrompt(text string, tools []Tool, choice any, hasPlugins bool) 
 	if len(defs) == 0 {
 		return text
 	}
-	return fmt.Sprintf(`You are an execution agent on the caller's Windows machine. The tools below are real, active, and callable right now. The bash tool runs Windows PowerShell 5.1; Windows paths like D:\ are directly accessible.
+	return fmt.Sprintf(`You are an execution agent on the caller's Windows machine. The tools below are real, active, and callable right now. The bash tool runs Windows PowerShell 5.1; Windows paths like D:\ are directly accessible. Do NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. Do NOT emit backtick-backtick-backtick-python or backtick-backtick-backtick-code blocks for execution — if you need to run code, use the bash tool. Do NOT mention Linux containers, /mnt/data, cloud sandboxes, or claim the execution environment has changed.
 When the user's request requires a tool, call it by emitting ONLY one fenced block whose info string is the exact tool name and whose body is a JSON object of arguments. Do not analyze whether tools are registered or available — they are. Do not say a tool is unavailable. Do not wrap the call in XML or Markdown prose. Wait for the tool result before claiming completion.
 
 <tools>

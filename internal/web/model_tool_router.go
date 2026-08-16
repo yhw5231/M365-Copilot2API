@@ -49,7 +49,7 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 				var args map[string]any
 				if json.Unmarshal([]byte(argsStr), &args) == nil && toolChoiceAllows(choice, name) {
 					fn := toolFunction(name, tools)
-					if fn != nil {
+					if fn != nil && schemaValid(args, fn) == nil {
 						b, _ := json.Marshal(args)
 						return []detectedToolCall{{ID: callID(name, string(b), 0), Type: toolType(name, tools), Name: name, Arguments: b}}, true
 					}
@@ -66,6 +66,13 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 	}
 	start, end := strings.Index(text, "{"), strings.LastIndex(text, "}")
 	if start < 0 || end <= start {
+		return nil, false
+	}
+	var probe map[string]json.RawMessage
+	if json.Unmarshal([]byte(text[start:end+1]), &probe) != nil {
+		return nil, false
+	}
+	if _, ok := probe["calls"]; !ok {
 		return nil, false
 	}
 	var envelope struct {

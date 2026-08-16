@@ -65,7 +65,8 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 | 用量统计 | 按 key / 账号 / 模型 / 端点聚合（`usage.jsonl`） |
 | 缓存命中统计 | 命中率、节省 token 仪表盘 |
 | 多模态输入 | 支持图片等附件（base64 data URL / https URL），自动完成 M365 上传与消息注解注入 |
-| 图像生成 | `/v1/images/generations` |
+| 图像生成 | `/v1/images/generations`，支持 `url` / `b64_json` 输出，Designer 图片自动下载转存本机 |
+| 图像编辑 | `/v1/images/edits`，multipart 上传原图 + 指令，返回编辑后的图片 |
 | Web 控制台 | 账号、密钥、代理池、模型、对话、日志一屏管理 |
 
 ## 架构
@@ -291,6 +292,32 @@ curl http://127.0.0.1:9090/v1/chat/completions \
 
 也可以直接传 https 图片 URL（仅公网地址，带 SSRF 防护；本地图请用 data URL）。Responses 协议的 `input_image` / `input_file` 同样支持。
 
+### 图像生成（OpenAI 格式）
+
+```bash
+curl http://127.0.0.1:9090/v1/images/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"一只戴帽子的柴犬","size":"1024x1024","n":1,"response_format":"url"}'
+# → {"created":..., "data":[{"url":"http://127.0.0.1:9090/v1/images/files/<uuid>"}], ...}
+```
+
+- `response_format` 支持 `url`（默认）与 `b64_json`。
+- 上游返回 Designer 图片时，网关会自动用账号刷新令牌换取 Designer 访问令牌并下载图片，`url` 模式转存本机（`/v1/images/files/{id}`，TTL 15 分钟），`b64_json` 模式直接内联。
+- 触发图像生成配额耗尽时返回 `429` + `Retry-After: 86400`。
+
+### 图像编辑（OpenAI 格式）
+
+```bash
+curl http://127.0.0.1:9090/v1/images/edits \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F "image=@photo.png" \
+  -F "prompt=把背景换成海边日落" \
+  -F "size=1024x1024"
+```
+
+支持 `image` / `image[]` 字段（PNG / JPEG / WebP，≤ 20 MiB），可选 `n`、`model`、`response_format`、`accountId` 等字段。
+
 ### Anthropic 格式（Claude Code / Cursor）
 
 ```bash
@@ -374,7 +401,9 @@ curl http://127.0.0.1:9090/v1/messages \
 | `/v1/chat/completions` | POST | 聊天补全（流式 / 工具调用） |
 | `/v1/responses` | POST | OpenAI Responses 协议 |
 | `/v1/messages` | POST | Anthropic Messages（需 `x-api-key` + `anthropic-version`） |
-| `/v1/images/generations` | POST | 图像生成 |
+| `/v1/images/generations` | POST | 图像生成（`url` / `b64_json`；Designer 图片自动下载并转存本机访问） |
+| `/v1/images/edits` | POST | 图像编辑（multipart：`image` + `prompt` + 可选 `size` / `n` / `response_format`） |
+| `/v1/images/files/{id}` | GET | 读取本机转存的生成图片（无需 API Key，TTL 到期自动清理） |
 | `/v1/sessions` | GET / POST | 查询会话绑定 / 按 `session_id` 查询或创建 |
 | `/v1/sessions/{id}` | DELETE | 解除会话绑定 |
 
@@ -390,7 +419,7 @@ curl http://127.0.0.1:9090/v1/messages \
 | `/api/admin/proxy-pool` | 代理池管理 |
 | `/api/accounts` · `/refresh` · `/delete` | 账号管理 |
 | `/api/auth/start` · `status` · `callback` | PKCE 授权流程（`callback` 立即返回 `{"status":"exchanging"}`，令牌兑换在后台进行，调用方按 `state` 轮询 `/api/auth/status` 直到 `authenticated` 或 `error`；避免慢速/海外网络下被浏览器或反向代理的读超时打断） |
-| `/api/conversations` · `/api/m365/conversations` | 本地 / 云端对话列表、删除、清理、白名单 |
+| `/api/conversations` · `/api/m365/conversations` · `/api/m365/conversations/detail` | 本地 / 云端对话列表、删除、清理、白名单；`detail` 返回单条会话完整内容（云端与本地合并视图） |
 | `/api/stats` · `/stats/reset` | 缓存命中统计 |
 | `/api/usage` · `/usage/logs` | 用量统计仪表盘与明细 |
 | `/api/chat` · `/chat/stream` | 控制台内即时对话 |
@@ -398,7 +427,7 @@ curl http://127.0.0.1:9090/v1/messages \
 
 ## 测试
 
-仓库自带完整单元测试（会话解析、自动清理、工具路由、协议兼容、用量统计等），运行：
+仓库自带完整单元测试（会话解析、自动清理、工具路由、协议兼容、用量统计、密钥安全迁移、图像编辑/配额、公共身份、工具校验、会话详情等），运行：
 
 ```bash
 go test ./...
@@ -421,7 +450,7 @@ M365-Copilot2API/
 │   ├── auth/              # OAuth / PKCE
 │   ├── mcp/               # MCP 工具网关（SSE / JSON-RPC）
 │   └── outbound/          # HTTP 代理池
-├── web/                   # 管理控制台（纯 HTML / JS 单页）
+├── web/                   # 管理控制台（纯 HTML / JS 单页，含 conversation.html 会话详情视图）
 ├── scripts/               # 运维脚本
 │   ├── e2e_test.py        # 端到端测试
 │   ├── chathub_probe.py   # ChatHub 协议探针
@@ -439,7 +468,7 @@ M365-Copilot2API/
 
 - **默认仅监听内网**：直接运行二进制默认 `M365_LISTEN=127.0.0.1:9090`；对外提供服务务必通过 TLS 终泄反向代理（Nginx / Caddy），并为 SSE 与 WebSocket 开启长连接与 `proxy_buffering off`。
 - **首次登录强制改密**：使用默认密码或引导密码完成首次登录后必须修改管理员密码。
-- **密钥最小暴露**：API Key 控制台创建后即可回读，请妥善保护控制台访问权限。
+- **密钥最小暴露**：API Key 明文仅在创建时返回一次，磁盘只存 SHA-256 哈希（旧版 `api-keys.json` 中的明文会在启动迁移时自动清零并补写哈希），控制台无法回读完整密钥；请妥善保护控制台访问权限。
 - **数据落盘权限**：账号凭据、Token 缓存、会话绑定、API Key 等数据文件以 `0600` 权限写入，数据目录建议 `0700`。请定期备份数据目录。
 
 ## 常见问题
