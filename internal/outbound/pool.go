@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,7 @@ func NewPool(raw []string) (*Pool, error) {
 	p := &Pool{bound: map[string]*poolEntry{}}
 	seen := map[string]bool{}
 	for _, v := range raw {
+		v = strings.TrimSpace(v)
 		if v == "" || seen[v] {
 			continue
 		}
@@ -175,12 +177,20 @@ func (p *Pool) HTTPClient() *http.Client {
 // HTTPClientFor returns an HTTP client pinned to the proxy node bound to the
 // account. A failed request is replayed once on an unbound healthy node; when
 // no usable node is left the request fails with ErrNoProxyNode so the caller
-// can switch the request to an account whose bound node is healthy.
+// can switch the request to an account whose bound node is healthy. In direct
+// mode the pool is bypassed entirely; in loose mode a missing node falls back
+// to a direct client instead of failing.
 func (p *Pool) HTTPClientFor(account string) *http.Client {
+	if ProxyMode() == ProxyModeDirect {
+		return directClients().HTTP
+	}
 	if e := p.pickFor(account); e != nil {
 		return &http.Client{Transport: &poolRoundTripper{pool: p, entry: e, base: e.clients.HTTP.Transport, account: account}}
 	}
-	return &http.Client{Transport: errTripper{err: ErrNoProxyNode}}
+	if ProxyMode() == ProxyModeStrict {
+		return &http.Client{Transport: errTripper{err: ErrNoProxyNode}}
+	}
+	return directClients().HTTP
 }
 func (p *Pool) WebSocketDialer() *websocket.Dialer {
 	base := directClients().WebSocket
@@ -220,14 +230,22 @@ func (p *Pool) WebSocketDialer() *websocket.Dialer {
 // to the account. A failed dial is retried once on an unbound healthy node
 // (preferred failover); if no usable node is left the dial returns
 // ErrNoProxyNode so the caller can switch the request to an account whose
-// bound node is healthy.
+// bound node is healthy. In direct mode the pool is bypassed entirely; in
+// loose mode a missing node falls back to a direct connection instead.
 func (p *Pool) WebSocketDialerFor(account string) *websocket.Dialer {
+	if ProxyMode() == ProxyModeDirect {
+		d := *directClients().WebSocket
+		return &d
+	}
 	base := directClients().WebSocket
 	baseDialer := &net.Dialer{}
 	base.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		for attempt := 0; attempt < 2; attempt++ {
 			e := p.pickFor(account)
 			if e == nil {
+				if ProxyMode() != ProxyModeStrict {
+					return baseDialer.DialContext(ctx, network, address)
+				}
 				return nil, ErrNoProxyNode
 			}
 			dial := e.clients.WebSocket.NetDialContext
@@ -304,9 +322,13 @@ func (t *poolRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 		if t.account != "" {
 			// Account-bound replay: only unbound healthy nodes count; when
 			// none is left the request must move to another account instead
-			// of borrowing that account's node.
+			// of borrowing that account's node. In loose mode the replay
+			// simply stops and the original error is returned.
 			next = t.pool.pickFor(t.account)
 			if next == nil {
+				if ProxyMode() != ProxyModeStrict {
+					break
+				}
 				return nil, ErrNoProxyNode
 			}
 		} else {

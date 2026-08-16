@@ -26,6 +26,17 @@ type upstreamMapping struct {
 
 func (m upstreamMapping) enabled() bool { return m.Enabled == nil || *m.Enabled }
 
+// proxyMode returns the normalized three-state proxy policy (direct / loose /
+// strict). Unknown or empty values default to strict for backward
+// compatibility with settings files written before the mode feature.
+func (s runtimeSettings) proxyMode() string {
+	switch strings.ToLower(strings.TrimSpace(s.ProxyMode)) {
+	case outbound.ProxyModeDirect, outbound.ProxyModeLoose, outbound.ProxyModeStrict:
+		return strings.ToLower(strings.TrimSpace(s.ProxyMode))
+	}
+	return outbound.ProxyModeStrict
+}
+
 // defaultUpstreamMappings keep the historic tone strings as the default mapping
 // set, so settings files saved by earlier versions (which stored the raw tone
 // in modelMapping.upstreamTone) keep resolving to the same routing targets.
@@ -77,6 +88,27 @@ func (m *modelMapping) UnmarshalJSON(b []byte) error {
 		}
 		if json.Unmarshal(b, &legacy) == nil && strings.TrimSpace(legacy.UpstreamTone) != "" {
 			m.UpstreamMapping = strings.TrimSpace(legacy.UpstreamTone)
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON keeps settings files written by versions that only had the
+// boolean "proxyEnabled" switch readable: proxyEnabled=false maps to the loose
+// mode, true (or absent) maps to strict.
+func (s *runtimeSettings) UnmarshalJSON(b []byte) error {
+	type alias runtimeSettings
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*s = runtimeSettings(a)
+	if strings.TrimSpace(s.ProxyMode) == "" {
+		var legacy struct {
+			ProxyEnabled *bool `json:"proxyEnabled"`
+		}
+		if json.Unmarshal(b, &legacy) == nil && legacy.ProxyEnabled != nil && !*legacy.ProxyEnabled {
+			s.ProxyMode = outbound.ProxyModeLoose
 		}
 	}
 	return nil
@@ -204,6 +236,10 @@ type runtimeSettings struct {
 	SessionCachePath    string         `json:"sessionCachePath"`
 	OutboundProxy       string         `json:"outboundProxy"`
 	ProxyPool           []string       `json:"proxyPool,omitempty"`
+	// ProxyMode is the three-state proxy policy: "direct" (never use the
+	// pool), "loose" (prefer the pool, fall back to direct), "strict"
+	// (mandatory once a pool is configured; the default when absent).
+	ProxyMode string `json:"proxyMode,omitempty"`
 	ClientID            string         `json:"clientId"`
 	Authority           string         `json:"authority"`
 	RedirectURI         string         `json:"redirectUri"`
@@ -316,6 +352,9 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.TraceMaxRecords < 0 || v.TraceMaxRecords > 2000 {
 		return fmt.Errorf("调试记录条数必须为 0-2000")
+	}
+	if raw := strings.ToLower(strings.TrimSpace(v.ProxyMode)); raw != "" && raw != outbound.ProxyModeDirect && raw != outbound.ProxyModeLoose && raw != outbound.ProxyModeStrict {
+		return fmt.Errorf("代理模式必须为 direct、loose 或 strict")
 	}
 	if err := outbound.ValidateProxyURL(v.OutboundProxy); err != nil {
 		return err
@@ -440,6 +479,7 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, 400, "invalid_request_error", e.Error())
 			return
 		}
+		outbound.SetProxyMode(v.proxyMode())
 		jsonOut(w, map[string]any{"ok": true, "settings": v})
 	default:
 		writeOpenAIError(w, 405, "invalid_request_error", "method not allowed")
@@ -506,7 +546,7 @@ func currentSettings() runtimeSettings { return openSettingsStore().get() }
 // always win over values saved from the web console.
 func ApplyStartupSettingsEnv() {
 	s := openSettingsStore().get()
-	values := map[string]string{"M365_LISTEN": s.ListenAddress, "M365_CONFIG": s.ConfigPath, "M365_TOKEN_CACHE": s.TokenCachePath, "M365_SESSION_CACHE": s.SessionCachePath, outbound.EnvProxy: s.OutboundProxy, "M365_PROXY_POOL": strings.Join(s.ProxyPool, "\n"), "M365_CLIENT_ID": s.ClientID, "M365_AUTHORITY": s.Authority, "M365_REDIRECT_URI": s.RedirectURI, "M365_SCOPE": s.Scope, "M365_DEBUG_LOG": s.DebugLogPath}
+	values := map[string]string{"M365_LISTEN": s.ListenAddress, "M365_CONFIG": s.ConfigPath, "M365_TOKEN_CACHE": s.TokenCachePath, "M365_SESSION_CACHE": s.SessionCachePath, outbound.EnvProxy: s.OutboundProxy, "M365_PROXY_POOL": strings.Join(s.ProxyPool, "\n"), "M365_CLIENT_ID": s.ClientID, "M365_AUTHORITY": s.Authority, "M365_REDIRECT_URI": s.RedirectURI, "M365_SCOPE": s.Scope, "M365_DEBUG_LOG": s.DebugLogPath, outbound.EnvProxyMode: s.proxyMode()}
 	for k, v := range values {
 		if _, exists := os.LookupEnv(k); !exists && strings.TrimSpace(v) != "" {
 			_ = os.Setenv(k, v)

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -18,6 +19,27 @@ import (
 )
 
 const EnvProxy = "M365_OUTBOUND_PROXY"
+
+// Proxy mode constants. The mode is a three-state policy:
+//   - ProxyModeDirect: never use the proxy pool, every request connects
+//     directly (configured proxies are ignored);
+//   - ProxyModeLoose: prefer the proxy pool, but fall back to a direct
+//     connection when no healthy proxy node is available;
+//   - ProxyModeStrict (default): once a pool is configured, requests must go
+//     through a healthy proxy node, otherwise they fail with ErrNoProxyNode.
+const (
+	ProxyModeDirect = "direct"
+	ProxyModeLoose  = "loose"
+	ProxyModeStrict = "strict"
+
+	// EnvProxyMode selects the proxy mode at startup. Values: direct, loose,
+	// strict (default). The legacy EnvEnforceProxy boolean is still honored
+	// when EnvProxyMode is absent.
+	EnvProxyMode = "M365_PROXY_MODE"
+	// EnvEnforceProxy is the legacy boolean switch: "1"/"true"/"yes"/"on"
+	// map to strict, "0"/"false"/"no"/"off" map to loose.
+	EnvEnforceProxy = "M365_ENFORCE_PROXY"
+)
 
 type Clients struct {
 	HTTP      *http.Client
@@ -28,14 +50,72 @@ var (
 	clientsMu sync.RWMutex
 	clients   = directClients()
 	proxyPool *Pool
+	// proxyMode holds the current three-state proxy policy; it starts as
+	// strict (backward compatible) unless the environment says otherwise.
+	proxyMode atomic.Value // string
 )
+
+func init() { proxyMode.Store(ProxyModeStrict) }
 
 func directClients() *Clients {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
 	return &Clients{HTTP: &http.Client{Transport: t}, WebSocket: &websocket.Dialer{HandshakeTimeout: 20 * time.Second, ReadBufferSize: 1024 * 1024, WriteBufferSize: 64 * 1024}}
 }
+
+// normalizeProxyMode maps any input to one of the three supported modes,
+// defaulting unknown or empty values to strict.
+func normalizeProxyMode(m string) string {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case ProxyModeDirect:
+		return ProxyModeDirect
+	case ProxyModeLoose:
+		return ProxyModeLoose
+	}
+	return ProxyModeStrict
+}
+
+// ProxyMode returns the current proxy policy: direct, loose or strict.
+func ProxyMode() string {
+	if v := proxyMode.Load(); v != nil {
+		return v.(string)
+	}
+	return ProxyModeStrict
+}
+
+// SetProxyMode updates the proxy policy. Unknown values are normalized to
+// strict.
+func SetProxyMode(m string) { proxyMode.Store(normalizeProxyMode(m)) }
+
+// parseBoolEnv reads a boolean environment variable; empty means unset.
+func parseBoolEnv(name string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	}
+	return false, false
+}
+
+// loadProxyModeFromEnv applies M365_PROXY_MODE, falling back to the legacy
+// M365_ENFORCE_PROXY boolean switch.
+func loadProxyModeFromEnv() {
+	if raw := strings.TrimSpace(os.Getenv(EnvProxyMode)); raw != "" {
+		SetProxyMode(raw)
+		return
+	}
+	if v, ok := parseBoolEnv(EnvEnforceProxy); ok {
+		if v {
+			SetProxyMode(ProxyModeStrict)
+		} else {
+			SetProxyMode(ProxyModeLoose)
+		}
+	}
+}
+
 func ConfigureFromEnv() error {
+	loadProxyModeFromEnv()
 	raw := strings.TrimSpace(os.Getenv("M365_PROXY_POOL"))
 	if raw != "" {
 		return ConfigurePool(strings.FieldsFunc(raw, func(r rune) bool { return r == '\n' || r == '\r' || r == ',' }))
@@ -54,9 +134,26 @@ func Configure(raw string) error {
 	return nil
 }
 func ConfigurePool(raw []string) error {
+	// An empty proxy list means "no proxy": reset to the direct pool instead of
+	// installing an empty pool, which would force every request to fail with
+	// ErrNoProxyNode even though no proxy was ever configured.
+	if len(raw) == 0 {
+		clientsMu.Lock()
+		proxyPool = nil
+		clientsMu.Unlock()
+		return nil
+	}
 	p, e := NewPool(raw)
 	if e != nil {
 		return e
+	}
+	if len(p.entries) == 0 {
+		// Every configured entry was blank or a duplicate: nothing to proxy
+		// through, so stay on the direct pool.
+		clientsMu.Lock()
+		proxyPool = nil
+		clientsMu.Unlock()
+		return nil
 	}
 	clientsMu.Lock()
 	proxyPool = p

@@ -617,6 +617,22 @@ if (response.output_text) {
           <button class="btn" onclick="proxyCheckAll()"><i data-lucide="activity" style="width:14px;height:14px"></i> Check all</button>
         </div>
         <div class="card" style="margin-bottom:16px">
+          <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+            <div style="min-width:260px">
+              <div class="form-label" style="margin-bottom:0">Proxy mode</div>
+              <p class="form-hint" style="margin-top:4px;margin-bottom:0">Direct: never use the proxy pool, all requests connect directly. Loose: prefer the pool but fall back to a direct connection when no healthy proxy is available. Strict: once a pool is configured, requests must use a healthy proxy node or fail.</p>
+            </div>
+            <label style="display:inline-flex;align-items:center;gap:8px;white-space:nowrap">
+              <span>Mode</span>
+              <select class="form-input" id="proxyMode" onchange="saveProxyMode()" style="min-width:160px">
+                <option value="strict">Strict (mandatory)</option>
+                <option value="loose">Loose (fallback direct)</option>
+                <option value="direct">Direct (no proxy)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:16px">
           <div class="card-head"><span class="card-title">Add proxy</span></div>
           <div class="card-body">
             <label class="form-label">Proxy URLs (one per line; bulk paste supported)</label>
@@ -1719,7 +1735,21 @@ async function loadProxies(){
     const d=await api('/api/admin/proxy-pool');
     const p=d.proxies||[];
     $('proxyRows').innerHTML=p.length?p.map(proxyRow).join(''):'<tr><td colspan="6" class="empty">No proxies; requests will connect directly</td></tr>';
+    loadProxyMode();
   }catch(e){$('proxyRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;}
+}
+async function loadProxyMode(){
+  try{
+    const s=(await api('/api/admin/settings')).settings||{};
+    $('proxyMode').value=s.proxyMode||'strict';
+  }catch(e){}
+}
+async function saveProxyMode(){
+  const v=$('proxyMode').value;
+  try{
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({proxyMode:v})});
+    showNotice('Proxy mode set to '+v,'success');
+  }catch(e){showNotice(e.message,'error');loadProxyMode();}
 }
 async function proxyAdd(){
   const raw=$('proxyInput').value.trim();

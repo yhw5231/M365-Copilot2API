@@ -212,6 +212,7 @@ M365_ADMIN_PASSWORD=your_strong_password
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `M365_PROXY_POOL` | 空 | 代理列表（逗号或换行分隔，支持 http / https / socks5） |
+| `M365_PROXY_MODE` | `strict` | 代理模式三选一：`direct`（直连，不走代理池）、`loose`（优先代理，无健康节点时回退直连）、`strict`（配置了代理池就必须走健康节点，否则报错）。旧开关 `M365_ENFORCE_PROXY=1/0` 仍兼容（映射 strict / loose）。也可在 Web 控制台「Proxy pool」页面切换（设置项 `proxyMode`），保存后即时生效 |
 | `M365_PROXY_INSECURE_TLS` | — | 信任自签代理证书（`1` / `true`） |
 | `M365_PROXY_HEALTH_URL` | 默认探测地址 | 代理健康检查目标 |
 | `M365_CLIENT_ID` | 内置 | Azure 应用 Client ID |
