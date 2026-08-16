@@ -3,6 +3,19 @@ package web
 import "testing"
 
 func TestClaudeModelAdvertisesToolCapability(t *testing.T) {
+	// 下游列表与路由表一致：Claude 模型需显式配置在路由表中才会被宣传。
+	prior := openSettingsStore().v.ModelMappings
+	openSettingsStore().mu.Lock()
+	openSettingsStore().v.ModelMappings = []modelMapping{
+		{PublicModel: "claude-sonnet", UpstreamMapping: "Claude_Sonnet", DisplayName: "Claude Sonnet", DefaultReasoningLevel: "medium"},
+		{PublicModel: "claude-sonnet-reasoning", UpstreamMapping: "Claude_Sonnet_Reasoning", DisplayName: "Claude Sonnet Reasoning", DefaultReasoningLevel: "medium"},
+	}
+	openSettingsStore().mu.Unlock()
+	defer func() {
+		openSettingsStore().mu.Lock()
+		openSettingsStore().v.ModelMappings = prior
+		openSettingsStore().mu.Unlock()
+	}()
 	var found int
 	for _, m := range modelCatalog() {
 		if m["id"] != "claude-sonnet" && m["id"] != "claude-sonnet-reasoning" {

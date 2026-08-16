@@ -28,10 +28,7 @@ type sessionStore struct {
 }
 
 func openSessionStore() *sessionStore {
-	path := os.Getenv("M365_SESSION_CACHE")
-	if path == "" {
-		path = filepath.Join(os.TempDir(), "m365-copilot2api-sessions.json")
-	}
+	path := configuredPath("M365_CONVERSATION_SESSION_CACHE", "conversation-sessions.json")
 	s := &sessionStore{path: path, data: map[string]conversation{}}
 	s.persist = &persistStore{flush: s.flush}
 	if b, err := os.ReadFile(path); err == nil {
@@ -114,10 +111,7 @@ type userSessionStore struct {
 }
 
 func openUserSessionStore(ttl time.Duration) *userSessionStore {
-	path := os.Getenv("M365_USER_SESSION_CACHE")
-	if path == "" {
-		path = filepath.Join(os.TempDir(), "m365-copilot2api-user-sessions.json")
-	}
+	path := configuredPath("M365_USER_SESSION_CACHE", "user-sessions.json")
 	s := &userSessionStore{path: path, data: map[string]userSession{}, ttl: ttl}
 	s.persist = &persistStore{flush: s.flush}
 	if b, err := os.ReadFile(path); err == nil {

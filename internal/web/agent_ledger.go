@@ -46,6 +46,7 @@ func compactToolResult(s string, limit int) string {
 	}
 	return s[:head] + fmt.Sprintf("\n... [truncated %d bytes] ...\n", len(s)-head-tail) + s[len(s)-tail:]
 }
+
 // scopedCallID returns a globally unique tool call id. The scope parameters
 // are kept for signature compatibility with callers that pass per-turn
 // context; the id itself must not depend on call content or scope text,
@@ -195,9 +196,6 @@ func completionEvidenceAllows(answer string, l agentLedger) bool {
 	if len(l.Pending) > 0 {
 		return false
 	}
-	if len(l.Completed) == 0 && len(l.Pending) == 0 {
-		return true
-	}
 	low := strings.ToLower(answer)
 	failureKeywords := []string{"cannot confirm", "not confirmed", "unable to confirm", "no tool result", "no matching tool results were returned", "no external action has been verified"}
 	hasFailure := false
@@ -208,8 +206,16 @@ func completionEvidenceAllows(answer string, l agentLedger) bool {
 		}
 	}
 	if len(l.Completed) > 0 {
+		// Real tool evidence exists; only an explicit "cannot confirm" the
+		// results guards the final claim.
 		return !hasFailure
 	}
+	if hasFailure {
+		// Honest "I cannot confirm" without any tool evidence is allowed.
+		return true
+	}
+	// No completed tools and no honest denial: reject self-congratulatory
+	// success claims that have no underlying tool evidence.
 	if unsupportedSuccess.MatchString(answer) {
 		return false
 	}

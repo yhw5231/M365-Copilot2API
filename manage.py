@@ -5,15 +5,20 @@ import sys
 import time
 import os
 import signal
+import urllib.request
 
 # 基于脚本自身位置推导，克隆到任意目录都可直接用，无需改硬编码路径。
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SERVER_EXE = os.path.join(BASE_DIR, "m365-copilot2api.exe")
+SERVER_EXE = os.path.join(BASE_DIR, "m365-copilot2api.exe" if os.name == "nt" else "m365-copilot2api")
+if not os.path.exists(SERVER_EXE):
+    alternate = os.path.join(BASE_DIR, "m365-copilot2api" if os.name == "nt" else "m365-copilot2api.exe")
+    if os.path.exists(alternate):
+        SERVER_EXE = alternate
 SERVER_DIR = BASE_DIR
-LOG_FILE = os.path.join(BASE_DIR, "server.log")
-ERR_FILE = os.path.join(BASE_DIR, "server-error.log")
-PID_FILE = os.path.join(BASE_DIR, "server.pid")
-DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.path.abspath(os.environ.get("M365_DATA_DIR", os.path.join(BASE_DIR, "data")))
+LOG_FILE = os.path.join(DATA_DIR, "server.log")
+ERR_FILE = os.path.join(DATA_DIR, "server-error.log")
+PID_FILE = os.path.join(DATA_DIR, "server.pid")
 
 def get_pid():
     try:
@@ -29,25 +34,46 @@ def is_running(pid):
     except:
         return False
 
+def wait_until_ready(address, timeout=10):
+    host, _, port = address.rpartition(":")
+    if not host or not port:
+        host, port = "127.0.0.1", "9090"
+    if host in ("0.0.0.0", "::"):
+        host = "127.0.0.1"
+    url = f"http://{host}:{port}/"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1) as response:
+                if 200 <= response.status < 300:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.25)
+    return False
+
 def start():
     pid = get_pid()
     if pid and is_running(pid):
         print(f"Server already running (PID {pid})")
         return
 
+    os.makedirs(DATA_DIR, exist_ok=True)
+
     env = os.environ.copy()
     admin_pw = env.get("M365_ADMIN_PASSWORD", "admin123")
+    listen = env.get("M365_LISTEN", "0.0.0.0:9090")
     env.update({
-        "M365_LISTEN": "0.0.0.0:4141",
+        "M365_LISTEN": listen,
         "M365_DATA_DIR": os.path.join(DATA_DIR, ""),
-        "M365_CONFIG": os.path.join(DATA_DIR, "accounts.json"),
-        "M365_TOKEN_CACHE": os.path.join(DATA_DIR, "token-cache.json"),
-        "M365_SESSION_CACHE": os.path.join(DATA_DIR, "sessions.json"),
-        "M365_API_KEYS": os.path.join(DATA_DIR, "api-keys.json"),
+        "M365_CONFIG": env.get("M365_CONFIG", os.path.join(DATA_DIR, "accounts.json")),
+        "M365_TOKEN_CACHE": env.get("M365_TOKEN_CACHE", os.path.join(DATA_DIR, "token-cache.json")),
+        "M365_SESSION_CACHE": env.get("M365_SESSION_CACHE", os.path.join(DATA_DIR, "sessions.json")),
+        "M365_CONVERSATION_SESSION_CACHE": env.get("M365_CONVERSATION_SESSION_CACHE", os.path.join(DATA_DIR, "conversation-sessions.json")),
+        "M365_API_KEYS": env.get("M365_API_KEYS", os.path.join(DATA_DIR, "api-keys.json")),
         "M365_ADMIN_PASSWORD": admin_pw,
         "M365_CLEANUP_MODE": "keep_n",
         "M365_CLEANUP_KEEP_N": "3",
-        "PATH": r"D:\go\bin;" + env.get("PATH", ""),
     })
 
     log = open(LOG_FILE, 'w')
@@ -75,9 +101,7 @@ def start():
     with open(PID_FILE, 'w') as f:
         f.write(str(proc.pid))
 
-    time.sleep(3)
-
-    if is_running(proc.pid):
+    if is_running(proc.pid) and wait_until_ready(listen):
         print(f"Server started (PID {proc.pid})")
     else:
         print("Server failed to start!")

@@ -113,7 +113,7 @@ go build -o m365-copilot2api ./cmd/server
 Windows 上用 `manage.py` 启动（默认后台上运行，日志写入 `server.log` / `server-error.log`）：
 
 ```powershell
-python manage.py start    # 后台运行，默认监听 0.0.0.0:4141
+python manage.py start    # 后台运行，默认监听 0.0.0.0:9090
 python manage.py status   # 查看运行状态
 python manage.py logs     # 查看最近日志（可加参数 N 指定行数）
 python manage.py err      # 查看错误日志
@@ -122,7 +122,7 @@ python manage.py stop     # 停止服务
 
 > `manage.py` 内部硬编码了仓库绝对路径（`D:\M365-Copilot2API\m365-copilot2api.exe` 等），克隆到其他目录时请先修改脚本顶部的路径常量，并确保先完成编译。
 
-直接运行二进制则默认只监听内网 `http://127.0.0.1:4141`，可通过环境变量 `M365_LISTEN` 覆盖。
+直接运行二进制则默认只监听内网 `http://127.0.0.1:9090`，可通过环境变量 `M365_LISTEN` 覆盖。
 
 ### Docker 部署
 
@@ -152,7 +152,7 @@ M365_ADMIN_PASSWORD=your_strong_password
 
 ### 初始化与第一次调用
 
-浏览器打开控制台（默认 `http://127.0.0.1:4141`）：
+浏览器打开控制台（默认 `http://127.0.0.1:9090`）：
 
 1. 用管理员密码登录（首次登录**强制要求修改密码**）。
 2. 在「账号」页发起 **PKCE 授权**，按引导完成 M365 账号登录。
@@ -169,7 +169,7 @@ M365_ADMIN_PASSWORD=your_strong_password
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `M365_LISTEN` | `127.0.0.1:4141` | 监听地址（`manage.py` 与 Docker 内置为 `0.0.0.0:4141`） |
+| `M365_LISTEN` | `127.0.0.1:9090` | 监听地址（`manage.py` 与 Docker 内置为 `0.0.0.0:9090`） |
 | `M365_ADMIN_PASSWORD` | `admin123` | 管理员密码（首次登录强制修改） |
 | `M365_DATA_DIR` | `~/.config/m365-copilot2api` | 数据目录（token、密钥、用量等集中存储；`manage.py` 内置为 `data/`） |
 | `M365_CONFIG` | `~/.config/m365-copilot2api/accounts.json` | 账号配置文件路径 |
@@ -233,7 +233,7 @@ M365_ADMIN_PASSWORD=your_strong_password
 ### 基础聊天（OpenAI 格式）
 
 ```bash
-curl http://127.0.0.1:4141/v1/chat/completions \
+curl http://127.0.0.1:9090/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -245,7 +245,7 @@ curl http://127.0.0.1:4141/v1/chat/completions \
 ### 流式输出
 
 ```bash
-curl http://127.0.0.1:4141/v1/chat/completions \
+curl http://127.0.0.1:9090/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -260,7 +260,7 @@ curl http://127.0.0.1:4141/v1/chat/completions \
 携带同一 `X-M365-Session-Id` 的请求会被绑定到同一条云端对话，命中时网关只把新增历史部分发送给上游：
 
 ```bash
-curl http://127.0.0.1:4141/v1/chat/completions \
+curl http://127.0.0.1:9090/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -H "X-M365-Session-Id: my-project-session" \
@@ -273,7 +273,7 @@ curl http://127.0.0.1:4141/v1/chat/completions \
 
 ```bash
 # base64 data URL 方式
-curl http://127.0.0.1:4141/v1/chat/completions \
+curl http://127.0.0.1:9090/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -293,7 +293,7 @@ curl http://127.0.0.1:4141/v1/chat/completions \
 ### Anthropic 格式（Claude Code / Cursor）
 
 ```bash
-curl http://127.0.0.1:4141/v1/messages \
+curl http://127.0.0.1:9090/v1/messages \
   -H "x-api-key: YOUR_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -309,7 +309,7 @@ curl http://127.0.0.1:4141/v1/messages \
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4141",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:9090",
     "ANTHROPIC_MODEL": "gpt-5.6-sol",
     "ANTHROPIC_API_KEY": "m365_你的密钥"
   }
@@ -324,7 +324,7 @@ curl http://127.0.0.1:4141/v1/messages \
 
 ## 可用模型
 
-网关默认内置模型映射（可在控制台「设置」页的「模型路由」界面启用/禁用上游模型、设置每个模型的默认推理等级与上游 tone）：
+网关默认内置模型映射（可在控制台「设置」页的「模型路由」界面启用/禁用模型与上游映射、增加/删除模型和映射、设置每个模型的默认推理等级与上游映射目标）：
 
 | 模型 | 默认推理级别 | 说明 |
 |------|-------------|------|
@@ -332,10 +332,10 @@ curl http://127.0.0.1:4141/v1/messages \
 | `gpt-5.6-terra` | `medium` | 推理折中 |
 | `gpt-5.6-luna` | `medium` | 推理折中 |
 
-- 模型路由把公开模型名翻译成上游 tone；控制台「设置 → 模型路由」可启用/禁用模型、调整显示名称、上游 tone 与默认推理等级。
-- 被禁用的模型会从 `/v1/models` 目录隐藏，请求时返回 `model_not_found`。
+- 模型路由把公开模型名映射到「上游映射」目标（映射携带发送给 ChatHub 的 tone 音色）；控制台「设置 → 模型路由」可添加/删除/禁用模型与上游映射、调整显示名称、上游映射与默认推理等级。
+- 被禁用的模型会从 `/v1/models` 目录隐藏，请求时返回 `model_not_found`；删除模型等于移除其路由（内置模型删除后可重新添加回来）。
 - 请求未携带 `reasoning_effort` 时，网关采用该模型配置的默认推理等级；请求可随时用 `reasoning_effort` 参数覆盖。
-- M365 订阅会上线的新模型名（如 `gpt-5.2`、`gpt-5.4`、`codex` 系）以实际目录为准，可在控制台路由界面启用配置。
+- M365 订阅会上线的新模型名（如 `gpt-5.2`、`gpt-5.4`、`codex` 系）以实际目录为准，可在控制台路由界面添加配置。
 
 ## 内容键会话复用原理
 
@@ -436,7 +436,7 @@ M365-Copilot2API/
 
 ## 安全说明
 
-- **默认仅监听内网**：直接运行二进制默认 `M365_LISTEN=127.0.0.1:4141`；对外提供服务务必通过 TLS 终泄反向代理（Nginx / Caddy），并为 SSE 与 WebSocket 开启长连接与 `proxy_buffering off`。
+- **默认仅监听内网**：直接运行二进制默认 `M365_LISTEN=127.0.0.1:9090`；对外提供服务务必通过 TLS 终泄反向代理（Nginx / Caddy），并为 SSE 与 WebSocket 开启长连接与 `proxy_buffering off`。
 - **首次登录强制改密**：使用默认密码或引导密码完成首次登录后必须修改管理员密码。
 - **密钥最小暴露**：API Key 控制台创建后即可回读，请妥善保护控制台访问权限。
 - **数据落盘权限**：账号凭据、Token 缓存、会话绑定、API Key 等数据文件以 `0600` 权限写入，数据目录建议 `0700`。请定期备份数据目录。

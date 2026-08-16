@@ -5,13 +5,14 @@ services:
     container_name: m365-copilot2api
     restart: unless-stopped
     ports:
-      - "127.0.0.1:4141:4141"
+      - "127.0.0.1:9090:9090"
     environment:
-      M365_LISTEN: 0.0.0.0:4141
+      M365_LISTEN: 0.0.0.0:9090
       M365_DATA_DIR: /data
       M365_CONFIG: /data/accounts.json
       M365_TOKEN_CACHE: /data/token-cache.json
       M365_SESSION_CACHE: /data/sessions.json
+      M365_CONVERSATION_SESSION_CACHE: /data/conversation-sessions.json
       M365_API_KEYS: /data/api-keys.json
       # 管理员密码直接从环境变量读取（优先），也支持从 .env 文件注入。
       # 留空表示采用内置默认密码 admin123（首次登录仍会强制修改）。

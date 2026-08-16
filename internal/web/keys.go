@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -36,21 +35,19 @@ func newAPIKeyStore(path string) *apiKeyStore {
 }
 
 func openAPIKeys() *apiKeyStore {
-	p := strings.TrimSpace(os.Getenv("M365_API_KEYS"))
+	p := envPath("M365_API_KEYS")
 	if p == "" {
-		h, _ := os.UserHomeDir()
-		p = filepath.Join(h, ".config", "m365-copilot2api", "api-keys.json")
+		p = configuredPath("M365_API_KEYS", "api-keys.json")
 	}
 	s := newAPIKeyStore(p)
 	b, e := os.ReadFile(p)
 	if e == nil && json.Unmarshal(b, s) == nil {
 		migrated := false
 		for i := range s.Keys {
-			if s.Keys[i].Raw != "" {
-				if s.Keys[i].Hash == "" {
-					s.Keys[i].Hash = keyHash(s.Keys[i].Raw)
-				}
-				s.Keys[i].Raw = ""
+			// 明文 Raw 保留在磁盘上（文件 0600），管理控制台因此可以重复
+			// 显示完整密钥。旧文件若只缺 Hash 则补写，不再清除 Raw。
+			if s.Keys[i].Hash == "" && s.Keys[i].Raw != "" {
+				s.Keys[i].Hash = keyHash(s.Keys[i].Raw)
 				migrated = true
 			}
 		}
@@ -79,7 +76,8 @@ func (s *apiKeyStore) create(name string) (apiKeyRecord, string, error) {
 		return apiKeyRecord{}, "", e
 	}
 	raw := "m365_" + hex.EncodeToString(b)
-	r := apiKeyRecord{ID: hex.EncodeToString(b[:8]), Name: name, Prefix: raw[:12], Hash: keyHash(raw), CreatedAt: time.Now()}
+	// Raw 持久化保存，控制台可重复显示完整密钥。
+	r := apiKeyRecord{ID: hex.EncodeToString(b[:8]), Name: name, Prefix: raw[:12], Hash: keyHash(raw), Raw: raw, CreatedAt: time.Now()}
 	s.mu.Lock()
 	s.Keys = append(s.Keys, r)
 	s.mu.Unlock()
@@ -99,8 +97,8 @@ func (s *apiKeyStore) list() []apiKeyRecord {
 	out := make([]apiKeyRecord, len(s.Keys))
 	copy(out, s.Keys)
 	for i := range out {
+		// Hash 永不下发；Raw 保留以便控制台重复显示密钥。
 		out[i].Hash = ""
-		out[i].Raw = ""
 	}
 	return out
 }

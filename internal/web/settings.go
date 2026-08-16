@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,9 +14,42 @@ import (
 	"m365-copilot2api/internal/outbound"
 )
 
+// upstreamMapping is a named upstream route target (previously called "上游音色 /
+// upstream tone"). A public model in the routing table maps to one of these by
+// name; the gateway sends the mapping's tone string to ChatHub. Mappings can be
+// added, deleted or disabled from the "Model routing" console.
+type upstreamMapping struct {
+	Name    string `json:"name"`
+	Tone    string `json:"tone"`
+	Enabled *bool  `json:"enabled,omitempty"`
+}
+
+func (m upstreamMapping) enabled() bool { return m.Enabled == nil || *m.Enabled }
+
+// defaultUpstreamMappings keep the historic tone strings as the default mapping
+// set, so settings files saved by earlier versions (which stored the raw tone
+// in modelMapping.upstreamTone) keep resolving to the same routing targets.
+var defaultUpstreamMappings = []upstreamMapping{
+	{Name: "Gpt_5_2_Chat", Tone: "Gpt_5_2_Chat"},
+	{Name: "Gpt_5_2_Reasoning", Tone: "Gpt_5_2_Reasoning"},
+	{Name: "Gpt_5_3_Chat", Tone: "Gpt_5_3_Chat"},
+	{Name: "Gpt_5_3_Reasoning", Tone: "Gpt_5_3_Reasoning"},
+	{Name: "Gpt_5_4_Chat", Tone: "Gpt_5_4_Chat"},
+	{Name: "Gpt_5_4_Reasoning", Tone: "Gpt_5_4_Reasoning"},
+	{Name: "Gpt_5_5_Chat", Tone: "Gpt_5_5_Chat"},
+	{Name: "Gpt_5_5_Reasoning", Tone: "Gpt_5_5_Reasoning"},
+	{Name: "Gpt_5_6_Reasoning", Tone: "Gpt_5_6_Reasoning"},
+	{Name: "Claude_Sonnet", Tone: "Claude_Sonnet"},
+	{Name: "Claude_Sonnet_Reasoning", Tone: "Claude_Sonnet_Reasoning"},
+}
+
 type modelMapping struct {
-	PublicModel           string `json:"publicModel"`
-	UpstreamTone          string `json:"upstreamTone"`
+	PublicModel string `json:"publicModel"`
+	// UpstreamMapping is the name of the upstreamMapping target this public
+	// model routes to. Persisted as "upstreamMapping"; the legacy
+	// "upstreamTone" value is accepted on read for settings files written by
+	// earlier versions (the raw tone string equals the default mapping name).
+	UpstreamMapping       string `json:"upstreamMapping"`
 	DisplayName           string `json:"displayName"`
 	DefaultReasoningLevel string `json:"defaultReasoningLevel"`
 	// Enabled lets the model-routing UI switch a route off without deleting the
@@ -28,13 +60,40 @@ type modelMapping struct {
 
 func (m modelMapping) enabled() bool { return m.Enabled == nil || *m.Enabled }
 
+// UnmarshalJSON keeps old settings files readable: files written before the
+// "upstream mapping" rename stored the raw tone under "upstreamTone". Because
+// default mapping names equal the raw tone strings, the legacy value maps
+// directly onto the new field.
+func (m *modelMapping) UnmarshalJSON(b []byte) error {
+	type alias modelMapping
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*m = modelMapping(a)
+	if m.UpstreamMapping == "" {
+		var legacy struct {
+			UpstreamTone string `json:"upstreamTone"`
+		}
+		if json.Unmarshal(b, &legacy) == nil && strings.TrimSpace(legacy.UpstreamTone) != "" {
+			m.UpstreamMapping = strings.TrimSpace(legacy.UpstreamTone)
+		}
+	}
+	return nil
+}
+
 var defaultModelMappings = []modelMapping{
-	{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"},
-	{PublicModel: "gpt-5.6-terra", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Terra", DefaultReasoningLevel: "medium"},
-	{PublicModel: "gpt-5.6-luna", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Luna", DefaultReasoningLevel: "medium"},
+	{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"},
+	{PublicModel: "gpt-5.6-terra", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Terra", DefaultReasoningLevel: "medium"},
+	{PublicModel: "gpt-5.6-luna", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Luna", DefaultReasoningLevel: "medium"},
 }
 
 var publicModelID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// routeTargetID constrains upstream mapping names and tones: letters, digits,
+// dots, underscores, spaces and hyphens (historic tone strings like
+// "Gpt_5_4_Chat" fit, as do human-friendly names).
+var routeTargetID = regexp.MustCompile(`^[A-Za-z0-9._ -]{1,128}$`)
 
 var configurableCodexModels = []string{
 	"gpt-5.2",
@@ -48,19 +107,35 @@ var configurableCodexModels = []string{
 }
 
 // modelRouteConfig is the row shape the "Model routing" console section edits:
-// one entry per configurable model with the enabled switch and the default
-// reasoning level the gateway applies when a request omits reasoning_effort.
+// one entry per configurable model with the enabled switch, the upstream
+// mapping target and the default reasoning level the gateway applies when a
+// request omits reasoning_effort.
 type modelRouteConfig struct {
 	Model                 string `json:"model"`
 	DisplayName           string `json:"displayName"`
-	UpstreamTone          string `json:"upstreamTone"`
+	UpstreamMapping       string `json:"upstreamMapping"`
 	DefaultReasoningLevel string `json:"defaultReasoningLevel"`
 	Enabled               bool   `json:"enabled"`
 }
 
 const defaultRouteTone = "Gpt_5_4_Chat"
 
-func modelRouteTable(mappings []modelMapping) []modelRouteConfig {
+// effectiveUpstreamMappings returns the configured mapping set, falling back to
+// the defaults when the persisted settings carry none (legacy files or a fresh
+// install).
+func effectiveUpstreamMappings(configured []upstreamMapping) []upstreamMapping {
+	if len(configured) == 0 {
+		return append([]upstreamMapping(nil), defaultUpstreamMappings...)
+	}
+	return configured
+}
+
+func modelRouteTable(mappings []modelMapping, upstream []upstreamMapping, hidden []string) []modelRouteConfig {
+	upstream = effectiveUpstreamMappings(upstream)
+	hiddenSet := make(map[string]bool, len(hidden))
+	for _, id := range hidden {
+		hiddenSet[strings.ToLower(strings.TrimSpace(id))] = true
+	}
 	seen := make(map[string]bool, len(configurableCodexModels)+len(mappings))
 	rows := make([]modelRouteConfig, 0, len(configurableCodexModels)+len(mappings))
 	servable := func(id string) bool {
@@ -74,23 +149,28 @@ func modelRouteTable(mappings []modelMapping) []modelRouteConfig {
 	add := func(id string) {
 		id = strings.TrimSpace(id)
 		key := strings.ToLower(id)
-		if id == "" || seen[key] {
+		if id == "" || seen[key] || hiddenSet[key] {
 			return
 		}
 		seen[key] = true
-		var tone, display, level string
+		var mappingName, display, level string
 		enabled := servable(id) // routes not served today stay off until enabled
 		if m, ok := configuredModelMapping(id, mappings); ok {
-			tone = strings.TrimSpace(m.UpstreamTone)
+			mappingName = strings.TrimSpace(m.UpstreamMapping)
 			display = strings.TrimSpace(m.DisplayName)
 			level = strings.TrimSpace(m.DefaultReasoningLevel)
 			enabled = m.enabled()
 		}
-		if tone == "" {
-			tone = modelTone(id)
+		if mappingName == "" {
+			mappingName = modelTone(id)
 		}
-		if tone == "" || tone == "magic" {
-			tone = defaultRouteTone
+		if mappingName == "" || mappingName == "magic" {
+			mappingName = defaultRouteTone
+		}
+		// A model routes only while its upstream mapping target exists and is
+		// enabled too.
+		if up, ok := resolveUpstreamMapping(mappingName, upstream); ok {
+			enabled = enabled && up.enabled()
 		}
 		if display == "" {
 			display = id
@@ -98,7 +178,7 @@ func modelRouteTable(mappings []modelMapping) []modelRouteConfig {
 		if level == "" {
 			level = "medium"
 		}
-		rows = append(rows, modelRouteConfig{Model: id, DisplayName: display, UpstreamTone: tone, DefaultReasoningLevel: level, Enabled: enabled})
+		rows = append(rows, modelRouteConfig{Model: id, DisplayName: display, UpstreamMapping: mappingName, DefaultReasoningLevel: level, Enabled: enabled})
 	}
 	for _, id := range configurableCodexModels {
 		add(id)
@@ -129,7 +209,18 @@ type runtimeSettings struct {
 	RedirectURI         string         `json:"redirectUri"`
 	Scope               string         `json:"scope"`
 	ModelMappings       []modelMapping `json:"modelMappings"`
-	ToolPlanningMode    string         `json:"toolPlanningMode"`
+	// UpstreamMappings is the set of named upstream route targets ("上游映射")
+	// the routing table can point public models at. Missing on legacy files; the
+	// defaults are applied on load.
+	UpstreamMappings []upstreamMapping `json:"upstreamMappings,omitempty"`
+	// HiddenModels lists public model ids removed from the routing console.
+	// Built-in models reappear when a matching mapping is re-added.
+	HiddenModels     []string         `json:"hiddenModels,omitempty"`
+	ToolPlanningMode string           `json:"toolPlanningMode"`
+	// TraceEnabled turns on the request-tracing debug mode that keeps the most
+	// recent TraceMaxRecords full request/response captures (default 50).
+	TraceEnabled    bool `json:"traceEnabled,omitempty"`
+	TraceMaxRecords int  `json:"traceMaxRecords,omitempty"`
 }
 
 type settingsStore struct {
@@ -150,22 +241,20 @@ func defaultRuntimeSettings() runtimeSettings {
 		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
 		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
 		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 120), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
-		DebugLogPath: os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
-		TokenCachePath: os.Getenv("M365_TOKEN_CACHE"), SessionCachePath: os.Getenv("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
+		DebugLogPath: envPath("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: envPath("M365_CONFIG"),
+		TokenCachePath: envPath("M365_TOKEN_CACHE"), SessionCachePath: envPath("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
 		ModelMappings:    append([]modelMapping(nil), defaultModelMappings...),
+		UpstreamMappings: append([]upstreamMapping(nil), defaultUpstreamMappings...),
 		ToolPlanningMode: toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
+		TraceMaxRecords:  defaultTraceMaxRecords,
 	}
 }
 func settingsPath() string {
-	if dir := strings.TrimSpace(os.Getenv("M365_DATA_DIR")); dir != "" {
-		return filepath.Join(dir, "settings.json")
-	}
-	if p := strings.TrimSpace(os.Getenv("M365_SETTINGS_FILE")); p != "" {
+	if p := envPath("M365_SETTINGS_FILE"); p != "" {
 		return p
 	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "m365-copilot2api", "settings.json")
+	return defaultDataPath("settings.json")
 }
 
 var openSettingsStore = sync.OnceValue(func() *settingsStore {
@@ -173,11 +262,18 @@ var openSettingsStore = sync.OnceValue(func() *settingsStore {
 	if b, e := os.ReadFile(s.path); e == nil {
 		_ = json.Unmarshal(b, &s.v)
 	}
+	// Legacy files predating the upstream-mapping feature carry no
+	// upstreamMappings key; fall back to the defaults so every model keeps a
+	// working route target.
+	if len(s.v.UpstreamMappings) == 0 {
+		s.v.UpstreamMappings = append([]upstreamMapping(nil), defaultUpstreamMappings...)
+	}
 	if e := validateSettings(s.v); e != nil {
 		log.Printf("[settings] invalid persisted settings: %v", e)
 	}
 	return s
 })
+
 func firstNonEmptySetting(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
@@ -185,6 +281,15 @@ func firstNonEmptySetting(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// traceConfig returns the effective request-tracing configuration from the
+// runtime settings store.
+func traceConfig() (enabled bool, max int) {
+	s := currentSettings()
+	enabled = s.TraceEnabled
+	max = traceMaxNorm(s.TraceMaxRecords)
+	return enabled, max
 }
 
 func validateSettings(v runtimeSettings) error {
@@ -209,6 +314,9 @@ func validateSettings(v runtimeSettings) error {
 	if v.LogLevel != "silent" && v.LogLevel != "error" && v.LogLevel != "warn" && v.LogLevel != "info" && v.LogLevel != "debug" {
 		return fmt.Errorf("日志等级必须为 silent、error、warn、info 或 debug")
 	}
+	if v.TraceMaxRecords < 0 || v.TraceMaxRecords > 2000 {
+		return fmt.Errorf("调试记录条数必须为 0-2000")
+	}
 	if err := outbound.ValidateProxyURL(v.OutboundProxy); err != nil {
 		return err
 	}
@@ -218,6 +326,26 @@ func validateSettings(v runtimeSettings) error {
 		}
 	}
 	seen := make(map[string]struct{}, len(v.ModelMappings))
+	upstream := effectiveUpstreamMappings(v.UpstreamMappings)
+	for _, mapping := range upstream {
+		name := strings.TrimSpace(mapping.Name)
+		if !routeTargetID.MatchString(name) {
+			return fmt.Errorf("上游映射名称只能包含字母、数字、点、下划线、空格或连字符，且长度为 1-128")
+		}
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("上游映射名称 %q 重复", name)
+		}
+		seen[key] = struct{}{}
+		if tone := strings.TrimSpace(mapping.Tone); !routeTargetID.MatchString(tone) {
+			return fmt.Errorf("上游映射 %q 的 tone 只能包含字母、数字、点、下划线、空格或连字符，且长度为 1-128", name)
+		}
+	}
+	mappingNames := make(map[string]struct{}, len(upstream))
+	for _, mapping := range upstream {
+		mappingNames[strings.ToLower(strings.TrimSpace(mapping.Name))] = struct{}{}
+	}
+	seen = make(map[string]struct{}, len(v.ModelMappings))
 	for _, mapping := range v.ModelMappings {
 		model := strings.TrimSpace(mapping.PublicModel)
 		if !publicModelID.MatchString(model) {
@@ -228,14 +356,23 @@ func validateSettings(v runtimeSettings) error {
 			return fmt.Errorf("公开模型 ID %q 重复", model)
 		}
 		seen[key] = struct{}{}
-		if !validUpstreamTone(strings.TrimSpace(mapping.UpstreamTone)) {
-			return fmt.Errorf("上游 tone %q 不受支持", mapping.UpstreamTone)
+		target := strings.TrimSpace(mapping.UpstreamMapping)
+		if target == "" {
+			return fmt.Errorf("公开模型 %q 未选择上游映射", model)
+		}
+		if _, exists := mappingNames[strings.ToLower(target)]; !exists {
+			return fmt.Errorf("公开模型 %q 引用了不存在的上游映射 %q", model, target)
 		}
 		if strings.TrimSpace(mapping.DisplayName) == "" {
 			return fmt.Errorf("公开模型 %q 缺少显示名称", model)
 		}
 		if _, err := normalizeReasoningEffort(mapping.DefaultReasoningLevel); err != nil || strings.TrimSpace(mapping.DefaultReasoningLevel) == "" {
 			return fmt.Errorf("公开模型 %q 的默认推理级别无效", model)
+		}
+	}
+	for _, id := range v.HiddenModels {
+		if !publicModelID.MatchString(strings.TrimSpace(id)) {
+			return fmt.Errorf("隐藏模型 ID 只能包含字母、数字、点、下划线或连字符，且长度为 1-128")
 		}
 	}
 	return nil
@@ -245,8 +382,8 @@ func (s *settingsStore) save(v runtimeSettings) error {
 	if e := validateSettings(v); e != nil {
 		return e
 	}
-	b, _ := json.MarshalIndent(v, "", "  ")
-	if e := os.MkdirAll(filepath.Dir(s.path), 0700); e != nil {
+	b, e := json.MarshalIndent(v, "", "  ")
+	if e != nil {
 		return e
 	}
 	if e := writeFileAtomic(s.path, b, 0600); e != nil {
@@ -260,7 +397,13 @@ func (s *settingsStore) save(v runtimeSettings) error {
 func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		jsonOut(w, map[string]any{"settings": s.settings.get(), "codexModels": configurableCodexModels, "upstreamTones": knownUpstreamTones(), "catalogModels": modelRouteTable(s.settings.get().ModelMappings), "reasoningLevels": advertisedReasoningEfforts, "restartRequiredFields": []string{"listenAddress", "configPath", "tokenCachePath", "sessionCachePath", "outboundProxy", "proxyPool", "clientId", "authority", "redirectUri", "scope", "debugLogPath"}})
+		cur := s.settings.get()
+		upstream := effectiveUpstreamMappings(cur.UpstreamMappings)
+		names := make([]string, 0, len(upstream))
+		for _, m := range upstream {
+			names = append(names, m.Name)
+		}
+		jsonOut(w, map[string]any{"settings": cur, "codexModels": configurableCodexModels, "upstreamTones": names, "upstreamMappings": upstream, "catalogModels": modelRouteTable(cur.ModelMappings, cur.UpstreamMappings, cur.HiddenModels), "reasoningLevels": advertisedReasoningEfforts, "restartRequiredFields": []string{"listenAddress", "configPath", "tokenCachePath", "sessionCachePath", "outboundProxy", "proxyPool", "clientId", "authority", "redirectUri", "scope", "debugLogPath"}})
 	case http.MethodPut:
 		// 前端可能只修改一个字段（如监听地址），其余字段以零值提交。
 		// 逐字段合并到当前设置再校验，避免"改一个字段弄丢其他配置"。
@@ -285,8 +428,12 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, 400, "invalid_request_error", "bad json")
 			return
 		}
-		if e := s.settings.save(v); e != nil {
+		if e := validateSettings(v); e != nil {
 			writeOpenAIError(w, 400, "invalid_request_error", e.Error())
+			return
+		}
+		if e := s.settings.save(v); e != nil {
+			writeOpenAIError(w, 500, "storage_error", "settings could not be saved; check the persistent data directory permissions")
 			return
 		}
 		if e := outbound.ConfigurePool(v.ProxyPool); e != nil {

@@ -53,6 +53,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res, err := s.chat.Chat(ctx, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{
 		Text: text, Tone: body.Tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments,
+		BindAccount: acc.ID,
 	})
 	if err != nil {
 		http.Error(w, upstreamError(err), http.StatusBadGateway)

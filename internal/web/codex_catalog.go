@@ -65,17 +65,24 @@ var gatewayModels = []modelSpec{
 	{ID: "claude-sonnet-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
 }
 
-func validUpstreamTone(tone string) bool {
-	for _, known := range knownUpstreamTones() {
-		if tone == known {
-			return true
+// resolveUpstreamMapping finds the named upstream mapping and returns it.
+// Lookup is case-insensitive on the mapping name.
+func resolveUpstreamMapping(name string, mappings []upstreamMapping) (upstreamMapping, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, m := range mappings {
+		if strings.EqualFold(strings.TrimSpace(m.Name), name) {
+			return m, true
 		}
 	}
-	return false
+	return upstreamMapping{}, false
 }
 
-func knownUpstreamTones() []string {
-	return []string{"Gpt_5_2_Chat", "Gpt_5_2_Reasoning", "Gpt_5_3_Chat", "Gpt_5_3_Reasoning", "Gpt_5_4_Chat", "Gpt_5_4_Reasoning", "Gpt_5_5_Chat", "Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning", "Claude_Sonnet", "Claude_Sonnet_Reasoning"}
+// upstreamMappingEnabled reports whether the named upstream mapping exists and
+// is enabled. Missing mappings count as disabled so a deleted mapping cannot
+// silently keep routing its models.
+func upstreamMappingEnabled(name string, mappings []upstreamMapping) bool {
+	m, ok := resolveUpstreamMapping(name, mappings)
+	return ok && m.enabled()
 }
 
 func configuredModelMapping(model string, mappings []modelMapping) (modelMapping, bool) {
@@ -88,25 +95,41 @@ func configuredModelMapping(model string, mappings []modelMapping) (modelMapping
 	return modelMapping{}, false
 }
 
+// configuredModelTone resolves a model's effective upstream tone: the model
+// mapping names an upstream mapping and that mapping's tone string is returned.
 func configuredModelTone(model string, mappings []modelMapping) (string, bool) {
 	mapping, ok := configuredModelMapping(model, mappings)
 	if !ok {
 		return "", false
 	}
-	return mapping.UpstreamTone, true
+	return configuredMappingTone(mapping.UpstreamMapping)
+}
+
+func configuredMappingTone(mappingName string) (string, bool) {
+	up, ok := resolveUpstreamMapping(mappingName, currentSettings().UpstreamMappings)
+	if !ok {
+		return "", false
+	}
+	return up.Tone, true
 }
 
 // checkModelAvailable rejects requests for models explicitly switched off in
-// model route settings. Unknown model ids stay permissive on purpose so
-// existing clients that pass model aliases ("auto", "m365-copilot", ...) keep
-// working unchanged.
+// model route settings (either the route itself or its upstream mapping target
+// is disabled). Unknown model ids stay permissive on purpose so existing
+// clients that pass model aliases ("auto", "m365-copilot", ...) keep working
+// unchanged.
 func checkModelAvailable(model string, mappings []modelMapping) error {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" {
 		return nil
 	}
-	if mapping, ok := configuredModelMapping(m, mappings); ok && !mapping.enabled() {
-		return fmt.Errorf("model %q is disabled in model routing settings", strings.TrimSpace(mapping.PublicModel))
+	if mapping, ok := configuredModelMapping(m, mappings); ok {
+		if !mapping.enabled() {
+			return fmt.Errorf("model %q is disabled in model routing settings", strings.TrimSpace(mapping.PublicModel))
+		}
+		if !upstreamMappingEnabled(mapping.UpstreamMapping, currentSettings().UpstreamMappings) {
+			return fmt.Errorf("model %q routes to a disabled upstream mapping", strings.TrimSpace(mapping.PublicModel))
+		}
 	}
 	return nil
 }
@@ -125,44 +148,31 @@ func defaultReasoningLevel(model string, mappings []modelMapping) (string, bool)
 }
 
 func configuredModelSpecs(mappings []modelMapping) []modelSpec {
-	models := append([]modelSpec(nil), gatewayModels...)
-	disabled := make(map[string]bool, len(mappings))
-	for _, mapping := range mappings {
-		if !mapping.enabled() {
-			disabled[strings.ToLower(strings.TrimSpace(mapping.PublicModel))] = true
-		}
-	}
-	for _, mapping := range mappings {
-		if !mapping.enabled() {
+	cur := currentSettings()
+	upstream := effectiveUpstreamMappings(cur.UpstreamMappings)
+
+	// 下游模型列表与模型路由控制台表格严格一致：只暴露路由表中已启用的
+	// 模型，设置里未启用、隐藏或未出现在路由表中的内置模型一律不返回。
+	rows := modelRouteTable(mappings, upstream, cur.HiddenModels)
+	models := make([]modelSpec, 0, len(rows))
+	for _, r := range rows {
+		if !r.Enabled {
 			continue
 		}
 		spec := modelSpec{
-			ID: strings.TrimSpace(mapping.PublicModel), Owner: "microsoft-365", Tools: true,
-			DisplayName: strings.TrimSpace(mapping.DisplayName), DefaultReasoningLevel: strings.TrimSpace(mapping.DefaultReasoningLevel),
+			ID: r.Model, Owner: "microsoft-365", Tools: true,
+			DisplayName: r.DisplayName, DefaultReasoningLevel: r.DefaultReasoningLevel,
 		}
-		replaced := false
-		for i := range models {
-			if strings.EqualFold(models[i].ID, spec.ID) {
-				models[i] = spec
-				replaced = true
+		for _, g := range gatewayModels {
+			if strings.EqualFold(g.ID, r.Model) {
+				spec.Owner = g.Owner
+				spec.Tools = g.Tools
 				break
 			}
 		}
-		if !replaced {
-			models = append(models, spec)
-		}
+		models = append(models, spec)
 	}
-	if len(disabled) == 0 {
-		return models
-	}
-	filtered := models[:0]
-	for _, m := range models {
-		if disabled[strings.ToLower(m.ID)] {
-			continue
-		}
-		filtered = append(filtered, m)
-	}
-	return filtered
+	return models
 }
 
 func positiveEnvInt(name string, fallback int) int {

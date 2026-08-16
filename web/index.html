@@ -230,19 +230,20 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .seg button{border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:600;padding:5px 12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease-out)}
 .seg button:hover{color:var(--text)}
 .seg button.active{background:var(--primary);color:var(--bg)}
-.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
-@media(max-width:900px){.chart-grid{grid-template-columns:1fr}}
-.chart{background:var(--surface);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);padding:16px 18px;animation:slideUp .4s var(--ease-out) both}
-.chart-title{font-size:13px;font-weight:600;margin-bottom:2px}
-.chart-sub{font-size:11px;color:var(--muted);margin-bottom:12px}
+.chart-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
+@media(max-width:1150px){.chart-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:700px){.chart-grid{grid-template-columns:1fr}}
+.chart{background:var(--surface);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);padding:14px;min-width:0;animation:slideUp .4s var(--ease-out) both}
+.chart-title{font-size:12px;font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chart-sub{font-size:11px;color:var(--muted);margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chart svg{display:block;width:100%;height:auto}
 .chart-tooltip{position:absolute;background:var(--primary);color:var(--bg);font-size:11px;font-weight:600;padding:4px 8px;border-radius:6px;pointer-events:none;opacity:0;transition:opacity .1s ease;z-index:5;white-space:nowrap;box-shadow:var(--shadow-sm)}
-.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.bar-row{display:flex;align-items:center;gap:6px;margin-bottom:7px}
 .bar-row:last-child{margin-bottom:0}
-.bar-name{width:110px;flex-shrink:0;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bar-track{flex:1;height:14px;background:var(--line);border-radius:7px;overflow:hidden}
+.bar-name{width:84px;flex-shrink:0;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar-track{flex:1;height:12px;background:var(--line);border-radius:7px;overflow:hidden}
 .bar-fill{height:100%;border-radius:7px;background:linear-gradient(90deg,var(--accent),#5856d6);transition:width .5s var(--ease-out)}
-.bar-val{width:90px;flex-shrink:0;text-align:right;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.bar-val{width:64px;flex-shrink:0;text-align:right;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .bar-fill.green{background:linear-gradient(90deg,#34c759,#30d158)}
 .bar-fill.orange{background:linear-gradient(90deg,#ff9f0a,#ffb340)}
 .bar-fill.purple{background:linear-gradient(90deg,#bf5af2,#d391f7)}
@@ -439,11 +440,14 @@ if (response.output_text) {
       <section id="page-usage" style="display:none">
         <div class="page-head">
           <div><h2 class="page-title">Usage</h2><p class="page-sub">Token usage statistics and request details</p></div>
-          <div class="seg" id="usageRange">
-            <button data-days="1" onclick="setUsageRange(1)">24h</button>
-            <button data-days="7" class="active" onclick="setUsageRange(7)">7 days</button>
-            <button data-days="30" onclick="setUsageRange(30)">30 days</button>
-            <button data-days="90" onclick="setUsageRange(90)">90 days</button>
+          <div style="display:flex;align-items:center;gap:10px">
+            <button class="btn" onclick="ugRefresh()"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> <span>Refresh</span></button>
+            <div class="seg" id="usageRange">
+              <button data-days="1" onclick="setUsageRange(1)">24h</button>
+              <button data-days="7" class="active" onclick="setUsageRange(7)">7 days</button>
+              <button data-days="30" onclick="setUsageRange(30)">30 days</button>
+              <button data-days="90" onclick="setUsageRange(90)">90 days</button>
+            </div>
           </div>
         </div>
         <div class="stats">
@@ -456,7 +460,7 @@ if (response.output_text) {
           <div class="chart">
             <div class="chart-title">Token usage trend</div>
             <div class="chart-sub">Daily token consumption</div>
-            <div id="ugTrendWrap"><svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"></svg></div>
+            <div id="ugTrendWrap"><svg id="ugTrend" viewBox="0 0 560 110" preserveAspectRatio="none" style="height:110px"></svg></div>
           </div>
           <div class="chart">
             <div class="chart-title">Model distribution</div>
@@ -474,9 +478,38 @@ if (response.output_text) {
             <div id="ugKeys"></div>
           </div>
         </div>
-        <div class="card">
-          <div class="card-head"><span class="card-title">Request details</span><span style="font-size:11px;color:var(--muted)">Recent records</span></div>
-          <table class="table"><thead><tr><th>Time</th><th>Key</th><th>Model</th><th>Endpoint</th><th>Tokens</th><th>Latency</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+        <div class="card" id="traceCard">
+          <div class="card-head">
+            <span class="card-title">Debug mode</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label class="checkbox-inline" style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="traceEnabled" onchange="saveTraceConfig()"> Enabled</label>
+              <input class="form-input" id="traceMax" type="number" min="1" max="2000" style="width:80px" title="Records kept" onchange="saveTraceConfig()">
+              <button class="btn btn-sm" onclick="loadTraceLogs()"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> Refresh</button>
+              <button class="btn btn-sm" onclick="clearTraceLogs()"><i data-lucide="trash-2" style="width:13px;height:13px"></i> Clear</button>
+            </div>
+          </div>
+          <p style="font-size:11px;color:var(--muted);padding:8px 12px 0">When enabled, the most recent <b id="traceMaxLabel">50</b> requests keep the full downstream request, upstream (ChatHub) request, upstream response and downstream response, with a live status (in-progress / success / error). Older records are removed automatically.</p>
+          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Reasoning</th><th>Endpoint</th><th>Status</th><th>Latency</th><th>TTFT</th><th>t/s</th><th>Detail</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody></table>
+          <div class="pagination"><span id="tracePageInfo"></span><button class="btn btn-sm" id="tracePrev" onclick="tracePage(-1)">Previous</button><button class="btn btn-sm" id="traceNext" onclick="tracePage(1)">Next</button></div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-head"><span class="card-title">Request details</span><span style="font-size:11px;color:var(--muted)" id="ugLogInfo"></span><button class="btn btn-sm" onclick="loadUsageLogs()"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> Refresh</button></div>
+          <div class="filter-bar" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px;border-bottom:1px solid var(--line)">
+            <input class="form-input" id="ugFKey" placeholder="Key" style="width:110px">
+            <input class="form-input" id="ugFAccount" placeholder="Account" style="width:130px">
+            <input class="form-input" id="ugFModel" placeholder="Model" style="width:110px">
+            <input class="form-input" id="ugFEndpoint" placeholder="Endpoint" style="width:110px">
+            <input class="form-input" id="ugFMinTokens" type="number" placeholder="Min tokens" style="width:100px">
+            <input class="form-input" id="ugFMaxTokens" type="number" placeholder="Max tokens" style="width:100px">
+            <input class="form-input" id="ugFFrom" type="datetime-local" style="width:180px" title="From time">
+            <input class="form-input" id="ugFTo" type="datetime-local" style="width:180px" title="To time">
+            <select class="form-input" id="ugFStatus" style="width:100px"><option value="">Status</option><option value="success">Success</option><option value="error">Error</option></select>
+            <select class="form-input" id="ugFStream" style="width:110px"><option value="">Stream</option><option value="true">Stream</option><option value="false">Non-stream</option></select>
+            <input class="form-input" id="ugFQ" placeholder="Search…" style="flex:1;min-width:120px">
+            <button class="btn btn-sm" onclick="applyUsageFilters()"><i data-lucide="filter" style="width:13px;height:13px"></i> Filter</button>
+            <button class="btn btn-sm" onclick="resetUsageFilters()"><i data-lucide="x" style="width:13px;height:13px"></i> Reset</button>
+          </div>
+          <table class="table"><thead><tr><th>Time</th><th>Account</th><th>Key</th><th>Model</th><th>Reasoning</th><th>Endpoint</th><th>Stream</th><th>Tokens</th><th>Latency</th><th>TTFT</th><th>Speed</th><th>Status</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody></table>
           <div class="pagination"><span id="ugPageInfo"></span><button class="btn btn-sm" id="ugPrev" onclick="ugPage(-1)">Previous</button><button class="btn btn-sm" id="ugNext" onclick="ugPage(1)">Next</button></div>
         </div>
       </section>
@@ -550,7 +583,7 @@ if (response.output_text) {
           <button class="btn primary" onclick="openKeyModal()">Create key</button>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-title">Key list</span><span style="font-size:11px;color:var(--muted)">The full key is shown only once after creation</span></div>
+          <div class="card-head"><span class="card-title">Key list</span><span style="font-size:11px;color:var(--muted)">Keys can be viewed and copied again at any time</span></div>
           <table class="table"><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Status</th><th>Last used</th><th style="text-align:right">Actions</th></tr></thead><tbody id="keyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
@@ -580,7 +613,7 @@ if (response.output_text) {
       <!-- Proxies -->
       <section id="page-proxies" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <div><h2 style="font-size:18px;font-weight:700">Proxy pool</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Configure outbound proxies with http / https / socks5 and automatic failover</p></div>
+          <div><h2 style="font-size:18px;font-weight:700">Proxy pool</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Configure outbound proxies with http / https / socks5; each account keeps its proxy node, other accounts avoid it, and on failure an unbound node is preferred, falling back to any available node</p></div>
           <button class="btn" onclick="proxyCheckAll()"><i data-lucide="activity" style="width:14px;height:14px"></i> Check all</button>
         </div>
         <div class="card" style="margin-bottom:16px">
@@ -615,13 +648,16 @@ if (response.output_text) {
       <!-- Settings -->
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
-        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:4141"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div></div></div>
+        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:9090"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div></div></div>
+        <div class="card" style="margin-top:16px"><div class="card-head"><span class="card-title">Change administrator password</span></div><div class="card-body"><form id="changePasswordForm" onsubmit="changeAdminPassword(event)" style="max-width:520px"><div class="form-group"><label class="form-label" for="currentAdminPassword">Current password</label><input class="form-input" id="currentAdminPassword" type="password" autocomplete="current-password" required></div><div class="form-group"><label class="form-label" for="newAdminPassword">New password (at least 6 characters)</label><input class="form-input" id="newAdminPassword" type="password" autocomplete="new-password" minlength="6" required></div><div class="form-group"><label class="form-label" for="confirmAdminPassword">Confirm new password</label><input class="form-input" id="confirmAdminPassword" type="password" autocomplete="new-password" minlength="6" required></div><button class="btn primary" id="changePasswordButton" type="submit"><i data-lucide="key-round" style="width:14px;height:14px"></i> Change password</button></form><p class="form-hint" style="margin-top:12px">Changing the password signs out all administrator sessions. You will be redirected to the login page.</p></div></div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
           <div><h2 style="font-size:18px;font-weight:700">Model routing</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Enable or disable model routes and set each model's default reasoning level. Disabled models are hidden from the model list and rejected at request time.</p></div>
           <button class="btn primary" onclick="saveModelRoutes()"><i data-lucide="save" style="width:14px;height:14px"></i> Save model routing</button>
         </div>
         <div class="card">
-          <div style="overflow-x:auto"><table class="table"><thead><tr><th>Model</th><th>Display name</th><th>Upstream tone</th><th>Default reasoning level</th><th>Enabled</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table></div>
+          <div class="card-head"><span class="card-title">Model routes</span><span style="font-size:11px;color:var(--muted)">Models route by mapping name; the mapping's tone is sent to the upstream (ChatHub).</span><button class="btn btn-sm" onclick="addModelRouteRow()"><i data-lucide="plus" style="width:13px;height:13px"></i> Add model</button></div>
+          <div style="overflow-x:auto"><table class="table"><thead><tr><th>Model</th><th>Display name</th><th>Upstream mapping</th><th>Default reasoning level</th><th>Enabled</th><th>Actions</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table></div>
+          <datalist id="upstreamMappingOptions"></datalist>
         </div>
       </section>
     </div>
@@ -632,7 +668,7 @@ if (response.output_text) {
 <div class="modal-overlay" id="keyModal">
   <div class="modal">
     <h3>Create API key</h3>
-    <p class="subtitle">The key is shown only once. Store it securely.</p>
+    <p class="subtitle">You can view or copy this key again from the key list. Store it securely.</p>
     <form onsubmit="createKey(event)">
       <div class="form-group">
         <label class="form-label">Name</label>
@@ -817,7 +853,7 @@ const localeText={
   'Manage access keys': {'zh-CN':'管理访问密钥','zh-TW':'管理存取金鑰','ja':'アクセスキーの管理','ko':'액세스 키 관리','es':'Gestionar claves de acceso','fr':'Gérer les clés d\'accès','de':'Zugriffsschlüssel verwalten','pt-BR':'Gerenciar chaves de acesso','ru':'Управление ключами доступа','ar':'إدارة مفاتيح الوصول'},
   'Create key': {'zh-CN':'创建 Key','zh-TW':'建立 Key','ja':'キーを作成','ko':'키 생성','es':'Crear clave','fr':'Créer une clé','de':'Schlüssel erstellen','pt-BR':'Criar chave','ru':'Создать ключ','ar':'إنشاء مفتاح'},
   'Key list': {'zh-CN':'密钥列表','zh-TW':'金鑰列表','ja':'キー一覧','ko':'키 목록','es':'Lista de claves','fr':'Liste des clés','de':'Schlüsselliste','pt-BR':'Lista de chaves','ru':'Список ключей','ar':'قائمة المفاتيح'},
-  'The full key is shown only once after creation': {'zh-CN':'仅创建时显示完整密钥','zh-TW':'僅建立時顯示完整金鑰','ja':'完全なキーは作成時にのみ表示されます','ko':'전체 키는 생성 시에만 표시됩니다','es':'La clave completa solo se muestra una vez tras la creación','fr':'La clé complète n\'est affichée qu\'une fois après la création','de':'Der vollständige Schlüssel wird nur einmal nach der Erstellung angezeigt','pt-BR':'A chave completa só é mostrada uma vez após a criação','ru':'Полный ключ отображается только один раз после создания','ar':'يظهر المفتاح الكامل مرة واحدة فقط بعد الإنشاء'},
+  'Keys can be viewed and copied again at any time': {'zh-CN':'密钥可随时重复查看与复制','zh-TW':'金鑰可隨時重複檢視與複製','ja':'キーはいつでも再度表示・コピーできます','ko':'키는 언제든지 다시 확인하고 복사할 수 있습니다','es':'La clave puede verse y copiarse de nuevo en cualquier momento','fr':'La clé peut être réaffichée et copiée à tout moment','de':'Der Schlüssel kann jederzeit erneut angezeigt und kopiert werden','pt-BR':'A chave pode ser vista e copiada novamente a qualquer momento','ru':'Ключ можно снова просмотреть и скопировать в любое время','ar':'يمكن عرض المفتاح ونسخه مرة أخرى في أي وقت'},
   'Name': {'zh-CN':'名称','zh-TW':'名稱','ja':'名前','ko':'이름','es':'Nombre','fr':'Nom','de':'Name','pt-BR':'Nome','ru':'Имя','ar':'الاسم'},
   'Prefix': {'zh-CN':'前缀','zh-TW':'前綴','ja':'プレフィックス','ko':'접두사','es':'Prefijo','fr':'Préfixe','de':'Präfix','pt-BR':'Prefixo','ru':'Префикс','ar':'البادئة'},
   'Created': {'zh-CN':'创建时间','zh-TW':'建立時間','ja':'作成日時','ko':'생성 시간','es':'Creado','fr':'Créé','de':'Erstellt','pt-BR':'Criado','ru':'Создан','ar':'تاريخ الإنشاء'},
@@ -828,7 +864,7 @@ const localeText={
   'Clear': {'zh-CN':'清空','zh-TW':'清空','ja':'クリア','ko':'지우기','es':'Borrar','fr':'Effacer','de':'Leeren','pt-BR':'Limpar','ru':'Очистить','ar':'مسح'},
   'Conversation list': {'zh-CN':'对话列表','zh-TW':'對話列表','ja':'会話一覧','ko':'대화 목록','es':'Lista de conversaciones','fr':'Liste des conversations','de':'Unterhaltungsliste','pt-BR':'Lista de conversas','ru':'Список разговоров','ar':'قائمة المحادثات'},
   'Conversation ID': {'zh-CN':'对话 ID','zh-TW':'對話 ID','ja':'会話 ID','ko':'대화 ID','es':'ID de conversación','fr':'ID de conversation','de':'Unterhaltungs-ID','pt-BR':'ID da conversa','ru':'ID разговора','ar':'معرف المحادثة'},
-  'Configure outbound proxies with http / https / socks5 and automatic failover': {'zh-CN':'配置出口代理，支持 http / https / socks5，故障自动切换','zh-TW':'設定出口代理，支援 http / https / socks5，故障自動切換','ja':'http / https / socks5 の送信プロキシを設定し、障害時は自動フェイルオーバー','ko':'http / https / socks5 발신 프록시 구성 및 자동 장애 조치','es':'Configure proxies de salida con http / https / socks5 y conmutación automática por error','fr':'Configurez des proxys sortants http / https / socks5 avec bascule automatique','de':'Ausgehende Proxys mit http / https / socks5 und automatischem Failover konfigurieren','pt-BR':'Configure proxies de saída com http / https / socks5 e failover automático','ru':'Настройте исходящие прокси http / https / socks5 с автоматическим переключением','ar':'قم بتكوين بروكسيات الخروج http / https / socks5 مع التبديل التلقائي'},
+  'Configure outbound proxies with http / https / socks5; each account keeps its proxy node, other accounts avoid it, and on failure an unbound node is preferred, falling back to any available node': {'zh-CN':'配置出口代理，支持 http / https / socks5。帐号与节点绑定：帐号始终使用首次分配的节点，其他帐号不使用该节点；节点故障时优先切换空闲节点，无空闲节点时回退到任一可用节点','zh-TW':'設定出口代理，支援 http / https / socks5。帳號與節點綁定：帳號持續使用首次分配的節點，其他帳號不使用該節點；節點故障時優先切換閒置節點，無閒置節點時回退到任一可用節點','ja':'http / https / socks5 の送信プロキシを設定します。アカウントはノードに固定され、他のアカウントはそのノードを使用しません。ノード障害時は未使用ノードを優先し、なければ利用可能なノードを使用します','ko':'http / https / socks5 발신 프록시를 구성합니다. 계정은 노드에 고정되어 계속 사용하며 다른 계정은 해당 노드를 사용하지 않습니다. 노드 장애 시 미사용 노드를 우선하고, 없으면 사용 가능한 노드를 사용합니다','es':'Configure proxies de salida con http / https / socks5; cada cuenta conserva su nodo, las demás cuentas no lo usan y, ante un fallo, se prefiere un nodo libre, con cualquier nodo disponible como reserva','fr':'Configurez des proxys sortants http / https / socks5 ; chaque compte garde son nœud, les autres comptes ne l\'utilisent pas, et en cas de panne un nœud libre est préféré, avec repli sur tout nœud disponible','de':'Ausgehende Proxys mit http / https / socks5 konfigurieren; jedes Konto behält seinen Knoten, andere Konten nutzen ihn nicht, und bei Ausfällen wird ein freier Knoten bevorzugt, sonst jeder verfügbare Knoten','pt-BR':'Configure proxies de saída http / https / socks5; cada conta mantém seu nó, outras contas não o usam e, em falha, um nó livre é preferido, com qualquer nó disponível como reserva','ru':'Настройте исходящие прокси http / https / socks5; каждый аккаунт сохраняет свой узел, другие аккаунты его не используют, а при сбое предпочтителен свободный узел, иначе любой доступный','ar':'قم بتكوين بروكسيات الخروج http / https / socks5؛ يحتفظ كل حساب بعقده ولا تستخدم الحسابات الأخرى هذا العقد، وعند العطل يُفضَّل عقد غير مشغول، مع التراجع إلى أي عقد متاح'},
   'Check all': {'zh-CN':'全部健康检查','zh-TW':'全部健康檢查','ja':'すべてチェック','ko':'전체 확인','es':'Comprobar todo','fr':'Tout vérifier','de':'Alle prüfen','pt-BR':'Verificar tudo','ru':'Проверить все','ar':'فحص الكل'},
   'Add proxy': {'zh-CN':'添加代理','zh-TW':'新增代理','ja':'プロキシを追加','ko':'프록시 추가','es':'Añadir proxy','fr':'Ajouter un proxy','de':'Proxy hinzufügen','pt-BR':'Adicionar proxy','ru':'Добавить прокси','ar':'إضافة بروكسي'},
   'Proxy URLs (one per line; bulk paste supported)': {'zh-CN':'代理地址（一行一个，支持批量粘贴）','zh-TW':'代理位址（一行一個，支援批量貼上）','ja':'プロキシ URL（1 行 1 件、一括貼り付け対応）','ko':'프록시 URL (한 줄에 하나, 일괄 붙여넣기 지원)','es':'URLs de proxy (una por línea; se admite pegado masivo)','fr':'URLs de proxy (une par ligne ; collage en masse pris en charge)','de':'Proxy-URLs (eine pro Zeile; Masseneinfügen unterstützt)','pt-BR':'URLs de proxy (uma por linha; colagem em massa suportada)','ru':'URL прокси (по одному в строке; поддерживается массовая вставка)','ar':'عناوين البروكسي (واحد لكل سطر؛ دعم اللصق الجماعي)'},
@@ -853,13 +889,20 @@ const localeText={
   'Enable or disable model routes and set each model\'s default reasoning level. Disabled models are hidden from the model list and rejected at request time.': {'zh-CN':'启用或禁用模型路由，并设置每个模型的默认推理等级。被禁用的模型将从模型列表中隐藏，并在请求时被拒绝。','zh-TW':'啟用或禁用模型路由，並設定每個模型的預設推理等級。被禁用的模型將從模型清單中隱藏，並在請求時被拒絕。','ja':'モデルルートの有効/無効を切り替え、各モデルのデフォルト推論レベルを設定します。無効なモデルはモデル一覧から非表示になり、リクエスト時に拒否されます。','ko':'모델 라우팅을 활성화/비활성화하고 각 모델의 기본 추론 수준을 설정합니다. 비활성화된 모델은 모델 목록에서 숨겨지고 요청 시 거부됩니다.','es':'Habilite o deshabilite las rutas de modelos y establezca el nivel de razonamiento predeterminado de cada modelo. Los modelos deshabilitados se ocultan de la lista y se rechazan al solicitarlos.','fr':'Activez ou désactivez les routes de modèles et définissez le niveau de raisonnement par défaut de chaque modèle. Les modèles désactivés sont masqués de la liste et rejetés à la demande.','de':'Aktivieren oder deaktivieren Sie Modellrouten und legen Sie die Standard-Argumentationstiefe jedes Modells fest. Deaktivierte Modelle werden aus der Liste ausgeblendet und bei Anfragen abgelehnt.','pt-BR':'Habilite ou desabilite rotas de modelos e defina o nível de raciocínio padrão de cada modelo. Modelos desabilitados ficam ocultos na lista e são rejeitados na solicitação.','ru':'Включайте и отключайте маршруты моделей и задайте уровень рассуждений по умолчанию для каждой. Отключённые модели скрываются из списка и отклоняются при запросе.','ar':'قم بتمكين أو تعطيل مسارات النماذج وضبط مستوى الاستدلال الافتراضي لكل نموذج. تُخفى النماذج المعطلة من القائمة وتُرفض عند الطلب.'},
   'Display name': {'zh-CN':'显示名称','zh-TW':'顯示名稱','ja':'表示名','ko':'표시 이름','es':'Nombre visible','fr':'Nom d\'affichage','de':'Anzeigename','pt-BR':'Nome de exibição','ru':'Отображаемое имя','ar':'الاسم المعروض'},
   'Upstream tone': {'zh-CN':'上游音色','zh-TW':'上游音色','ja':'アップストリームトーン','ko':'업스트림 톤','es':'Tono del proveedor','fr':'Ton du fournisseur','de':'Upstream-Ton','pt-BR':'Tom do provedor','ru':'Тон провайдера','ar':'نغمة المنبع'},
+  'Upstream mapping': {'zh-CN':'上游映射','zh-TW':'上游映射','ja':'アップストリームマッピング','ko':'업스트림 매핑','es':'Asignación del proveedor','fr':'Mappage du fournisseur','de':'Upstream-Zuordnung','pt-BR':'Mapeamento do provedor','ru':'Сопоставление провайдера','ar':'تعيين المنبع'},
+  'Model routes': {'zh-CN':'模型路由','zh-TW':'模型路由','ja':'モデルルート','ko':'모델 라우트','es':'Rutas de modelos','fr':'Routes de modèles','de':'Modellrouten','pt-BR':'Rotas de modelos','ru':'Маршруты моделей','ar':'مسارات النماذج'},
+  'Mapping name': {'zh-CN':'映射名称','zh-TW':'映射名稱','ja':'マッピング名','ko':'매핑 이름','es':'Nombre de asignación','fr':'Nom du mappage','de':'Zuordnungsname','pt-BR':'Nome do mapeamento','ru':'Имя сопоставления','ar':'اسم التعيين'},
+  'Add model': {'zh-CN':'添加模型','zh-TW':'新增模型','ja':'モデルを追加','ko':'모델 추가','es':'Añadir modelo','fr':'Ajouter un modèle','de':'Modell hinzufügen','pt-BR':'Adicionar modelo','ru':'Добавить модель','ar':'إضافة نموذج'},
+  'Route public models to upstream mappings and set each model\'s default reasoning level. Disabled models are hidden from the model list and rejected at request time. Models and upstream mappings can be added, deleted or disabled here.': {'zh-CN':'将公开模型路由到上游映射，并设置每个模型的默认推理等级。被禁用的模型将从模型列表中隐藏，并在请求时被拒绝。模型与上游映射均可添加、删除或禁用。','zh-TW':'將公開模型路由到上游映射，並設定每個模型的預設推理等級。被禁用的模型將從模型清單中隱藏，並在請求時被拒絕。模型與上游映射均可新增、刪除或停用。','ja':'公開モデルをアップストリームマッピングにルーティングし、各モデルのデフォルト推論レベルを設定します。無効なモデルはモデル一覧から非表示になり、リクエスト時に拒否されます。モデルとマッピングは追加・削除・無効化できます。','ko':'공개 모델을 업스트림 매핑으로 라우팅하고 각 모델의 기본 추론 수준을 설정합니다. 비활성화된 모델은 모델 목록에서 숨겨지고 요청 시 거부됩니다. 모델과 매핑은 추가·삭제·비활성화할 수 있습니다.','es':'Enrute los modelos públicos a asignaciones del proveedor y establezca el nivel de razonamiento predeterminado de cada modelo. Los modelos deshabilitados se ocultan de la lista y se rechazan al solicitarlos. Los modelos y las asignaciones pueden añadirse, eliminarse o deshabilitarse.','fr':'Acheminez les modèles publics vers des mappages du fournisseur et définissez le niveau de raisonnement par défaut de chaque modèle. Les modèles désactivés sont masqués de la liste et rejetés à la demande. Les modèles et les mappages peuvent être ajoutés, supprimés ou désactivés.','de':'Leiten Sie öffentliche Modelle zu Upstream-Zuordnungen weiter und legen Sie die Standard-Argumentationstiefe jedes Modells fest. Deaktivierte Modelle werden aus der Liste ausgeblendet und bei Anfragen abgelehnt. Modelle und Zuordnungen können hinzugefügt, gelöscht oder deaktiviert werden.','pt-BR':'Roteie modelos públicos para mapeamentos do provedor e defina o nível de raciocínio padrão de cada modelo. Modelos desabilitados ficam ocultos na lista e são rejeitados na solicitação. Modelos e mapeamentos podem ser adicionados, excluídos ou desabilitados.','ru':'Направляйте публичные модели на сопоставления провайдера и задайте уровень рассуждений по умолчанию для каждой. Отключённые модели скрываются из списка и отклоняются при запросе. Модели и сопоставления можно добавлять, удалять и отключать.','ar':'وجّه النماذج العامة إلى تعيينات المنبع واضبط مستوى الاستدلال الافتراضي لكل نموذج. تُخفى النماذج المعطلة من القائمة وتُرفض عند الطلب. يمكن إضافة النماذج والتعيينات أو حذفها أو تعطيلها.'},
+  'Models route by mapping name; the mapping\'s tone is sent to the upstream (ChatHub).': {'zh-CN':'模型按映射名称路由；映射的 tone（音色）会发送给上游（ChatHub）。','zh-TW':'模型按映射名稱路由；映射的 tone（音色）會發送給上游（ChatHub）。','ja':'モデルはマッピング名でルーティングされ、マッピングのトーンがアップストリーム（ChatHub）に送信されます。','ko':'모델은 매핑 이름으로 라우팅되며 매핑의 톤이 업스트림(ChatHub)으로 전송됩니다.','es':'Los modelos se enrutan por nombre de asignación; el tono de la asignación se envía al proveedor (ChatHub).','fr':'Les modèles sont acheminés par nom de mappage ; le ton du mappage est envoyé au fournisseur (ChatHub).','de':'Modelle werden nach Zuordnungsnamen weitergeleitet; der Ton der Zuordnung wird an den Upstream (ChatHub) gesendet.','pt-BR':'Os modelos são roteados pelo nome do mapeamento; o tom do mapeamento é enviado ao provedor (ChatHub).','ru':'Модели маршрутизируются по имени сопоставления; тон сопоставления отправляется провайдеру (ChatHub).','ar':'تُوجَّه النماذج حسب اسم التعيين؛ وتُرسل نغمة التعيين إلى المنبع (ChatHub).'},
   'Default reasoning level': {'zh-CN':'默认推理等级','zh-TW':'預設推理等級','ja':'デフォルト推論レベル','ko':'기본 추론 수준','es':'Nivel de razonamiento predeterminado','fr':'Niveau de raisonnement par défaut','de':'Standard-Argumentationstiefe','pt-BR':'Nível de raciocínio padrão','ru':'Уровень рассуждений по умолчанию','ar':'مستوى الاستدلال الافتراضي'},
   'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
   'Save model routing': {'zh-CN':'保存模型路由','zh-TW':'儲存模型路由','ja':'モデルルーティングを保存','ko':'모델 라우팅 저장','es':'Guardar enrutamiento','fr':'Enregistrer le routage','de':'Routing speichern','pt-BR':'Salvar roteamento','ru':'Сохранить маршрутизацию','ar':'حفظ التوجيه'},
   'Model routing saved': {'zh-CN':'模型路由已保存','zh-TW':'模型路由已儲存','ja':'モデルルーティングを保存しました','ko':'모델 라우팅이 저장되었습니다','es':'Enrutamiento guardado','fr':'Routage enregistré','de':'Routing gespeichert','pt-BR':'Roteamento salvo','ru':'Маршрутизация сохранена','ar':'تم حفظ التوجيه'},
   'No models available': {'zh-CN':'没有可用模型','zh-TW':'沒有可用模型','ja':'利用可能なモデルがありません','ko':'사용 가능한 모델이 없습니다','es':'No hay modelos disponibles','fr':'Aucun modèle disponible','de':'Keine Modelle verfügbar','pt-BR':'Nenhum modelo disponível','ru':'Нет доступных моделей','ar':'لا توجد نماذج متاحة'},
   'Create API key': {'zh-CN':'创建 API Key','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
-  'The key is shown only once. Store it securely.': {'zh-CN':'密钥只显示一次，请妥善保存','zh-TW':'金鑰只顯示一次，請妥善保存','ja':'キーは一度だけ表示されます。安全に保管してください。','ko':'키는 한 번만 표시됩니다. 안전하게 보관하세요.','es':'La clave solo se muestra una vez. Guárdela de forma segura.','fr':'La clé n\'est affichée qu\'une fois. Conservez-la en lieu sûr.','de':'Der Schlüssel wird nur einmal angezeigt. Bewahren Sie ihn sicher auf.','pt-BR':'A chave só é mostrada uma vez. Guarde-a com segurança.','ru':'Ключ отображается только один раз. Храните его безопасно.','ar':'يظهر المفتاح مرة واحدة فقط. احفظه بأمان.'},
+  'You can view or copy this key again from the key list. Store it securely.': {'zh-CN':'完整密钥可在密钥列表中随时查看或复制，请妥善保存','zh-TW':'完整金鑰可在金鑰清單中隨時檢視或複製，請妥善保存','ja':'完全なキーはキー一覧からいつでも表示・コピーできます。安全に保管してください。','ko':'전체 키는 키 목록에서 언제든지 확인하거나 복사할 수 있습니다. 안전하게 보관하세요.','es':'Puede volver a ver o copiar esta clave desde la lista de claves. Guárdela de forma segura.','fr':'Vous pouvez réafficher ou copier cette clé depuis la liste des clés. Conservez-la en lieu sûr.','de':'Sie können diesen Schlüssel jederzeit aus der Schlüsselliste erneut anzeigen oder kopieren. Bewahren Sie ihn sicher auf.','pt-BR':'Você pode ver ou copiar esta chave novamente na lista de chaves. Guarde-a com segurança.','ru':'Вы можете снова просмотреть или скопировать этот ключ из списка ключей. Храните его безопасно.','ar':'يمكنك عرض هذا المفتاح أو نسخه مرة أخرى من قائمة المفاتيح. احفظه بأمان.'},
+  'Full key is unavailable for keys created before this feature': {'zh-CN':'该密钥创建于本功能之前，无明文备份，无法重新显示','zh-TW':'該金鑰建立於此功能之前，無明文備份，無法重新顯示','ja':'このキーは本機能より前に作成されたため、平文のバックアップがなく再表示できません','ko':'이 키는 이 기능 이전에 생성되어 평문 백업이 없어 다시 표시할 수 없습니다','es':'La clave completa no está disponible para claves creadas antes de esta función','fr':'La clé complète n\'est pas disponible pour les clés créées avant cette fonctionnalité','de':'Der vollständige Schlüssel steht für Schlüssel, die vor dieser Funktion erstellt wurden, nicht zur Verfügung','pt-BR':'A chave completa não está disponível para chaves criadas antes deste recurso','ru':'Полный ключ недоступен для ключей, созданных до появления этой функции','ar':'المفتاح الكامل غير متاح للمفاتيح التي أُنشئت قبل هذه الميزة'},
   'Cancel': {'zh-CN':'取消','zh-TW':'取消','ja':'キャンセル','ko':'취소','es':'Cancelar','fr':'Annuler','de':'Abbrechen','pt-BR':'Cancelar','ru':'Отмена','ar':'إلغاء'},
   'Create': {'zh-CN':'创建','zh-TW':'建立','ja':'作成','ko':'생성','es':'Crear','fr':'Créer','de':'Erstellen','pt-BR':'Criar','ru':'Создать','ar':'إنشاء'},
   'Copy and save this key now': {'zh-CN':'请立即复制保存此密钥','zh-TW':'請立即複製儲存此金鑰','ja':'今すぐこのキーをコピーして保存','ko':'지금 이 키를 복사하여 저장하세요','es':'Copie y guarde esta clave ahora','fr':'Copiez et enregistrez cette clé maintenant','de':'Kopieren und speichern Sie diesen Schlüssel jetzt','pt-BR':'Copie e salve esta chave agora','ru':'Скопируйте и сохраните этот ключ сейчас','ar':'انسخ واحفظ هذا المفتاح الآن'},
@@ -888,8 +931,37 @@ const localeText={
   'Not checked': {'zh-CN':'未检测','zh-TW':'未檢測','ja':'未確認','ko':'확인 안 됨','es':'Sin comprobar','fr':'Non vérifié','de':'Nicht geprüft','pt-BR':'Não verificado','ru':'Не проверено','ar':'لم يتم التحقق'},
   'Cooling down': {'zh-CN':'冷却中','zh-TW':'冷卻中','ja':'クールダウン中','ko':'쿨다운 중','es':'Enfriando','fr':'En attente','de':'Wird abgekühlt','pt-BR':'Resfriando','ru':'Ожидание','ar':'جارٍ التهدئة'},
   'Testing…': {'zh-CN':'测试中…','zh-TW':'測試中…','ja':'テスト中…','ko':'테스트 중…','es':'Probando…','fr':'Test en cours…','de':'Wird getestet…','pt-BR':'Testando…','ru':'Тестирование…','ar':'جارٍ الاختبار…'},
-  'Failed': {'zh-CN':'失败','zh-TW':'失敗','ja':'失敗','ko':'실패','es':'Fallido','fr':'Échec','de':'Fehlgeschlagen','pt-BR':'Falhou','ru':'Ошибка','ar':'فشل'}
-};
+  'Failed': {'zh-CN':'失败','zh-TW':'失敗','ja':'失敗','ko':'실패','es':'Fallido','fr':'Échec','de':'Fehlgeschlagen','pt-BR':'Falhou','ru':'Ошибка','ar':'فشل'},
+  'Refresh': {'zh-CN':'刷新','zh-TW':'重新整理','ja':'更新','ko':'새로고침','es':'Actualizar','fr':'Actualiser','de':'Aktualisieren','pt-BR':'Atualizar','ru':'Обновить','ar':'تحديث'},
+  'Account': {'zh-CN':'账号','zh-TW':'帳號','ja':'アカウント','ko':'계정','es':'Cuenta','fr':'Compte','de':'Konto','pt-BR':'Conta','ru':'Аккаунт','ar':'الحساب'},
+  'Reasoning': {'zh-CN':'推理等级','zh-TW':'推理等級','ja':'推論レベル','ko':'추론 수준','es':'Razonamiento','fr':'Raisonnement','de':'Argumentation','pt-BR':'Raciocínio','ru':'Рассуждения','ar':'الاستدلال'},
+  'TTFT': {'zh-CN':'首字耗时','zh-TW':'首字耗時','ja':'初回トークン','ko':'첫 토큰 시간','es':'Primer token','fr':'Premier token','de':'Erster Token','pt-BR':'Primeiro token','ru':'TTFT','ar':'أول رمز'},
+  'Speed': {'zh-CN':'速度','zh-TW':'速度','ja':'速度','ko':'속도','es':'Velocidad','fr':'Vitesse','de':'Geschwindigkeit','pt-BR':'Velocidade','ru':'Скорость','ar':'السرعة'},
+  'Min tokens': {'zh-CN':'最少 Token','zh-TW':'最少 Token','ja':'最小トークン','ko':'최소 토큰','es':'Tokens mínimos','fr':'Tokens min','de':'Min. Tokens','pt-BR':'Mín. tokens','ru':'Мин. токенов','ar':'الحد الأدنى من الرموز'},
+  'Max tokens': {'zh-CN':'最多 Token','zh-TW':'最多 Token','ja':'最大トークン','ko':'최대 토큰','es':'Tokens máximos','fr':'Tokens max','de':'Max. Tokens','pt-BR':'Máx. tokens','ru':'Макс. токенов','ar':'الحد الأقصى من الرموز'},
+  'From time': {'zh-CN':'起始时间','zh-TW':'起始時間','ja':'開始時刻','ko':'시작 시간','es':'Desde','fr':'De','de':'Von','pt-BR':'De','ru':'С','ar':'من'},
+  'To time': {'zh-CN':'截止时间','zh-TW':'截止時間','ja':'終了時刻','ko':'종료 시간','es':'Hasta','fr':'À','de':'Bis','pt-BR':'Até','ru':'До','ar':'إلى'},
+  'Filter': {'zh-CN':'筛选','zh-TW':'篩選','ja':'絞り込み','ko':'필터','es':'Filtrar','fr':'Filtrer','de':'Filtern','pt-BR':'Filtrar','ru':'Фильтр','ar':'تصفية'},
+  'Reset': {'zh-CN':'重置','zh-TW':'重設','ja':'リセット','ko':'재설정','es':'Restablecer','fr':'Réinitialiser','de':'Zurücksetzen','pt-BR':'Redefinir','ru':'Сброс','ar':'إعادة تعيين'},
+  'Debug mode': {'zh-CN':'调试模式','zh-TW':'偵錯模式','ja':'デバッグモード','ko':'디버그 모드','es':'Modo de depuración','fr':'Mode débogage','de':'Debug-Modus','pt-BR':'Modo de depuração','ru':'Режим отладки','ar':'وضع التصحيح'},
+  'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
+  'Clear': {'zh-CN':'清空','zh-TW':'清空','ja':'クリア','ko':'지우기','es':'Borrar','fr':'Effacer','de':'Löschen','pt-BR':'Limpar','ru':'Очистить','ar':'مسح'},
+  'In progress': {'zh-CN':'请求中','zh-TW':'請求中','ja':'処理中','ko':'처리 중','es':'En curso','fr':'En cours','de':'In Bearbeitung','pt-BR':'Em andamento','ru':'В процессе','ar':'قيد التنفيذ'},
+  'Detail': {'zh-CN':'详情','zh-TW':'詳情','ja':'詳細','ko':'상세','es':'Detalle','fr':'Détail','de':'Details','pt-BR':'Detalhe','ru':'Подробности','ar':'التفاصيل'},
+  'Search...': {'zh-CN':'搜索…','zh-TW':'搜尋…','ja':'検索…','ko':'검색…','es':'Buscar…','fr':'Rechercher…','de':'Suchen…','pt-BR':'Buscar…','ru':'Поиск…','ar':'بحث…'},
+  'Search…': {'zh-CN':'搜索…','zh-TW':'搜尋…','ja':'検索…','ko':'검색…','es':'Buscar…','fr':'Rechercher…','de':'Suchen…','pt-BR':'Buscar…','ru':'Поиск…','ar':'بحث…'},
+  'View': {'zh-CN':'查看','zh-TW':'查看','ja':'表示','ko':'보기','es':'Ver','fr':'Voir','de':'Ansehen','pt-BR':'Ver','ru':'Просмотр','ar':'عرض'}
+}; const passwordLocaleText={
+  'Change administrator password': {'zh-CN':'修改管理员密码','zh-TW':'修改管理員密碼','ja':'管理者パスワードを変更','ko':'관리자 비밀번호 변경','es':'Cambiar contraseña de administrador','fr':'Modifier le mot de passe administrateur','de':'Administrator-Passwort ändern','pt-BR':'Alterar senha do administrador','ru':'Изменить пароль администратора','ar':'تغيير كلمة مرور المسؤول'},
+  'Current password': {'zh-CN':'当前密码','zh-TW':'目前密碼','ja':'現在のパスワード','ko':'현재 비밀번호','es':'Contraseña actual','fr':'Mot de passe actuel','de':'Aktuelles Passwort','pt-BR':'Senha atual','ru':'Текущий пароль','ar':'كلمة المرور الحالية'},
+  'New password (at least 6 characters)': {'zh-CN':'新密码（至少 6 个字符）','zh-TW':'新密碼（至少 6 個字元）','ja':'新しいパスワード（6文字以上）','ko':'새 비밀번호(6자 이상)','es':'Nueva contraseña (al menos 6 caracteres)','fr':'Nouveau mot de passe (6 caractères minimum)','de':'Neues Passwort (mindestens 6 Zeichen)','pt-BR':'Nova senha (pelo menos 6 caracteres)','ru':'Новый пароль (не менее 6 символов)','ar':'كلمة المرور الجديدة (6 أحرف على الأقل)'},
+  'Confirm new password': {'zh-CN':'确认新密码','zh-TW':'確認新密碼','ja':'新しいパスワードの確認','ko':'새 비밀번호 확인','es':'Confirmar nueva contraseña','fr':'Confirmer le nouveau mot de passe','de':'Neues Passwort bestätigen','pt-BR':'Confirmar nova senha','ru':'Подтвердите новый пароль','ar':'تأكيد كلمة المرور الجديدة'},
+  'Change password': {'zh-CN':'修改密码','zh-TW':'修改密碼','ja':'パスワードを変更','ko':'비밀번호 변경','es':'Cambiar contraseña','fr':'Modifier le mot de passe','de':'Passwort ändern','pt-BR':'Alterar senha','ru':'Изменить пароль','ar':'تغيير كلمة المرور'},
+  'Passwords do not match': {'zh-CN':'两次输入的密码不一致','zh-TW':'兩次輸入的密碼不一致','ja':'パスワードが一致しません','ko':'비밀번호가 일치하지 않습니다','es':'Las contraseñas no coinciden','fr':'Les mots de passe ne correspondent pas','de':'Die Passwörter stimmen nicht überein','pt-BR':'As senhas não coincidem','ru':'Пароли не совпадают','ar':'كلمتا المرور غير متطابقتان'},
+  'The new password must be at least 6 characters': {'zh-CN':'新密码至少需要 6 个字符','zh-TW':'新密碼至少需要 6 個字元','ja':'新しいパスワードは6文字以上必要です','ko':'새 비밀번호는 6자 이상이어야 합니다','es':'La nueva contraseña debe tener al menos 6 caracteres','fr':'Le nouveau mot de passe doit comporter au moins 6 caractères','de':'Das neue Passwort muss mindestens 6 Zeichen lang sein','pt-BR':'A nova senha deve ter pelo menos 6 caracteres','ru':'Новый пароль должен содержать не менее 6 символов','ar':'يجب أن تتكون كلمة المرور الجديدة من 6 أحرف على الأقل'},
+  'Password changed. Please log in again.': {'zh-CN':'密码已修改，请重新登录。','zh-TW':'密碼已修改，請重新登入。','ja':'パスワードを変更しました。もう一度ログインしてください。','ko':'비밀번호가 변경되었습니다. 다시 로그인하세요.','es':'Contraseña cambiada. Inicie sesión de nuevo.','fr':'Mot de passe modifié. Veuillez vous reconnecter.','de':'Passwort geändert. Bitte melden Sie sich erneut an.','pt-BR':'Senha alterada. Faça login novamente.','ru':'Пароль изменён. Войдите снова.','ar':'تم تغيير كلمة المرور. يرجى تسجيل الدخول مرة أخرى.'},
+  'Changing the password signs out all administrator sessions. You will be redirected to the login page.': {'zh-CN':'修改密码会退出所有管理员会话，随后将跳转到登录页面。','zh-TW':'修改密碼會登出所有管理員工作階段，接著將跳轉到登入頁面。','ja':'パスワードを変更するとすべての管理者セッションが終了し、ログインページに移動します。','ko':'비밀번호를 변경하면 모든 관리자 세션이 로그아웃되고 로그인 페이지로 이동합니다.','es':'Cambiar la contraseña cierra todas las sesiones de administrador y le redirige a la página de inicio de sesión.','fr':'La modification du mot de passe déconnecte toutes les sessions administrateur et vous redirige vers la page de connexion.','de':'Beim Ändern des Passworts werden alle Administratorsitzungen abgemeldet und Sie werden zur Anmeldeseite weitergeleitet.','pt-BR':'Alterar a senha encerra todas as sessões de administrador e redireciona para a página de login.','ru':'После смены пароля все сеансы администратора будут завершены, и вы перейдёте на страницу входа.','ar':'يؤدي تغيير كلمة المرور إلى تسجيل خروج جميع جلسات المسؤول وإعادة توجيهك إلى صفحة تسجيل الدخول.'},
+}; Object.assign(localeText,passwordLocaleText);
 let currentLocale='en';
 let localeObserver=null;
 function localeReverse(){const out={};Object.entries(localeText).forEach(([en,v])=>{if(v&&typeof v==='object'){Object.values(v).forEach(t=>{if(t&&!out[t])out[t]=en;});}else if(v&&!out[v]){out[v]=en;}});return out;}
@@ -971,7 +1043,7 @@ function showPage(p){
   });
   $('pageTitle').textContent=pages[p];
   if(p==='dashboard'){loadStats();loadOnboarding();}
-  if(p==='usage')loadUsage();
+  if(p==='usage'){loadUsage();loadTraceStatus();}
   if(p==='accounts')loadAccounts();
   if(p==='apikeys')loadKeys();
   if(p==='conversations')loadConversations();
@@ -1032,7 +1104,8 @@ window.addEventListener('message',e=>{
 $('loginForm')?.addEventListener('submit',async e=>{
   e.preventDefault();
   try{
-    await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:$('loginPassword').value})});
+    const d=await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:$('loginPassword').value})});
+    if(d.must_change_password){location.href='/login';return;}
     $('login').style.display='none';$('app').style.display='flex';
     showPage('dashboard');loadStats();
     showNotice('Logged in successfully','success');
@@ -1286,7 +1359,7 @@ async function loadUsage(){
 function renderTrend(trend){
   const wrap=$('ugTrendWrap');
   if(!trend||!trend.length){if(wrap)wrap.innerHTML='<div class="chart-empty"><i data-lucide="line-chart"></i>No trend data yet; it will appear after requests are made.</div>';try{lucide.createIcons();}catch(e){}return;}
-  const W=560,H=160,P=8;
+  const W=560,H=110,P=8;
   const max=Math.max(...trend.map(t=>t.tokens),1);
   let path='',area='';
   // For a single data point, use the center coordinate and keep the chart style consistent.
@@ -1294,7 +1367,7 @@ function renderTrend(trend){
     const t=trend[0];
     const cx=W/2;
     const cy=H-P-(t.tokens/max)*(H-2*P);
-    wrap.innerHTML=`<svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px">
+    wrap.innerHTML=`<svg id="ugTrend" viewBox="0 0 560 110" preserveAspectRatio="none" style="height:110px">
       <circle cx="${cx}" cy="${cy}" r="4" fill="var(--accent)"><title>${t.date} · ${t.tokens.toLocaleString()} tokens</title></circle>
       <text x="${cx}" y="${H-2}" text-anchor="middle" font-size="9" fill="var(--muted)">${t.date}</text></svg>`;
     try{lucide.createIcons();}catch(e){}return;
@@ -1309,7 +1382,7 @@ function renderTrend(trend){
   if(trend.length===2)path='M'+P+' '+(H-P-(trend[0].tokens/max)*(H-2*P))+' L'+(W-P)+' '+(H-P-(trend[1].tokens/max)*(H-2*P));
   area+='L'+(W-P)+' '+(H-P)+' L'+P+' '+(H-P)+' Z';
   const gid='ugGrad';
-  wrap.innerHTML=`<svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02"/></linearGradient></defs>
+  wrap.innerHTML=`<svg id="ugTrend" viewBox="0 0 560 110" preserveAspectRatio="none" style="height:110px"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02"/></linearGradient></defs>
     <path d="${area}" fill="url(#${gid})"/>
     <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     ${trend.map((t,i)=>{
@@ -1341,25 +1414,136 @@ function renderBars(id,items,labelFn,valKey){
 
 async function loadUsageLogs(){
   try{
-    const d=await api('/api/usage/logs?limit='+UG_PAGE+'&offset='+ugPageNo*UG_PAGE);
+    const p=new URLSearchParams();
+    p.set('limit',UG_PAGE);p.set('offset',ugPageNo*UG_PAGE);
+    const f={key:'ugFKey',account:'ugFAccount',model:'ugFModel',endpoint:'ugFEndpoint',min_tokens:'ugFMinTokens',max_tokens:'ugFMaxTokens',from:'ugFFrom',to:'ugFTo',status:'ugFStatus',stream:'ugFStream',q:'ugFQ'};
+    for(const [k,id] of Object.entries(f)){
+      const v=($(id)?.value||'').trim();if(!v)continue;
+      if(id==='ugFFrom'||id==='ugFTo'){
+        const dt=new Date(v);
+        if(Number.isNaN(dt.getTime()))continue;
+        p.set(k,dt.toISOString());
+      }
+      else p.set(k,v);
+    }
+    const d=await api('/api/usage/logs?'+p.toString());
     ugTotal=d.total||0;
     const rows=(d.logs||[]).map(x=>`<tr>
       <td style="font-size:12px;color:var(--muted)">${new Date(x.time).toLocaleString()}</td>
-      <td><code style="font-size:11px" title="${x.api_key_prefix||'-'}">${x.api_key_prefix||'-'}</code></td>
-      <td style="font-size:12px">${x.model||'-'}</td>
-      <td><span class="usage-status">${(x.endpoint||'-').replace('/v1/','')}</span></td>
-      <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b> in${x.input_tokens||0}/out${x.output_tokens||0}/cache${x.cache_tokens||0}</span></td>
+      <td style="font-size:12px" title="${esc(x.account_email||'')}">${esc(x.account_email||'-')}</td>
+      <td><code style="font-size:11px" title="${esc(x.api_key_prefix||'')}">${esc(x.api_key_prefix||'-')}</code></td>
+      <td style="font-size:12px">${esc(x.model||'-')}</td>
+      <td style="font-size:12px;color:var(--muted)">${esc(x.reasoning_level||'-')}</td>
+      <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
+      <td style="font-size:12px">${x.stream?'<span class="usage-status">stream</span>':'-'}</td>
+      <td><span class="token-stack"><b>${fmtTok((x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0))}</b> in${x.input_tokens||0}/out${x.output_tokens||0}/cache${x.cache_tokens||0}</span></td>
       <td style="font-size:12px;color:var(--muted)">${(x.duration_ms||0)} ms</td>
+      <td style="font-size:12px;color:var(--muted)">${x.ttft_ms?x.ttft_ms+' ms':'-'}</td>
+      <td style="font-size:12px;color:var(--muted)">${x.speed_tps?Number(x.speed_tps).toFixed(1)+' t/s':'-'}</td>
+      <td>${x.status>=400||x.error?'<span class="usage-status err" title="'+esc(x.error||'')+'">Error</span>':'<span class="usage-status">Success</span>'}</td>
     </tr>`).join('');
-    $('ugLogRows').innerHTML=rows||'<tr><td colspan="6" class="empty">No requests yet</td></tr>';
+    $('ugLogRows').innerHTML=rows||'<tr><td colspan="12" class="empty">No requests match the filters</td></tr>';
     const totalPages=Math.max(1,Math.ceil(ugTotal/UG_PAGE));
     $('ugPageInfo').textContent=`Page ${ugPageNo+1} / ${totalPages} · ${ugTotal} total`;
     $('ugPrev').disabled=ugPageNo<=0;
     $('ugNext').disabled=ugPageNo>=totalPages-1;
   }catch(e){
-    $('ugLogRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;
+    $('ugLogRows').innerHTML=`<tr><td colspan="12" class="empty">${esc(e.message)}</td></tr>`;
   }
 }
+
+function ugRefresh(){loadUsageLogs();}
+function applyUsageFilters(){ugPageNo=0;loadUsageLogs();}
+function resetUsageFilters(){
+  ['ugFKey','ugFAccount','ugFModel','ugFEndpoint','ugFMinTokens','ugFMaxTokens','ugFFrom','ugFTo','ugFStatus','ugFStream','ugFQ'].forEach(id=>{if($(id))$(id).value='';});
+  applyUsageFilters();
+}
+
+// ===== Usage debug (trace) mode =====
+let tracePageNo=0, traceTotal=0;
+const TRACE_PAGE=10;
+async function loadTraceStatus(){
+  try{
+    const d=await api('/api/admin/trace');
+    if($('traceEnabled'))$('traceEnabled').checked=!!d.enabled;
+    if($('traceMax'))$('traceMax').value=d.max||50;
+    if($('traceMaxLabel'))$('traceMaxLabel').textContent=d.max||50;
+    loadTraceLogs();
+  }catch(e){}
+}
+async function saveTraceConfig(){
+  try{
+    const enabled=$('traceEnabled').checked;
+    const max=Math.max(1,Math.min(2000,parseInt($('traceMax').value||'50',10)));
+    $('traceMax').value=max;
+    const d=await api('/api/admin/trace',{method:'POST',body:JSON.stringify({enabled,max})});
+    if($('traceMaxLabel'))$('traceMaxLabel').textContent=d.max||max;
+    tracePageNo=0;
+    loadTraceLogs();
+  }catch(e){showNotice(e.message,'error');}
+}
+async function loadTraceLogs(){
+  try{
+    const d=await api('/api/admin/trace/status?limit='+TRACE_PAGE+'&offset='+(tracePageNo*TRACE_PAGE));
+    if($('traceEnabled'))$('traceEnabled').checked=!!d.enabled;
+    if($('traceMax'))$('traceMax').value=d.max||50;
+    if($('traceMaxLabel'))$('traceMaxLabel').textContent=d.max||50;
+    traceTotal=d.total||0;
+    const rows=(d.records||[]).map(x=>{
+      const stcls=x.status==='error'?' err':'';
+      const sttxt=x.status==='in_progress'?'In progress':(x.status==='error'?'Error':'Success');
+      return `<tr>
+        <td style="font-size:12px;color:var(--muted)">${new Date(x.at).toLocaleTimeString()}</td>
+        <td style="font-size:12px">${esc(x.model||x.endpoint||'-')}</td>
+        <td style="font-size:12px;color:var(--muted)">${esc(x.reasoningLevel||'-')}</td>
+        <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
+        <td><span class="usage-status${stcls}">${sttxt}</span></td>
+        <td style="font-size:12px;color:var(--muted)">${(x.durationMs||0)} ms</td>
+        <td style="font-size:12px;color:var(--muted)">${x.ttftMs?x.ttftMs+' ms':'-'}</td>
+        <td style="font-size:12px;color:var(--muted)">${x.speedTps?Number(x.speedTps).toFixed(1):'-'}</td>
+        <td><button class="btn btn-sm" onclick="toggleTraceDetail('${x.id}')">View</button></td>
+      </tr>`;
+    }).join('');
+    $('traceLogRows').innerHTML=rows||'<tr><td colspan="9" class="empty">Tracing disabled or no requests yet</td></tr>';
+    const totalPages=Math.max(1,Math.ceil(traceTotal/TRACE_PAGE));
+    $('tracePageInfo').textContent=`Page ${tracePageNo+1} / ${totalPages} · ${traceTotal} total`;
+    $('tracePrev').disabled=tracePageNo<=0;
+    $('traceNext').disabled=tracePageNo>=totalPages-1;
+  }catch(e){$('traceLogRows').innerHTML=`<tr><td colspan="9" class="empty">${esc(e.message)}</td></tr>`;}
+}
+function tracePage(delta){
+  tracePageNo=Math.max(0,tracePageNo+delta);
+  loadTraceLogs();
+}
+async function toggleTraceDetail(id){
+  const row=document.getElementById('trd-'+id);
+  if(row){row.remove();return;}
+  try{
+    const d=await api('/api/admin/trace/status?id='+encodeURIComponent(id));
+    const rec=(d.records||[])[0]||{};
+    const tr=document.createElement('tr');tr.id='trd-'+id;
+    tr.innerHTML=`<td colspan="9"><div style="font-size:12px;line-height:1.6">
+      <div><b>Endpoint:</b> ${esc(rec.endpoint||'-')} · <b>Method:</b> ${esc(rec.method||'-')} · <b>Status:</b> ${rec.statusCode||'-'} · <b>Account:</b> ${esc(rec.accountEmail||'-')} · <b>Key:</b> ${esc(rec.apiKeyPrefix||'-')}</div>
+      ${rec.error?`<div style="color:var(--red)"><b>Error:</b> ${esc(rec.error)}</div>`:''}
+      ${rec.upstreamError?`<div style="color:var(--orange)"><b>Upstream:</b> ${esc(rec.upstreamError)}</div>`:''}
+      <details><summary>Downstream request</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
+      <details><summary>Upstream request</summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
+      <details><summary>Upstream response</summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
+      <details><summary>Downstream response</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+    </div></td>`;
+    document.querySelector('#traceLogRows').appendChild(tr);
+  }catch(e){showNotice(e.message,'error');}
+}
+async function clearTraceLogs(){
+  try{await api('/api/admin/trace/clear',{method:'POST'});loadTraceLogs();}
+  catch(e){showNotice(e.message,'error');}
+}
+// Poll the live trace list while the usage page is visible so in-progress
+// requests flip to success/error without a manual refresh.
+setInterval(()=>{
+  const page=$('page-usage');
+  if(page&&page.style.display!=='none')loadTraceLogs();
+},3000);
 
 function ugPage(delta){
   ugPageNo=Math.max(0,ugPageNo+delta);
@@ -1382,6 +1566,7 @@ async function openUseKey(id){
   const rec=(d.keys||[]).find(x=>x.id===id);
   if(!rec){showNotice('Key not found','error');return;}
   $('useKeyName').textContent='Current key: '+rec.name+' ('+rec.prefix+')';
+  if(!rec.raw){showNotice('Full key is unavailable for keys created before this feature','error');}
   $('useKeyVal').value=rec.raw||'';
   $('useKeyModal').classList.add('open');
   renderUkeTabs();
@@ -1620,14 +1805,34 @@ async function saveSettings(){  try{
     const listen=$('setListen').value.trim();
     const timeout=$('setTimeout').value.trim();
     const body={};
-    if(listen)body.listen=listen;
+    if(listen)body.listenAddress=listen;
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
     showNotice('Settings saved','success');
   }catch(e){showNotice(e.message,'error');}
 }
 
-let routeTones=[],routeLevels=[];
+async function changeAdminPassword(event){
+  event.preventDefault();
+  const current=$('currentAdminPassword').value;
+  const next=$('newAdminPassword').value;
+  const confirmPassword=$('confirmAdminPassword').value;
+  if(next!==confirmPassword){showNotice('Passwords do not match','error');return;}
+  if(next.length<6){showNotice('The new password must be at least 6 characters','error');return;}
+  const button=$('changePasswordButton');
+  button.disabled=true;
+  try{
+    await api('/api/admin/change-password',{method:'POST',body:JSON.stringify({current_password:current,new_password:next})});
+    $('changePasswordForm').reset();
+    showNotice('Password changed. Please log in again.','success');
+    setTimeout(()=>location.replace('/login'),800);
+  }catch(e){
+    showNotice(e.message,'error');
+    button.disabled=false;
+  }
+}
+
+let routeMappings=[],routeLevels=[],routeCodexModels=[];
 function escAttr(s){return esc(String(s==null?'':s)).replace(/"/g,'&quot;');}
 async function loadSettings(){
   try{
@@ -1635,36 +1840,78 @@ async function loadSettings(){
     const s=d.settings||{};
     $('setListen').value=s.listenAddress||'';
     $('setTimeout').value=s.chatTimeoutSeconds!=null?s.chatTimeoutSeconds:'';
-    routeTones=d.upstreamTones||[];
+    routeCodexModels=d.codexModels||[];
+    routeMappings=(d.upstreamMappings&&d.upstreamMappings.length)?d.upstreamMappings:((d.upstreamTones||[]).map(t=>({name:t,tone:t,enabled:true})));
     routeLevels=(d.reasoningLevels||[]).map(x=>x&&x.effort).filter(Boolean);
     renderModelRoutes(d.catalogModels||[]);
   }catch(e){showNotice(e.message,'error');}
 }
 function renderModelRoutes(rows){
-  if(!rows.length){$('modelRouteRows').innerHTML='<tr><td colspan="5" class="empty">No models available</td></tr>';return;}
   const levels=routeLevels.length?routeLevels:['none','minimal','low','medium','high','xhigh'];
+  $('upstreamMappingOptions').innerHTML=routeMappings.map(m=>`<option value="${escAttr(m.name)}">`).join('');
+  if(!rows.length){$('modelRouteRows').innerHTML='<tr><td colspan="6" class="empty">No models available</td></tr>';return;}
   $('modelRouteRows').innerHTML=rows.map(row=>{
-    const toneSel=routeTones.map(t=>`<option value="${escAttr(t)}"${t===row.upstreamTone?' selected':''}>${esc(t)}</option>`).join('')||`<option value="${escAttr(row.upstreamTone)}">${esc(row.upstreamTone)}</option>`;
     const levelSel=levels.map(l=>`<option value="${escAttr(l)}"${l===row.defaultReasoningLevel?' selected':''}>${esc(l)}</option>`).join('');
     return `<tr>
       <td><code>${esc(row.model)}</code></td>
-      <td><input class="form-input" style="min-width:150px" data-f="displayName" value="${escAttr(row.displayName)}"></td>
-      <td><select class="form-input" style="min-width:170px" data-f="upstreamTone">${toneSel}</select></td>
-      <td><select class="form-input" data-f="defaultReasoningLevel">${levelSel}</select></td>
+      <td><input class="form-input" style="min-width:130px" data-f="displayName" value="${escAttr(row.displayName)}"></td>
+      <td><input class="form-input" style="min-width:150px" list="upstreamMappingOptions" data-f="upstreamMapping" placeholder="Mapping name" value="${escAttr(row.upstreamMapping||'')}"></td>
+      <td><select class="form-input" style="min-width:120px" data-f="defaultReasoningLevel">${levelSel}</select></td>
       <td><label style="display:inline-flex;align-items:center;min-height:36px"><input type="checkbox" data-f="enabled"${row.enabled?' checked':''}></label></td>
+      <td><button class="btn btn-sm danger" onclick="removeModelRouteRow(this)"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button></td>
     </tr>`;
   }).join('');
+  try{lucide.createIcons();}catch(e){}
+}
+function addModelRouteRow(){
+  const levels=routeLevels.length?routeLevels:['none','minimal','low','medium','high','xhigh'];
+  const levelSel=levels.map(l=>`<option value="${escAttr(l)}"${l==='medium'?' selected':''}>${esc(l)}</option>`).join('');
+  const empty=$('modelRouteRows').querySelector('tr .empty');
+  if(empty)$('modelRouteRows').innerHTML='';
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td><input class="form-input" style="min-width:120px" data-f="model" placeholder="model-id"></td>
+    <td><input class="form-input" style="min-width:130px" data-f="displayName" value=""></td>
+    <td><input class="form-input" style="min-width:150px" list="upstreamMappingOptions" data-f="upstreamMapping" placeholder="Mapping name"></td>
+    <td><select class="form-input" style="min-width:120px" data-f="defaultReasoningLevel">${levelSel}</select></td>
+    <td><label style="display:inline-flex;align-items:center;min-height:36px"><input type="checkbox" data-f="enabled" checked></label></td>
+    <td><button class="btn btn-sm danger" onclick="removeModelRouteRow(this)"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button></td>`;
+  $('modelRouteRows').appendChild(tr);
+  try{lucide.createIcons();}catch(e){}
+  tr.querySelector('[data-f="model"]').focus();
+}
+function removeModelRouteRow(btn){
+  const tr=btn.closest('tr');
+  if(!tr)return;
+  const model=tr.querySelector('code')?.textContent||tr.querySelector('[data-f="model"]')?.value||'this model';
+  if(!confirm('Remove "'+model+'" from the routing table?'))return;
+  tr.remove();
 }
 async function saveModelRoutes(){
   try{
     const rows=[...document.querySelectorAll('#modelRouteRows tr')].map(tr=>{
-      const model=tr.querySelector('code')?.textContent.trim();
+      let model=(tr.querySelector('code')?.textContent||tr.querySelector('[data-f="model"]')?.value||'').trim();
       if(!model)return null;
       const g=f=>{const el=tr.querySelector(`[data-f="${f}"]`);return el?(el.type==='checkbox'?el.checked:el.value.trim()):undefined;};
-      return {publicModel:model,displayName:g('displayName')||model,upstreamTone:g('upstreamTone'),defaultReasoningLevel:g('defaultReasoningLevel'),enabled:g('enabled')};
+      return {publicModel:model,displayName:g('displayName')||model,upstreamMapping:g('upstreamMapping')||'',defaultReasoningLevel:g('defaultReasoningLevel')||'medium',enabled:g('enabled')};
     }).filter(Boolean);
-    if(!rows.length)throw new Error('No models to save');
-    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({modelMappings:rows})});
+    if(!rows.length&&!routeCodexModels.length)throw new Error('No models to save');
+    const ids=new Set(rows.map(r=>r.publicModel.toLowerCase()));
+    if(ids.size!==rows.length)throw new Error('Duplicate model ids are not allowed');
+    // Models route by mapping name: rebuild the upstream mapping set from the
+    // names referenced in the route table. Existing mappings keep their tone;
+    // previously unseen names default to tone = name (the mapping's tone is
+    // sent to the upstream ChatHub). Lookup is case-insensitive, matching the
+    // server's route resolution.
+    const mappings=(routeMappings||[]).slice();
+    rows.forEach(r=>{
+      const t=r.upstreamMapping;
+      if(t&&!mappings.some(m=>m.name.toLowerCase()===t.toLowerCase())){
+        mappings.push({name:t,tone:t,enabled:true});
+      }
+    });
+    // Built-in models that are no longer in the table are treated as deleted.
+    const hiddenModels=(routeCodexModels||[]).filter(id=>!ids.has(id.toLowerCase()));
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({modelMappings:rows,upstreamMappings:mappings,hiddenModels})});
     showNotice('Model routing saved','success');
     loadSettings();
   }catch(e){showNotice(e.message,'error');}
@@ -1673,6 +1920,7 @@ async function saveModelRoutes(){
 // Init
 try{lucide.createIcons();}catch(e){}
 fetch('/api/admin/session').then(r=>r.json()).then(d=>{
+  if(d.authenticated&&d.must_change_password){location.href='/login';return;}
   if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage('dashboard');loadStats();loadOnboarding();}
   else{$('login').style.display='grid';}
 }).catch(()=>{$('login').style.display='grid';});

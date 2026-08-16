@@ -62,8 +62,18 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		size = "1024x1024"
 	}
 	prompt := fmt.Sprintf("Generate an image with the Flux model. Size: %s. Description: %s. Return the image URL directly.", size, b.Prompt)
-	res, err := s.chat.Chat(ctx, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{Text: prompt, Tone: "magic"})
+	res, err := s.chat.Chat(ctx, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{Text: prompt, Tone: "magic", BindAccount: acc.ID})
 	if err != nil {
+		s.usage.record(UsageRecord{
+			Time:         time.Now(),
+			APIKeyPrefix: apiKeyPrefix(r),
+			AccountEmail: acc.Email,
+			Model:        firstNonEmpty(b.Model, "flux"),
+			Endpoint:     "/v1/images/generations",
+			DurationMs:   time.Since(startedAt).Milliseconds(),
+			Status:       502,
+			Error:        truncatedError(err),
+		})
 		http.Error(w, upstreamError(err), 502)
 		return
 	}
@@ -123,7 +133,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	}
 	s.usage.record(UsageRecord{
 		Time:         time.Now(),
-		APIKeyPrefix: extractAPIKey(r),
+		APIKeyPrefix: apiKeyPrefix(r),
 		AccountEmail: acc.Email,
 		Model:        firstNonEmpty(b.Model, "flux"),
 		Endpoint:     "/v1/images/generations",

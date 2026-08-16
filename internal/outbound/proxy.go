@@ -126,12 +126,38 @@ func HTTPClient() *http.Client {
 	}
 	return c
 }
+
+// HTTPClientFor returns the pool HTTP client pinned to the account's bound
+// proxy node. Without a pool the shared direct client is returned.
+func HTTPClientFor(accountID string) *http.Client {
+	clientsMu.RLock()
+	p, c := proxyPool, clients.HTTP
+	clientsMu.RUnlock()
+	if p != nil {
+		return p.HTTPClientFor(accountID)
+	}
+	return c
+}
 func WebSocketDialer() *websocket.Dialer {
 	clientsMu.RLock()
 	p, c := proxyPool, clients.WebSocket
 	clientsMu.RUnlock()
 	if p != nil {
 		return p.WebSocketDialer()
+	}
+	d := *c
+	return &d
+}
+
+// WebSocketDialerFor returns the pool WebSocket dialer pinned to the account's
+// bound proxy node (account-node binding; see Pool.pickFor). Without a pool the
+// shared direct dialer is returned.
+func WebSocketDialerFor(accountID string) *websocket.Dialer {
+	clientsMu.RLock()
+	p, c := proxyPool, clients.WebSocket
+	clientsMu.RUnlock()
+	if p != nil {
+		return p.WebSocketDialerFor(accountID)
 	}
 	d := *c
 	return &d

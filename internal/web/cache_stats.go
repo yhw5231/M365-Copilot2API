@@ -68,8 +68,7 @@ func openCacheStats() *CacheStats {
 }
 
 func statsPath() string {
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "m365-copilot2api", "stats.json")
+	return configuredPath("M365_STATS_FILE", "stats.json")
 }
 
 func (s *CacheStats) RecordRequest(apiKey string, hit bool, tokensSent, tokensSaved int64, activeSessions int) {

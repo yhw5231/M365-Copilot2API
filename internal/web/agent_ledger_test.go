@@ -98,4 +98,10 @@ func TestCompletionGuardRejectsUnsupportedSuccess(t *testing.T) {
 	if !completionEvidenceAllows("I cannot confirm completion because no tool results were returned.", buildAgentLedger(nil)) {
 		t.Fatal("honest incomplete response rejected")
 	}
+	// A tool-less conversational answer that makes no completion claim must
+	// still pass: the guard only rejects self-congratulatory success with no
+	// supporting tool evidence.
+	if !completionEvidenceAllows("Here is the code you asked for.", buildAgentLedger(nil)) {
+		t.Fatal("plain conversational answer rejected")
+	}
 }

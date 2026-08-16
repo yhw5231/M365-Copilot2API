@@ -1,6 +1,39 @@
 package web
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"testing"
+)
+
+// 密钥明文持久化保存，控制台可重复显示完整密钥。
+func TestAPIKeyRawPersistedForRepeatedDisplay(t *testing.T) {
+	path := t.TempDir() + "/api-keys.json"
+	store := newAPIKeyStore(path)
+	_, raw, err := store.create("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Keys[0].Raw; got != raw {
+		t.Fatalf("stored raw = %q, want %q", got, raw)
+	}
+	// 重新打开（模拟重启）后明文仍在。
+	re := newAPIKeyStore(path)
+	if b, e := os.ReadFile(path); e != nil || json.Unmarshal(b, re) != nil {
+		t.Fatalf("reload failed: %v", e)
+	}
+	if got := re.Keys[0].Raw; got != raw {
+		t.Fatalf("raw lost after reload: %q", got)
+	}
+	// list 返回 raw 供控制台显示，但 Hash 永不下发。
+	out := re.list()
+	if len(out) != 1 || out[0].Raw != raw {
+		t.Fatalf("list raw = %q, want %q", out[0].Raw, raw)
+	}
+	if out[0].Hash != "" {
+		t.Fatalf("list must not expose hash")
+	}
+}
 
 func TestAPIKeyCreateRollsBackWhenPersistenceFails(t *testing.T) {
 	store := newAPIKeyStore(t.TempDir())

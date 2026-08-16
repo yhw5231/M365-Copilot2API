@@ -280,14 +280,16 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	out["usage"] = estimate.Values
 	out["m365_usage_source"] = estimate.Source
 	s.usage.record(UsageRecord{
-		Time:         time.Now(),
-		APIKeyPrefix: extractAPIKey(r),
-		Model:        firstNonEmpty(body.Model, "m365-copilot"),
-		Endpoint:     "/v1/responses",
-		InputTokens:  int64(estimate.Values["input_tokens"].(int)),
-		OutputTokens: int64(estimate.Values["output_tokens"].(int)),
-		DurationMs:   time.Since(startedAt).Milliseconds(),
-		Status:       200,
+		Time:           time.Now(),
+		APIKeyPrefix:   apiKeyPrefix(r),
+		Model:          firstNonEmpty(body.Model, "m365-copilot"),
+		ReasoningLevel: o.ReasoningEffort,
+		Endpoint:       "/v1/responses",
+		Stream:         o.Stream,
+		InputTokens:    int64(estimate.Values["input_tokens"].(int)),
+		OutputTokens:   int64(estimate.Values["output_tokens"].(int)),
+		DurationMs:     time.Since(startedAt).Milliseconds(),
+		Status:         200,
 	})
 	// Retain the normalized history so a subsequent previous_response_id can
 	// validate its function_call_output against the original tool call.
@@ -377,14 +379,16 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, "")
 	s.usage.record(UsageRecord{
-		Time:         time.Now(),
-		APIKeyPrefix: extractAPIKey(r),
-		Model:        firstNonEmpty(body.Model, "m365-copilot"),
-		Endpoint:     "/v1/messages",
-		InputTokens:  int64(estimate.Values["input_tokens"].(int)),
-		OutputTokens: int64(estimate.Values["output_tokens"].(int)),
-		DurationMs:   time.Since(startedAt).Milliseconds(),
-		Status:       200,
+		Time:           time.Now(),
+		APIKeyPrefix:   apiKeyPrefix(r),
+		Model:          firstNonEmpty(body.Model, "m365-copilot"),
+		ReasoningLevel: o.ReasoningEffort,
+		Endpoint:       "/v1/messages",
+		Stream:         o.Stream,
+		InputTokens:    int64(estimate.Values["input_tokens"].(int)),
+		OutputTokens:   int64(estimate.Values["output_tokens"].(int)),
+		DurationMs:     time.Since(startedAt).Milliseconds(),
+		Status:         200,
 	})
 	writeAnthropicResult(w, firstNonEmpty(body.Model, "m365-copilot"), body.Stream, out)
 }

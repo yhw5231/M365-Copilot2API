@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
+
+	"m365-copilot2api/internal/storage"
 )
 
 type AccountToken struct {
@@ -45,23 +46,15 @@ type inflightRefresh struct {
 }
 
 func CachePath() string {
-	if dir := os.Getenv("M365_DATA_DIR"); dir != "" {
-		return filepath.Join(dir, "accounts.json")
+	// Explicit file paths win over a derived data directory. This matters when
+	// a deployment keeps general state in a mounted directory but puts account
+	// tokens on a separate volume.
+	for _, name := range []string{"M365_CONFIG", "M365_TOKEN_CACHE", "M365_TOKEN_FILE"} {
+		if p := storage.EnvPath(name); p != "" {
+			return p
+		}
 	}
-	if p := os.Getenv("M365_CONFIG"); p != "" {
-		return p
-	}
-	if p := os.Getenv("M365_TOKEN_CACHE"); p != "" {
-		return p
-	}
-	if p := os.Getenv("M365_TOKEN_FILE"); p != "" {
-		return p
-	}
-	h, err := os.UserHomeDir()
-	if err != nil || h == "" {
-		return filepath.Join(".", ".config", "m365-copilot2api", "accounts.json")
-	}
-	return filepath.Join(h, ".config", "m365-copilot2api", "accounts.json")
+	return storage.Path("", "accounts.json")
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -97,12 +90,6 @@ func (s *Store) Path() string {
 }
 
 func (s *Store) saveLocked() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		// /tmp has no nested dir needs usually; ignore if parent is root-ish
-		if filepath.Dir(s.path) != "/" && filepath.Dir(s.path) != "." {
-			// still try write below
-		}
-	}
 	b, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return err
@@ -111,11 +98,7 @@ func (s *Store) saveLocked() error {
 }
 
 func atomicWrite(path string, b []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return storage.WriteFileAtomic(path, b, perm)
 }
 
 func (s *Store) List() []AccountToken {

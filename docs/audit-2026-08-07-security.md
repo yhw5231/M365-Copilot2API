@@ -1,7 +1,7 @@
 # M365-Copilot2API 安全审计报告
 
 > 审计范围：`internal/web`、`internal/auth`、`internal/chathub`、`internal/outbound`、`internal/mcp`、`cmd/server`、`docker-compose.yml`、`Dockerfile`、前端 `web/index.html` 及落盘数据文件。只读分析，未修改任何代码。
-> 部署背景：默认监听 `127.0.0.1:4141`（cmd/server/main.go:23-26）；docker-compose 仅映射回环端口。以下风险在「暴露公网 / 多租户分发 API key」场景下放大概率最高。
+> 部署背景：默认监听 `127.0.0.1:9090`（cmd/server/main.go:27）；docker-compose 仅映射回环端口。以下风险在「暴露公网 / 多租户分发 API key」场景下放大概率最高。
 
 ---
 

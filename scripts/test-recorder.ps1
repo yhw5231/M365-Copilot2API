@@ -2,7 +2,7 @@
 # 用途：自动化测试各端点，记录请求/响应/延迟/错误，便于回归测试
 
 param(
-    [string]$BaseUrl = "http://127.0.0.1:4141",
+    [string]$BaseUrl = "http://127.0.0.1:9090",
     [string]$LogFile = "D:\M365-Copilot2API\test-results.jsonl",
     [string]$AdminPassword = $env:ADMIN_PASSWORD
 )

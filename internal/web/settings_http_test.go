@@ -58,14 +58,15 @@ func TestAdminSettingsHTTP(t *testing.T) {
 		t.Fatalf("GET=%d %s", w.Code, w.Body.String())
 	}
 	var getBody struct {
-		Settings      runtimeSettings `json:"settings"`
-		CodexModels   []string        `json:"codexModels"`
-		UpstreamTones []string        `json:"upstreamTones"`
+		Settings        runtimeSettings   `json:"settings"`
+		CodexModels     []string          `json:"codexModels"`
+		UpstreamTones   []string          `json:"upstreamTones"`
+		UpstreamMappings []upstreamMapping `json:"upstreamMappings"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &getBody); err != nil {
 		t.Fatal(err)
 	}
-	if len(getBody.Settings.ModelMappings) == 0 || len(getBody.CodexModels) == 0 || len(getBody.UpstreamTones) == 0 {
+	if len(getBody.Settings.ModelMappings) == 0 || len(getBody.CodexModels) == 0 || len(getBody.UpstreamTones) == 0 || len(getBody.UpstreamMappings) == 0 {
 		t.Fatalf("missing model mapping settings: %#v", getBody)
 	}
 	v := st.get()

@@ -18,12 +18,13 @@ COPY --from=build /src/web /app/web
 # m365 user before exec'ing the server.
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
-EXPOSE 4141
-ENV M365_LISTEN=0.0.0.0:4141 \
+EXPOSE 9090
+ENV M365_LISTEN=0.0.0.0:9090 \
     M365_DATA_DIR=/data \
     M365_CONFIG=/data/accounts.json \
     M365_TOKEN_CACHE=/data/token-cache.json \
     M365_SESSION_CACHE=/data/sessions.json \
+    M365_CONVERSATION_SESSION_CACHE=/data/conversation-sessions.json \
     M365_API_KEYS=/data/api-keys.json \
     M365_ADMIN_PASSWORD_FILE=/data/admin-password \
     M365_ADMIN_PASSWORD_BOOTSTRAP_FILE=/run/secrets/m365_admin_password

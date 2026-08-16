@@ -60,6 +60,13 @@ type Request struct {
 	MCPServerURL   string // URL of the MCP HTTP SSE server for tool discovery
 	// Started is true only for the first turn of a ChatHub conversation.
 	Started bool
+	// TraceID correlates OnUpstream lifecycle frames with a request-level trace
+	// record so the web layer can attach them to the correct debug entry.
+	TraceID string
+	// BindAccount pins this request's ChatHub traffic to the proxy node bound
+	// to the account ID (account-node binding in the outbound pool). Empty
+	// keeps the pool's default round-robin behavior.
+	BindAccount string
 }
 
 // StreamEvent is the protocol-neutral event exposed while ChatHub is still
@@ -88,6 +95,9 @@ type Result struct {
 	Events         []json.RawMessage
 	Normalized     []Event
 	Images         []string
+	// TTFTMs is the time from upstream payload submission to the first visible
+	// text delta, in milliseconds.
+	TTFTMs int64
 }
 
 type Client struct {
@@ -96,6 +106,10 @@ type Client struct {
 	Dialer     *websocket.Dialer
 	// Trace receives attachment-only metadata; URL contents are never exposed.
 	Trace func(map[string]any)
+	// OnUpstream receives request-lifecycle frames for debug tracing. Every
+	// meta map is freshly allocated per call and must not be retained.
+	// traceID correlates the frame with the originating trace record.
+	OnUpstream func(traceID, stage string, meta map[string]any)
 }
 
 func NewClient() *Client {
@@ -169,7 +183,19 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		firstTurn = true
 	}
 	requestID := uuid.NewString()
-	if err := c.uploadAttachments(ctx, acc, req.ConversationID, req.Attachments); err != nil {
+	// Account-node binding: when the request names a bound account, its
+	// ChatHub traffic (attachment upload/download and the WebSocket stream)
+	// goes through the proxy node pinned to that account.
+	httpClient := c.HTTPClient
+	dialer := c.Dialer
+	if req.BindAccount != "" {
+		httpClient = outbound.HTTPClientFor(req.BindAccount)
+		dialer = outbound.WebSocketDialerFor(req.BindAccount)
+	}
+	if err := c.uploadAttachments(ctx, acc, req.ConversationID, req.Attachments, httpClient); err != nil {
+		if c.OnUpstream != nil {
+			c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": err.Error()})
+		}
 		return Result{}, fmt.Errorf("upload attachment: %w", err)
 	}
 
@@ -179,9 +205,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 
 	dialStarted := time.Now()
-	conn, _, err := c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
+	conn, _, err := dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
 	log.Printf("chathub timing ws_dial_ms=%d total_ms=%d", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds())
 	if err != nil {
+		if c.OnUpstream != nil {
+			c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "ws dial: " + err.Error()})
+		}
 		return Result{}, fmt.Errorf("ws dial: %w", err)
 	}
 	defer conn.Close()
@@ -190,14 +219,32 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"protocol":"json","version":1}`+rs)); err != nil {
+		if c.OnUpstream != nil {
+			c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "handshake send: " + err.Error()})
+		}
 		return Result{}, fmt.Errorf("handshake send: %w", err)
 	}
 	if _, _, err := conn.ReadMessage(); err != nil {
+		if c.OnUpstream != nil {
+			c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "handshake recv: " + err.Error()})
+		}
 		return Result{}, fmt.Errorf("handshake recv: %w", err)
 	}
 
 	payload := chatPayload(req.Text, req.SessionID, req.ConversationID, requestID, req.Tone, firstTurn, req.Attachments, req.Tools, req.ToolChoice, req.MCPServerURL)
 	log.Printf("chathub prompt-trace text=%d tools=%d payload=%d", len(req.Text), len(req.Tools), len(payload))
+	if c.OnUpstream != nil {
+		c.OnUpstream(req.TraceID, "upstream_request", map[string]any{
+			"endpoint":        "ws://substrate.office.com/m365Copilot/Chathub",
+			"conversation_id": req.ConversationID,
+			"session_id":      req.SessionID,
+			"prompt_len":      len(req.Text),
+			"tone":            req.Tone,
+			"tools":           len(req.Tools),
+			"attachments":     len(req.Attachments),
+			"payload":         payload,
+		})
+	}
 	if c.Trace != nil {
 		meta := map[string]any{"stage": "chathub_payload", "attachment_count": len(req.Attachments), "payload_has_attachments": strings.Contains(payload, `"attachments"`), "attachments": []map[string]any{}}
 		for _, a := range req.Attachments {
@@ -208,17 +255,28 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	log.Printf("chathub timing handshake_ms=%d", time.Since(dialStarted).Milliseconds())
 	payloadSentAt := time.Now()
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+		if c.OnUpstream != nil {
+			c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "chat send: " + err.Error()})
+		}
 		return Result{}, fmt.Errorf("chat send: %w", err)
 	}
 
 	var deltas []string
 	var streamed strings.Builder
+	var firstDeltaAt time.Time
 	emitDelta := func(d string) error {
 		if d == "" {
 			return nil
 		}
 		if streamed.Len() == 0 {
-			log.Printf("chathub timing first_delta_ms=%d len=%d", time.Since(payloadSentAt).Milliseconds(), len(d))
+			firstDeltaAt = time.Now()
+			log.Printf("chathub timing first_delta_ms=%d len=%d", firstDeltaAt.Sub(payloadSentAt).Milliseconds(), len(d))
+			if c.OnUpstream != nil {
+				c.OnUpstream(req.TraceID, "upstream_first_delta", map[string]any{
+					"first_delta_ms": firstDeltaAt.Sub(payloadSentAt).Milliseconds(),
+					"len":            len(d),
+				})
+			}
 		}
 		streamed.WriteString(d)
 		deltas = append(deltas, d)
@@ -295,12 +353,18 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		var read wsRead
 		select {
 		case <-ctx.Done():
+			if c.OnUpstream != nil {
+				c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": ctx.Err().Error()})
+			}
 			return Result{}, ctx.Err()
 		case read = <-readCh:
 		}
 		if read.err != nil {
 			// Never convert a timeout or dropped WebSocket into a successful
 			// partial response. A response is complete only after SignalR type 3.
+			if c.OnUpstream != nil {
+				c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "ws read before completion: " + read.err.Error()})
+			}
 			return Result{}, fmt.Errorf("ws read before completion: %w", read.err)
 		}
 		for _, part := range strings.Split(string(read.msg), rs) {
@@ -410,6 +474,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 
 			if int(t) == 3 {
 				if errObj, ok := obj["error"].(map[string]any); ok {
+					if c.OnUpstream != nil {
+						c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": fmt.Sprintf("chathub completion error: %v", errObj)})
+					}
 					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
 				}
 				// end of stream
@@ -419,7 +486,33 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					text = strings.Join(deltas, "")
 				}
 				if rateLimited(text) {
+					if c.OnUpstream != nil {
+						c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": ErrRateLimitNotice.Error()})
+					}
 					return Result{}, ErrRateLimitNotice
+				}
+				ttft := int64(0)
+				if !firstDeltaAt.IsZero() {
+					ttft = firstDeltaAt.Sub(payloadSentAt).Milliseconds()
+				}
+				if c.OnUpstream != nil {
+					preview := text
+					if len(preview) > 500 {
+						preview = preview[:500]
+					}
+					reasoning := reasoningBuf.String()
+					if len(reasoning) > 4096 {
+						reasoning = reasoning[:4096]
+					}
+					c.OnUpstream(req.TraceID, "upstream_response", map[string]any{
+						"text":          text,
+						"reasoning":     reasoning,
+						"text_len":      len(text),
+						"reasoning_len": reasoningBuf.Len(),
+						"events":        len(events),
+						"ttft_ms":       ttft,
+						"text_preview":  preview,
+					})
 				}
 				return Result{
 					Text:           text,
@@ -432,6 +525,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					Events:         events,
 					Normalized:     NormalizeEvents(events),
 					Images:         imageURLs(events),
+					TTFTMs:         ttft,
 				}, nil
 			}
 		}
@@ -440,6 +534,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	// Reaching the overall deadline without a SignalR completion frame is
 	// an incomplete upstream response. Do not return accumulated deltas as if
 	// they were a successful, finished answer.
+	if c.OnUpstream != nil {
+		c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "chathub response deadline exceeded before completion"})
+	}
 	return Result{}, fmt.Errorf("chathub response deadline exceeded before completion")
 }
 
@@ -465,7 +562,7 @@ func buildWSURL(acc Account, sessionID, conversationID, requestID string) (strin
 	return u, nil
 }
 
-func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversationID string, attachments []Attachment) error {
+func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversationID string, attachments []Attachment, httpClient *http.Client) error {
 	imageCount := 0
 	for i := range attachments {
 		a := &attachments[i]
@@ -486,7 +583,7 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 			if err != nil {
 				continue
 			}
-			resp, err := c.HTTPClient.Do(req)
+			resp, err := httpClient.Do(req)
 			if err != nil {
 				continue
 			}
@@ -548,7 +645,7 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 				}
 			}
 		}
-		resp, err := c.HTTPClient.Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			log.Printf("[upload] http error: %v", err)
 			continue

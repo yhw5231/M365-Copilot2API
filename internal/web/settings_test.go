@@ -39,22 +39,32 @@ func TestSettingsPersistAndValidate(t *testing.T) {
 	}
 }
 
+func TestSettingsFileOverrideWinsOverDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	explicit := filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("M365_DATA_DIR", dataDir)
+	t.Setenv("M365_SETTINGS_FILE", explicit)
+	if got := settingsPath(); got != explicit {
+		t.Fatalf("settingsPath()=%q, want %q", got, explicit)
+	}
+}
+
 func TestModelMappingsValidate(t *testing.T) {
 	v := defaultRuntimeSettings()
-	v.ModelMappings = []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"}}
+	v.ModelMappings = []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"}}
 	if err := validateSettings(v); err != nil {
 		t.Fatal(err)
 	}
-	v.ModelMappings[0].UpstreamTone = "unknown"
+	v.ModelMappings[0].UpstreamMapping = "unknown"
 	if err := validateSettings(v); err == nil {
 		t.Fatal("accepted unknown upstream tone")
 	}
-	v.ModelMappings[0].UpstreamTone = "Gpt_5_6_Reasoning"
+	v.ModelMappings[0].UpstreamMapping = "Gpt_5_6_Reasoning"
 	v.ModelMappings = append(v.ModelMappings, v.ModelMappings[0])
 	if err := validateSettings(v); err == nil {
 		t.Fatal("accepted duplicate public model")
 	}
-	v.ModelMappings = []modelMapping{{PublicModel: "custom-codex-route", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "Custom Codex Route", DefaultReasoningLevel: "medium"}}
+	v.ModelMappings = []modelMapping{{PublicModel: "custom-codex-route", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "Custom Codex Route", DefaultReasoningLevel: "medium"}}
 	if err := validateSettings(v); err != nil {
 		t.Fatalf("rejected custom public model: %v", err)
 	}
@@ -64,8 +74,8 @@ func TestModelMappingsValidateWithEnabledFlag(t *testing.T) {
 	off := false
 	v := defaultRuntimeSettings()
 	v.ModelMappings = []modelMapping{
-		{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low", Enabled: &off},
-		{PublicModel: "gpt-5.4", UpstreamTone: "Gpt_5_4_Chat", DisplayName: "GPT-5.4", DefaultReasoningLevel: "high"},
+		{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low", Enabled: &off},
+		{PublicModel: "gpt-5.4", UpstreamMapping: "Gpt_5_4_Chat", DisplayName: "GPT-5.4", DefaultReasoningLevel: "high"},
 	}
 	if err := validateSettings(v); err != nil {
 		t.Fatalf("routing mappings rejected: %v", err)
@@ -82,10 +92,10 @@ func TestModelMappingsValidateWithEnabledFlag(t *testing.T) {
 func TestModelRouteTableCoversConfigurableModels(t *testing.T) {
 	off := false
 	mappings := []modelMapping{
-		{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low", Enabled: &off},
-		{PublicModel: "custom-route", UpstreamTone: "Gpt_5_4_Chat", DisplayName: "Custom", DefaultReasoningLevel: "high"},
+		{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low", Enabled: &off},
+		{PublicModel: "custom-route", UpstreamMapping: "Gpt_5_4_Chat", DisplayName: "Custom", DefaultReasoningLevel: "high"},
 	}
-	rows := modelRouteTable(mappings)
+	rows := modelRouteTable(mappings, defaultUpstreamMappings, nil)
 	byID := make(map[string]modelRouteConfig, len(rows))
 	for _, r := range rows {
 		byID[strings.ToLower(r.Model)] = r
@@ -93,10 +103,10 @@ func TestModelRouteTableCoversConfigurableModels(t *testing.T) {
 	if row, ok := byID["gpt-5.6-sol"]; !ok || row.Enabled || row.DefaultReasoningLevel != "low" {
 		t.Fatalf("sol row=%+v ok=%t", row, ok)
 	}
-	if row, ok := byID["custom-route"]; !ok || !row.Enabled || row.UpstreamTone != "Gpt_5_4_Chat" || row.DefaultReasoningLevel != "high" {
+	if row, ok := byID["custom-route"]; !ok || !row.Enabled || row.UpstreamMapping != "Gpt_5_4_Chat" || row.DefaultReasoningLevel != "high" {
 		t.Fatalf("custom row=%+v ok=%t", row, ok)
 	}
-	if row, ok := byID["gpt-5.4"]; !ok || row.UpstreamTone != "Gpt_5_4_Chat" || row.DefaultReasoningLevel != "medium" {
+	if row, ok := byID["gpt-5.4"]; !ok || row.UpstreamMapping != "Gpt_5_4_Chat" || row.DefaultReasoningLevel != "medium" {
 		t.Fatalf("built-in default row=%+v ok=%t", row, ok)
 	}
 	for _, id := range configurableCodexModels {

@@ -60,10 +60,7 @@ func openConversationManager() *conversationManager {
 			maxAge = time.Duration(h) * time.Hour
 		}
 	}
-	path := os.Getenv("M365_CONVERSATION_CACHE")
-	if path == "" {
-		path = "conversations.json"
-	}
+	path := configuredPath("M365_CONVERSATION_CACHE", "conversations.json")
 	cm := &conversationManager{
 		path:      path,
 		data:      map[string]managedConversation{},

@@ -20,17 +20,16 @@ type loginAttempt struct {
 }
 
 func adminPasswordPath() string {
-	if dir := strings.TrimSpace(os.Getenv("M365_DATA_DIR")); dir != "" {
-		return filepath.Join(dir, "admin-password")
-	}
-	if p := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD_FILE")); p != "" {
+	if p := envPath("M365_ADMIN_PASSWORD_FILE"); p != "" {
 		return p
 	}
-	if p := strings.TrimSpace(os.Getenv("M365_CONFIG")); p != "" {
+	if dir := envPath("M365_DATA_DIR"); dir != "" {
+		return filepath.Join(dir, "admin-password")
+	}
+	if p := envPath("M365_CONFIG"); p != "" {
 		return filepath.Join(filepath.Dir(p), "admin-password")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "m365-copilot2api", "admin-password")
+	return defaultDataPath("admin-password")
 }
 func loadAdminPassword() (string, bool) {
 	// The writable persisted value takes precedence over bootstrap sources.
@@ -47,22 +46,19 @@ func loadAdminPassword() (string, bool) {
 		}
 		return p, p == defaultAdminPassword
 	}
-	if bootstrap := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE")); bootstrap != "" {
+	if p := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD")); p != "" {
+		return p, p == defaultAdminPassword
+	}
+	if bootstrap := envPath("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE"); bootstrap != "" {
 		if b, e := os.ReadFile(bootstrap); e == nil && strings.TrimSpace(string(b)) != "" {
 			p := strings.TrimSpace(string(b))
 			return p, p == defaultAdminPassword
 		}
 	}
-	if p := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD")); p != "" {
-		return p, p == defaultAdminPassword
-	}
 	return defaultAdminPassword, true
 }
 func saveAdminPassword(password string) error {
 	p := adminPasswordPath()
-	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
-		return err
-	}
 	return writeFileAtomic(p, []byte(password+"\n"), 0600)
 }
 func clientIP(r *http.Request) string {

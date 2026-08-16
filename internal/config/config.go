@@ -3,7 +3,8 @@ package config
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
+
+	"m365-copilot2api/internal/storage"
 )
 
 type Account struct {
@@ -18,11 +19,7 @@ type Store struct {
 }
 
 func Path() string {
-	if p := os.Getenv("M365_CONFIG"); p != "" {
-		return p
-	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "m365-copilot2api", "accounts.json")
+	return storage.Path("M365_CONFIG", "accounts.json")
 }
 
 func Load() (Store, error) {
@@ -40,12 +37,9 @@ func Load() (Store, error) {
 
 func Save(s Store) error {
 	p := Path()
-	if e := os.MkdirAll(filepath.Dir(p), 0o700); e != nil {
-		return e
-	}
 	b, e := json.MarshalIndent(s, "", "  ")
 	if e != nil {
 		return e
 	}
-	return os.WriteFile(p, b, 0o600)
+	return storage.WriteFileAtomic(p, b, 0o600)
 }

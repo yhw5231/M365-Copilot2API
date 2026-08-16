@@ -59,3 +59,34 @@ func TestBootstrapPasswordUsesWritablePersistentPath(t *testing.T) {
 		t.Fatalf("persisted password=%q", b)
 	}
 }
+
+func TestExplicitPasswordFileOverridesDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	explicit := filepath.Join(t.TempDir(), "admin-password")
+	if err := os.WriteFile(filepath.Join(dataDir, "admin-password"), []byte("data-password\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(explicit, []byte("explicit-password\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("M365_DATA_DIR", dataDir)
+	t.Setenv("M365_ADMIN_PASSWORD_FILE", explicit)
+	t.Setenv("M365_ADMIN_PASSWORD", "")
+	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
+
+	got, mustChange := loadAdminPassword()
+	if got != "explicit-password" || mustChange {
+		t.Fatalf("loadAdminPassword()=(%q,%v)", got, mustChange)
+	}
+}
+
+func TestPasswordSaveReportsUnwritableParent(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parent, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("M365_ADMIN_PASSWORD_FILE", filepath.Join(parent, "admin-password"))
+	if err := saveAdminPassword("a-new-password-123"); err == nil {
+		t.Fatal("expected password persistence error")
+	}
+}

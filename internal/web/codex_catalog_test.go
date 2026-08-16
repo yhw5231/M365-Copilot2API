@@ -137,21 +137,31 @@ func TestModelsAdvertiseContextAndReasoning(t *testing.T) {
 }
 
 func TestConfiguredModelMappingsDriveCatalogAndRouting(t *testing.T) {
-	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"}}
+	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"}}
 	models := configuredModelSpecs(mappings)
-	if len(models) != len(gatewayModels)+1 || models[len(models)-1].ID != "gpt-5.6-sol" || models[len(models)-1].DefaultReasoningLevel != "low" {
+	// 与路由表一致：内置可服务的 gpt-5.2/5.4/5.5 + 已启用的 gpt-5.6-sol。
+	if len(models) != 4 || models[3].ID != "gpt-5.6-sol" || models[3].DefaultReasoningLevel != "low" {
 		t.Fatalf("configured models=%#v", models)
 	}
 	mapping, ok := configuredModelMapping("GPT-5.6-SOL", mappings)
-	if !ok || mapping.UpstreamTone != "Gpt_5_6_Reasoning" {
+	if !ok || mapping.UpstreamMapping != "Gpt_5_6_Reasoning" {
 		t.Fatalf("mapping=%#v ok=%t", mapping, ok)
 	}
 	if tone, ok := configuredModelTone("gpt-5.6-sol", mappings); !ok || tone != "Gpt_5_6_Reasoning" {
 		t.Fatalf("tone=%q ok=%t", tone, ok)
 	}
-	override := configuredModelSpecs([]modelMapping{{PublicModel: "gpt-5.5", UpstreamTone: "Gpt_5_5_Reasoning", DisplayName: "GPT-5.5", DefaultReasoningLevel: "high"}})
-	if len(override) != len(gatewayModels) || override[5].DefaultReasoningLevel != "high" {
-		t.Fatalf("built-in override=%#v", override)
+	override := configuredModelSpecs([]modelMapping{{PublicModel: "gpt-5.5", UpstreamMapping: "Gpt_5_5_Reasoning", DisplayName: "GPT-5.5", DefaultReasoningLevel: "high"}})
+	if len(override) != 3 {
+		t.Fatalf("built-in override models=%#v", override)
+	}
+	found := false
+	for _, m := range override {
+		if m.ID == "gpt-5.5" && m.DefaultReasoningLevel == "high" && m.DisplayName == "GPT-5.5" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("built-in override not applied: %#v", override)
 	}
 }
 
@@ -186,23 +196,24 @@ func TestChatRejectsInvalidReasoningBeforeUpstream(t *testing.T) {
 
 func TestDisabledMappingRemovesModelFromCatalog(t *testing.T) {
 	off := false
-	mappings := []modelMapping{{PublicModel: "gpt-5.4", UpstreamTone: "Gpt_5_4_Chat", DisplayName: "GPT-5.4", DefaultReasoningLevel: "low", Enabled: &off}}
+	mappings := []modelMapping{{PublicModel: "gpt-5.4", UpstreamMapping: "Gpt_5_4_Chat", DisplayName: "GPT-5.4", DefaultReasoningLevel: "low", Enabled: &off}}
 	models := configuredModelSpecs(mappings)
 	for _, m := range models {
 		if strings.EqualFold(m.ID, "gpt-5.4") {
 			t.Fatalf("disabled gpt-5.4 still advertised: %#v", m)
 		}
 	}
-	if len(models) != len(gatewayModels)-1 {
-		t.Fatalf("expected %d models, got %d", len(gatewayModels)-1, len(models))
+	// 与路由表一致：只剩无映射但内置可服务的 gpt-5.2 / gpt-5.5。
+	if len(models) != 2 || models[0].ID != "gpt-5.2" || models[1].ID != "gpt-5.5" {
+		t.Fatalf("expected [gpt-5.2 gpt-5.5], got %#v", models)
 	}
 }
 
 func TestModelAvailabilityAndDefaults(t *testing.T) {
 	off := false
 	mappings := []modelMapping{
-		{PublicModel: "gpt-5.2", UpstreamTone: "Gpt_5_2_Chat", DisplayName: "GPT-5.2", DefaultReasoningLevel: "high", Enabled: &off},
-		{PublicModel: "gpt-5.3", UpstreamTone: "Gpt_5_3_Chat", DisplayName: "GPT-5.3", DefaultReasoningLevel: "low"},
+		{PublicModel: "gpt-5.2", UpstreamMapping: "Gpt_5_2_Chat", DisplayName: "GPT-5.2", DefaultReasoningLevel: "high", Enabled: &off},
+		{PublicModel: "gpt-5.3", UpstreamMapping: "Gpt_5_3_Chat", DisplayName: "GPT-5.3", DefaultReasoningLevel: "low"},
 	}
 	if err := checkModelAvailable("gpt-5.2", mappings); err == nil {
 		t.Fatal("disabled model must be rejected")
@@ -225,7 +236,7 @@ func TestChatRejectsDisabledModel(t *testing.T) {
 	off := false
 	prior := openSettingsStore().v.ModelMappings
 	openSettingsStore().mu.Lock()
-	openSettingsStore().v.ModelMappings = []modelMapping{{PublicModel: "gpt-5.2", UpstreamTone: "Gpt_5_2_Chat", DisplayName: "GPT-5.2", Enabled: &off}}
+	openSettingsStore().v.ModelMappings = []modelMapping{{PublicModel: "gpt-5.2", UpstreamMapping: "Gpt_5_2_Chat", DisplayName: "GPT-5.2", Enabled: &off}}
 	openSettingsStore().mu.Unlock()
 	defer func() {
 		openSettingsStore().mu.Lock()
@@ -251,8 +262,46 @@ func TestDefaultModelMappingStillAdvertised(t *testing.T) {
 		}
 	}
 	models := configuredModelSpecs(mappings)
-	if len(models) != len(gatewayModels)+len(defaultModelMappings) {
-		t.Fatalf("expected all defaults advertised, got %d", len(models))
+	// 默认安装：内置可服务的 gpt-5.2/5.4/5.5 + 三个默认 gpt-5.6-* 映射。
+	if len(models) != 6 {
+		t.Fatalf("expected 6 advertised models, got %d: %#v", len(models), models)
+	}
+	for _, id := range []string{"gpt-5.2", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		found := false
+		for _, m := range models {
+			if m.ID == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("default model %q not advertised: %#v", id, models)
+		}
+	}
+}
+
+// 下游模型列表必须与模型路由设置严格一致：只含已启用路由的模型。
+func TestCatalogMatchesEnabledRoutesOnly(t *testing.T) {
+	off, on := false, true
+	mappings := []modelMapping{
+		{PublicModel: "gpt-5.4", UpstreamMapping: "Gpt_5_4_Chat", DisplayName: "GPT-5.4", DefaultReasoningLevel: "medium", Enabled: &on},
+		{PublicModel: "gpt-5.5", UpstreamMapping: "Gpt_5_5_Chat", DisplayName: "GPT-5.5", DefaultReasoningLevel: "medium", Enabled: &off},
+		{PublicModel: "claude-sonnet", UpstreamMapping: "Claude_Sonnet", DisplayName: "Claude Sonnet", DefaultReasoningLevel: "medium", Enabled: &on},
+	}
+	ids := map[string]bool{}
+	for _, m := range configuredModelSpecs(mappings) {
+		ids[strings.ToLower(m.ID)] = true
+	}
+	want := map[string]bool{
+		"gpt-5.4": true, "gpt-5.2": true, "claude-sonnet": true,
+		"gpt-5.5": false, "gpt-5.4-mini": false, "gpt-5.6-sol": false, "codex-auto-review": false,
+		"gpt-5.2-reasoning": false, "gpt-5.3": false, "gpt-5.4-reasoning": false,
+		"gpt-5.5-reasoning": false, "gpt-5.6-reasoning": false, "claude-sonnet-reasoning": false,
+	}
+	for id, expect := range want {
+		if ids[id] != expect {
+			t.Fatalf("model %q advertised=%t want=%t (catalog=%v)", id, ids[id], expect, ids)
+		}
 	}
 }
 

@@ -211,3 +211,16 @@ func TestAutoCleanupDefaultMaxAgeTwoHours(t *testing.T) {
 		t.Error("3h 闲置的会话不应在 2h 保护窗口内")
 	}
 }
+
+func TestConversationSessionStoreDoesNotShareBindingCache(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("M365_DATA_DIR", dir)
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(dir, "sessions.json"))
+	t.Setenv("M365_CONVERSATION_SESSION_CACHE", "")
+
+	conversationStore := openSessionStore()
+	bindingStore := openSessionResolver()
+	if conversationStore.path == bindingStore.path {
+		t.Fatalf("conversation and binding stores share %q", conversationStore.path)
+	}
+}

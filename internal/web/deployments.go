@@ -37,12 +37,7 @@ type deploymentStore struct {
 }
 
 var openDeployments = sync.OnceValue(func() *deploymentStore {
-	dir := os.Getenv("M365_DATA_DIR")
-	if dir == "" {
-		h, _ := os.UserHomeDir()
-		dir = filepath.Join(h, ".config", "m365-copilot2api")
-	}
-	s := &deploymentStore{path: filepath.Join(dir, "deployments.json")}
+	s := &deploymentStore{path: configuredPath("M365_DEPLOYMENTS_FILE", "deployments.json")}
 	b, e := os.ReadFile(s.path)
 	if e == nil {
 		_ = json.Unmarshal(b, s)

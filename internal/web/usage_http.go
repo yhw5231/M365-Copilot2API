@@ -3,6 +3,8 @@ package web
 import (
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 )
 
 func (s *Server) adminUsage(w http.ResponseWriter, r *http.Request) {
@@ -40,5 +42,37 @@ func (s *Server) adminUsageLogs(w http.ResponseWriter, r *http.Request) {
 			offset = n
 		}
 	}
-	jsonOut(w, s.usage.logs(limit, offset))
+	var f usageLogFilter
+	f.Key = strings.TrimSpace(q.Get("key"))
+	f.Account = strings.TrimSpace(q.Get("account"))
+	f.Model = strings.TrimSpace(q.Get("model"))
+	f.Endpoint = strings.TrimSpace(q.Get("endpoint"))
+	f.Error = strings.TrimSpace(q.Get("error"))
+	f.Q = strings.TrimSpace(q.Get("q"))
+	f.Status = strings.TrimSpace(q.Get("status"))
+	if v := strings.TrimSpace(q.Get("stream")); v != "" {
+		b := v == "true" || v == "1"
+		f.Stream = &b
+	}
+	if v := q.Get("from"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.From, f.HasFrom = t, true
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.To, f.HasTo = t, true
+		}
+	}
+	if v := q.Get("min_tokens"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			f.MinTokens, f.HasMinTok = n, true
+		}
+	}
+	if v := q.Get("max_tokens"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			f.MaxTokens, f.HasMaxTok = n, true
+		}
+	}
+	jsonOut(w, s.usage.logs(limit, offset, f))
 }

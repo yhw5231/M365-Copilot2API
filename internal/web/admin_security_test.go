@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -117,5 +119,60 @@ func TestExpiredLoginWindowResets(t *testing.T) {
 	s := &Server{loginAttempts: map[string]loginAttempt{"x": {Failures: 4, WindowStart: time.Now().Add(-16 * time.Minute)}}}
 	if ok, _ := s.loginAllowed("x", time.Now()); !ok {
 		t.Fatal("expired window remained locked")
+	}
+}
+
+func chdirRepoRoot(t *testing.T) {
+	t.Helper()
+	dir, _ := os.Getwd()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "web", "index.html")); err == nil {
+			if err := os.Chdir(dir); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chdir(dir) })
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Skip("repo root with web/ not found")
+		}
+		dir = parent
+	}
+}
+
+func TestRootPageServesLoginPageForLoginPath(t *testing.T) {
+	// Regression: /login must serve web/login.html (the forced-password-change
+	// flow), not the dashboard shell. Previously rootPage always served
+	// index.html, so users stuck on the default password hit 403
+	// password_change_required on every save with no way to change it.
+	chdirRepoRoot(t)
+	s := &Server{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/login", nil)
+	s.rootPage(w, r)
+	if w.Code != 200 {
+		t.Fatalf("/login status=%d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Change the default password now") {
+		t.Fatal("/login did not serve login.html (missing forced change UI)")
+	}
+	if strings.Contains(body, "pageTitle") {
+		t.Fatal("/login served index.html instead of login.html")
+	}
+}
+
+func TestRootPageServesIndexForRootPath(t *testing.T) {
+	chdirRepoRoot(t)
+	s := &Server{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	s.rootPage(w, r)
+	if w.Code != 200 {
+		t.Fatalf("/ status=%d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "pageTitle") {
+		t.Fatal("/ did not serve index.html dashboard shell")
 	}
 }

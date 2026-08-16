@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -37,9 +38,9 @@ type debugStore struct {
 }
 
 func openDebugStore() *debugStore {
-	p := strings.TrimSpace(os.Getenv("M365_DEBUG_LOG"))
+	p := envPath("M365_DEBUG_LOG")
 	if p == "" {
-		p = "debug-logs.jsonl"
+		p = defaultDataPath("debug-logs.jsonl")
 	}
 	return &debugStore{path: p}
 }
@@ -114,6 +115,9 @@ func (d *debugStore) add(r debugRecord) {
 	d.records = append(d.records, r)
 	if len(d.records) > 500 {
 		d.records = d.records[len(d.records)-500:]
+	}
+	if e := os.MkdirAll(filepath.Dir(d.path), 0700); e != nil {
+		return
 	}
 	if f, e := os.OpenFile(d.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); e == nil {
 		b, _ := json.Marshal(r)

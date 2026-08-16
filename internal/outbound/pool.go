@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,10 +26,14 @@ type Pool struct {
 	mu      sync.Mutex
 	entries []*poolEntry
 	next    int
+	// bound pins each account ID (binding key) to the proxy node it uses. A
+	// bound node is exclusive to its account while healthy; on failure the
+	// account moves to an unbound node first and finally to any healthy node.
+	bound map[string]*poolEntry
 }
 
 func NewPool(raw []string) (*Pool, error) {
-	p := &Pool{}
+	p := &Pool{bound: map[string]*poolEntry{}}
 	seen := map[string]bool{}
 	for _, v := range raw {
 		if v == "" || seen[v] {
@@ -43,6 +48,7 @@ func NewPool(raw []string) (*Pool, error) {
 	}
 	return p, nil
 }
+func (e *poolEntry) healthy(now time.Time) bool { return !now.Before(e.cooldown) }
 func (p *Pool) pick() *poolEntry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -52,15 +58,92 @@ func (p *Pool) pick() *poolEntry {
 	now := time.Now()
 	for i := 0; i < len(p.entries); i++ {
 		e := p.entries[(p.next+i)%len(p.entries)]
-		if now.Before(e.cooldown) {
-			continue
+		if e.healthy(now) {
+			p.next = (p.next + i + 1) % len(p.entries)
+			return e
 		}
-		p.next = (p.next + i + 1) % len(p.entries)
-		return e
 	}
 	e := p.entries[p.next%len(p.entries)]
 	p.next = (p.next + 1) % len(p.entries)
 	return e
+}
+
+// ErrNoProxyNode reports that the account has no usable proxy node: its bound
+// node is unhealthy and no unbound healthy node is left. The caller must not
+// reuse the account; it should switch the request to an account whose bound
+// node is healthy (see Pool.FailoverTarget).
+var ErrNoProxyNode = errors.New("no healthy proxy node available for account")
+
+// pickFor returns the proxy node for the given binding key (account ID):
+//  1. the account's bound node while it is healthy — the account keeps using
+//     the same node across requests and no other account can take it;
+//  2. an unbound healthy node, which becomes the account's new binding
+//     (preferred failover target when the bound node breaks).
+//
+// When no unbound healthy node remains the pool returns nil instead of
+// borrowing a node bound to another account: per the account-node binding
+// rules the request must then be re-routed to an account whose bound node is
+// healthy (FailoverTarget). Nodes in cooldown (recent failure) are never
+// selected; pickFor advances the round-robin cursor so concurrent callers
+// spread across unbound nodes.
+func (p *Pool) pickFor(account string) *poolEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.entries) == 0 {
+		return nil
+	}
+	now := time.Now()
+	if e := p.bound[account]; e != nil {
+		for _, en := range p.entries {
+			if en == e {
+				if en.healthy(now) {
+					return e
+				}
+				break
+			}
+		}
+		// Bound node removed or unhealthy: release the binding and fall through.
+		delete(p.bound, account)
+	}
+	for i := 0; i < len(p.entries); i++ {
+		e := p.entries[(p.next+i)%len(p.entries)]
+		if e.healthy(now) && !p.boundTo(e) {
+			p.bound[account] = e
+			p.next = (p.next + i + 1) % len(p.entries)
+			return e
+		}
+	}
+	return nil
+}
+
+func (p *Pool) boundTo(e *poolEntry) bool {
+	for _, b := range p.bound {
+		if b == e {
+			return true
+		}
+	}
+	return false
+}
+
+// FailoverTarget returns another account whose bound node is currently
+// healthy, excluding the given account. It is the recommended request target
+// when pickFor returns nil (no unbound healthy node left): instead of reusing
+// another account's node, the request itself moves to that account.
+func (p *Pool) FailoverTarget(account string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	for acct, e := range p.bound {
+		if acct == account {
+			continue
+		}
+		for _, en := range p.entries {
+			if en == e && en.healthy(now) {
+				return acct, true
+			}
+		}
+	}
+	return "", false
 }
 func (p *Pool) mark(raw string, err error) {
 	p.mu.Lock()
@@ -87,6 +170,17 @@ func (p *Pool) HTTPClient() *http.Client {
 		return &http.Client{Transport: &poolRoundTripper{pool: p, entry: e, base: e.clients.HTTP.Transport}}
 	}
 	return directClients().HTTP
+}
+
+// HTTPClientFor returns an HTTP client pinned to the proxy node bound to the
+// account. A failed request is replayed once on an unbound healthy node; when
+// no usable node is left the request fails with ErrNoProxyNode so the caller
+// can switch the request to an account whose bound node is healthy.
+func (p *Pool) HTTPClientFor(account string) *http.Client {
+	if e := p.pickFor(account); e != nil {
+		return &http.Client{Transport: &poolRoundTripper{pool: p, entry: e, base: e.clients.HTTP.Transport, account: account}}
+	}
+	return &http.Client{Transport: errTripper{err: ErrNoProxyNode}}
 }
 func (p *Pool) WebSocketDialer() *websocket.Dialer {
 	base := directClients().WebSocket
@@ -121,18 +215,60 @@ func (p *Pool) WebSocketDialer() *websocket.Dialer {
 	}
 	return base
 }
+
+// WebSocketDialerFor returns a WebSocket dialer pinned to the proxy node bound
+// to the account. A failed dial is retried once on an unbound healthy node
+// (preferred failover); if no usable node is left the dial returns
+// ErrNoProxyNode so the caller can switch the request to an account whose
+// bound node is healthy.
+func (p *Pool) WebSocketDialerFor(account string) *websocket.Dialer {
+	base := directClients().WebSocket
+	baseDialer := &net.Dialer{}
+	base.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		for attempt := 0; attempt < 2; attempt++ {
+			e := p.pickFor(account)
+			if e == nil {
+				return nil, ErrNoProxyNode
+			}
+			dial := e.clients.WebSocket.NetDialContext
+			if dial == nil {
+				dial = baseDialer.DialContext
+			}
+			conn, err := dial(ctx, network, address)
+			p.mark(e.raw, err)
+			if err == nil {
+				return conn, nil
+			}
+			// mark() put the node in cooldown, so the next pickFor moves the
+			// account to an unbound healthy node.
+		}
+		return nil, ErrNoProxyNode
+	}
+	return base
+}
 func (p *Pool) List() []map[string]any {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	out := make([]map[string]any, 0, len(p.entries))
 	for _, e := range p.entries {
-		out = append(out, map[string]any{"url": e.raw, "failures": e.failures, "cooldownUntil": e.cooldown, "lastCheck": e.lastCheck, "latencyMs": e.latency.Milliseconds(), "lastError": e.lastError, "health": e.health})
+		bounds := make([]string, 0, 2)
+		for acct, b := range p.bound {
+			if b == e {
+				bounds = append(bounds, acct)
+			}
+		}
+		out = append(out, map[string]any{"url": e.raw, "failures": e.failures, "cooldownUntil": e.cooldown, "lastCheck": e.lastCheck, "latencyMs": e.latency.Milliseconds(), "lastError": e.lastError, "health": e.health, "boundAccounts": bounds})
 	}
 	return out
 }
 func (p *Pool) Remove(raw string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for acct, b := range p.bound {
+		if b.raw == raw {
+			delete(p.bound, acct)
+		}
+	}
 	for i, e := range p.entries {
 		if e.raw == raw {
 			p.entries = append(p.entries[:i], p.entries[i+1:]...)
@@ -142,10 +278,16 @@ func (p *Pool) Remove(raw string) {
 }
 
 type poolRoundTripper struct {
-	pool  *Pool
-	entry *poolEntry
-	base  http.RoundTripper
+	pool    *Pool
+	entry   *poolEntry
+	base    http.RoundTripper
+	account string // binding key; non-empty replays only on the account's usable nodes
 }
+
+// errTripper fails every request with a fixed error (no proxy node available).
+type errTripper struct{ err error }
+
+func (t errTripper) RoundTrip(r *http.Request) (*http.Response, error) { return nil, t.err }
 
 func (t *poolRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(r)
@@ -153,13 +295,24 @@ func (t *poolRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err == nil {
 		return resp, nil
 	}
-	// Replay the request on the next healthy proxy once (body must be replayable).
+	// Replay the request on the next usable proxy once (body must be replayable).
 	if r.Body != nil && r.GetBody == nil {
 		return resp, err
 	}
 	for i := 0; i < len(t.pool.entries)+1; i++ {
-		next := t.pool.pick()
-		if next == nil || next == t.entry {
+		var next *poolEntry
+		if t.account != "" {
+			// Account-bound replay: only unbound healthy nodes count; when
+			// none is left the request must move to another account instead
+			// of borrowing that account's node.
+			next = t.pool.pickFor(t.account)
+			if next == nil {
+				return nil, ErrNoProxyNode
+			}
+		} else {
+			next = t.pool.pick()
+		}
+		if next == t.entry {
 			break
 		}
 		body, berr := r.GetBody()

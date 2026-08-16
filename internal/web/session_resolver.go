@@ -63,10 +63,7 @@ func openSessionResolver() *sessionResolver {
 			contextTTL = d
 		}
 	}
-	path := os.Getenv("M365_SESSION_CACHE")
-	if path == "" {
-		path = "sessions.json"
-	}
+	path := configuredPath("M365_SESSION_CACHE", "sessions.json")
 	sr := &sessionResolver{
 		path:        path,
 		sessions:    map[string]sessionBinding{},
