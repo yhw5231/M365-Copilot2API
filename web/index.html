@@ -1066,6 +1066,11 @@ function showPage(p){
   if(p==='proxies')loadProxies();
   if(p==='modeltest')loadModelTest();
   if(p==='settings')loadSettings();
+  try{history.replaceState(null,'','#/'+p);}catch(e){}
+}
+function savedPage(){
+  const h=(location.hash||'').replace(/^#\/?/,'');
+  return ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','settings'].includes(h)?h:'dashboard';
 }
 
 let onboardingHidden=false;
@@ -1123,7 +1128,7 @@ $('loginForm')?.addEventListener('submit',async e=>{
     const d=await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:$('loginPassword').value})});
     if(d.must_change_password){location.href='/login';return;}
     $('login').style.display='none';$('app').style.display='flex';
-    showPage('dashboard');loadStats();
+    showPage(savedPage());loadStats();
     showNotice('Logged in successfully','success');
   }catch(e){showNotice(e.message,'error');}
 });
@@ -1478,6 +1483,7 @@ function resetUsageFilters(){
 // ===== Usage debug (trace) mode =====
 let tracePageNo=0, traceTotal=0;
 const TRACE_PAGE=10;
+const traceExpanded=new Set(), traceDetailCache={};
 async function loadTraceStatus(){
   try{
     const d=await api('/api/admin/trace');
@@ -1508,7 +1514,7 @@ async function loadTraceLogs(){
     const rows=(d.records||[]).map(x=>{
       const stcls=x.status==='error'?' err':'';
       const sttxt=x.status==='in_progress'?'In progress':(x.status==='error'?'Error':'Success');
-      return `<tr>
+      return `<tr id="tr-${x.id}">
         <td style="font-size:12px;color:var(--muted)">${new Date(x.at).toLocaleTimeString()}</td>
         <td style="font-size:12px">${esc(x.model||x.endpoint||'-')}</td>
         <td style="font-size:12px;color:var(--muted)">${esc(x.reasoningLevel||'-')}</td>
@@ -1521,6 +1527,9 @@ async function loadTraceLogs(){
       </tr>`;
     }).join('');
     $('traceLogRows').innerHTML=rows||'<tr><td colspan="9" class="empty">Tracing disabled or no requests yet</td></tr>';
+    for(const id of [...traceExpanded]){
+      if((d.records||[]).some(r=>r.id===id))await insertTraceDetailRow(id);
+    }
     const totalPages=Math.max(1,Math.ceil(traceTotal/TRACE_PAGE));
     $('tracePageInfo').textContent=`Page ${tracePageNo+1} / ${totalPages} · ${traceTotal} total`;
     $('tracePrev').disabled=tracePageNo<=0;
@@ -1533,25 +1542,46 @@ function tracePage(delta){
 }
 async function toggleTraceDetail(id){
   const row=document.getElementById('trd-'+id);
-  if(row){row.remove();return;}
+  if(row){
+    const rec=traceDetailCache[id];
+    if(rec){
+      const ds=row.querySelectorAll('details');
+      rec._open=Array.from(ds).map(d=>d.open);
+    }
+    row.remove();traceExpanded.delete(id);return;
+  }
   try{
+    if(await insertTraceDetailRow(id))traceExpanded.add(id);
+  }catch(e){showNotice(e.message,'error');}
+}
+async function insertTraceDetailRow(id){
+  const anchor=document.getElementById('tr-'+id);
+  if(!anchor)return false;
+  if(document.getElementById('trd-'+id))return true;
+  let rec=traceDetailCache[id];
+  if(!rec){
     const d=await api('/api/admin/trace/status?id='+encodeURIComponent(id));
-    const rec=(d.records||[])[0]||{};
-    const tr=document.createElement('tr');tr.id='trd-'+id;
-    tr.innerHTML=`<td colspan="9"><div style="font-size:12px;line-height:1.6">
+    const list=d.records||[];
+    if(!list.length){traceExpanded.delete(id);return false;}
+    rec=list[0];traceDetailCache[id]=rec;
+  }
+  const tr=document.createElement('tr');tr.id='trd-'+id;
+  const open=(rec._open&&rec._open.length)?rec._open:[];
+  const o=(i)=>open[i]!==false;
+  tr.innerHTML=`<td colspan="9"><div style="font-size:12px;line-height:1.6">
       <div><b>Endpoint:</b> ${esc(rec.endpoint||'-')} · <b>Method:</b> ${esc(rec.method||'-')} · <b>Status:</b> ${rec.statusCode||'-'} · <b>Account:</b> ${esc(rec.accountEmail||'-')} · <b>Key:</b> ${esc(rec.apiKeyPrefix||'-')}</div>
       ${rec.error?`<div style="color:var(--red)"><b>Error:</b> ${esc(rec.error)}</div>`:''}
       ${rec.upstreamError?`<div style="color:var(--orange)"><b>Upstream:</b> ${esc(rec.upstreamError)}</div>`:''}
-      <details><summary>Downstream request</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
-      <details><summary>Upstream request</summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
-      <details><summary>Upstream response</summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
-      <details><summary>Downstream response</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+      <details${o(0)?' open':''}><summary>Downstream request</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
+      <details${o(1)?' open':''}><summary>Upstream request</summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
+      <details${o(2)?' open':''}><summary>Upstream response</summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
+      <details${o(3)?' open':''}><summary>Downstream response</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
     </div></td>`;
-    document.querySelector('#traceLogRows').appendChild(tr);
-  }catch(e){showNotice(e.message,'error');}
+  anchor.insertAdjacentElement('afterend',tr);
+  return true;
 }
 async function clearTraceLogs(){
-  try{await api('/api/admin/trace/clear',{method:'POST'});loadTraceLogs();}
+  try{await api('/api/admin/trace/clear',{method:'POST'});traceExpanded.clear();for(const k in traceDetailCache)delete traceDetailCache[k];loadTraceLogs();}
   catch(e){showNotice(e.message,'error');}
 }
 // Poll the live trace list while the usage page is visible so in-progress
@@ -1949,9 +1979,12 @@ async function saveModelRoutes(){
 
 // Init
 try{lucide.createIcons();}catch(e){}
+window.addEventListener('hashchange',()=>{
+  if($('login')&&$('login').style.display==='none')showPage(savedPage());
+});
 fetch('/api/admin/session').then(r=>r.json()).then(d=>{
   if(d.authenticated&&d.must_change_password){location.href='/login';return;}
-  if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage('dashboard');loadStats();loadOnboarding();}
+  if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage(savedPage());loadStats();loadOnboarding();}
   else{$('login').style.display='grid';}
 }).catch(()=>{$('login').style.display='grid';});
 </script>
