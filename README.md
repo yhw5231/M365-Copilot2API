@@ -171,8 +171,9 @@ M365_ADMIN_PASSWORD=your_strong_password
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `M365_LISTEN` | `127.0.0.1:9090` | 监听地址（`manage.py` 与 Docker 内置为 `0.0.0.0:9090`） |
-| `M365_ADMIN_PASSWORD` | `admin123` | 管理员密码（首次登录强制修改） |
-| `M365_DATA_DIR` | `~/.config/m365-copilot2api` | 数据目录（token、密钥、用量等集中存储；`manage.py` 内置为 `data/`） |
+| `M365_ADMIN_PASSWORD` | 随机生成 | 管理员密码。未配置且无持久化密码时，服务器启动时生成一次性随机密码并只打印到本地日志（见 `manage.py logs` / `server-error.log`），登录后必须立即修改；`manage.py` 不再注入默认密码 |
+| `M365_TOKEN_ENC_KEY` | 空（不加密） | 账号 Token 加密密钥：64 位十六进制（32 字节），启用后 `accounts.json` 中的 accessToken / refreshToken 以 AES-256-GCM 密文落盘（`enc:v1:` 前缀），旧明文数据会自动迁移；不配置则保持明文以兼容旧部署，**请务必配置** |
+| `M365_DATA_DIR` | `~/.config/m365-copilot2api` | 数据目录（token、密钥、用量等集中存储；`manage.py` 内置为 `data/`）。**备份该目录等同于备份全部账号凭据，须按敏感数据对待** |
 | `M365_CONFIG` | `~/.config/m365-copilot2api/accounts.json` | 账号配置文件路径 |
 | `M365_SESSION_TTL_MINUTES` | `120` | 会话绑定存活时间（分钟），过期从 `sessions.json` 清除 |
 | `M365_CONTEXT_TTL_MINUTES` | `120` | 上下文指纹复用窗口（分钟） |
@@ -467,9 +468,12 @@ M365-Copilot2API/
 ## 安全说明
 
 - **默认仅监听内网**：直接运行二进制默认 `M365_LISTEN=127.0.0.1:9090`；对外提供服务务必通过 TLS 终泄反向代理（Nginx / Caddy），并为 SSE 与 WebSocket 开启长连接与 `proxy_buffering off`。
-- **首次登录强制改密**：使用默认密码或引导密码完成首次登录后必须修改管理员密码。
+- **强制改密**：未配置 `M365_ADMIN_PASSWORD` 时服务器生成一次性随机管理员密码并仅打印到本地日志，登录后必须立即修改；从未出现任何硬编码默认密码。遗留的 `admin123` 密码文件会被识别并强制改密。
+- **Token 加密落盘**：设置 `M365_TOKEN_ENC_KEY`（64 位十六进制）后，`accounts.json` 中的 accessToken / refreshToken 以 AES-256-GCM 密文存储；加载时若密钥缺失或不匹配会直接拒绝启动，绝不静默回退明文。
 - **密钥最小暴露**：API Key 明文仅在创建时返回一次，磁盘只存 SHA-256 哈希（旧版 `api-keys.json` 中的明文会在启动迁移时自动清零并补写哈希），控制台无法回读完整密钥；请妥善保护控制台访问权限。
-- **数据落盘权限**：账号凭据、Token 缓存、会话绑定、API Key 等数据文件以 `0600` 权限写入，数据目录建议 `0700`。请定期备份数据目录。
+- **数据落盘权限**：账号凭据、Token 缓存、会话绑定、API Key 等数据文件以 `0600` 权限写入，数据目录建议 `0700`。**备份数据目录等同于备份全部账号凭据与 M365 会话**，请按敏感数据处理，并考虑用 `M365_TOKEN_ENC_KEY` 加密后再归档。
+- **WebSocket 凭据**：ChatHub WebSocket 的 access token 通过 `Authorization: Bearer` 头传递，绝不进入 URL query，避免进入代理日志、trace 与错误输出。
+- **会话与请求边界**：`/v1/sessions` 仅返回脱敏摘要（不包含 contextHistory）；会话按创建方 API key 隔离；图片回拉经过 SSRF 校验（仅 https、拒绝 loopback/私网/metadata/CGNAT、限制重定向）；开放 API 请求体有统一大小上限。
 
 ## 常见问题
 

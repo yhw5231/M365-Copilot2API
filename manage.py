@@ -61,7 +61,10 @@ def start():
     os.makedirs(DATA_DIR, exist_ok=True)
 
     env = os.environ.copy()
-    admin_pw = env.get("M365_ADMIN_PASSWORD", "admin123")
+    # Never inject a default administrator password. Without one the server
+    # generates a strong one-time random password and prints it to the local
+    # log (server.log); find it there and change it after the first login.
+    admin_pw = env.get("M365_ADMIN_PASSWORD")
     listen = env.get("M365_LISTEN", "0.0.0.0:9090")
     env.update({
         "M365_LISTEN": listen,
@@ -71,10 +74,14 @@ def start():
         "M365_SESSION_CACHE": env.get("M365_SESSION_CACHE", os.path.join(DATA_DIR, "sessions.json")),
         "M365_CONVERSATION_SESSION_CACHE": env.get("M365_CONVERSATION_SESSION_CACHE", os.path.join(DATA_DIR, "conversation-sessions.json")),
         "M365_API_KEYS": env.get("M365_API_KEYS", os.path.join(DATA_DIR, "api-keys.json")),
-        "M365_ADMIN_PASSWORD": admin_pw,
         "M365_CLEANUP_MODE": "keep_n",
         "M365_CLEANUP_KEEP_N": "3",
     })
+    if admin_pw:
+        env["M365_ADMIN_PASSWORD"] = admin_pw
+    elif not os.path.exists(os.path.join(DATA_DIR, "admin-password")):
+        print("No M365_ADMIN_PASSWORD set: the server will generate a one-time random admin password "
+              "and print it to the local log (see `python manage.py logs`). Change it after first login.")
 
     log = open(LOG_FILE, 'w')
     err = open(ERR_FILE, 'w')
