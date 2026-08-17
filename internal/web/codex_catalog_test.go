@@ -166,6 +166,17 @@ func TestConfiguredModelMappingsDriveCatalogAndRouting(t *testing.T) {
 }
 
 func TestReasoningEffortRouting(t *testing.T) {
+	// 使测试不依赖本机持久化的 settings 文件：临时清空模型映射，让
+	// reasoningTone 走 effort 路由分支，结束后恢复原映射。
+	priorMappings := openSettingsStore().v.ModelMappings
+	openSettingsStore().mu.Lock()
+	openSettingsStore().v.ModelMappings = nil
+	openSettingsStore().mu.Unlock()
+	defer func() {
+		openSettingsStore().mu.Lock()
+		openSettingsStore().v.ModelMappings = priorMappings
+		openSettingsStore().mu.Unlock()
+	}()
 	cases := []struct{ model, effort, want string }{
 		{"claude-sonnet", "none", "Claude_Sonnet"},
 		{"claude-sonnet", "high", "Claude_Sonnet_Reasoning"},
