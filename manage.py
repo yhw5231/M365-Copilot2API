@@ -61,10 +61,9 @@ def start():
     os.makedirs(DATA_DIR, exist_ok=True)
 
     env = os.environ.copy()
-    # Never inject a default administrator password. Without one the server
-    # generates a strong one-time random password and prints it to the local
-    # log (server.log); find it there and change it after the first login.
-    admin_pw = env.get("M365_ADMIN_PASSWORD")
+    # 默认管理员密码 admin123；设置 M365_ADMIN_PASSWORD 可覆盖。首次登录后
+    # 服务器会强制要求修改密码（must-change 流程）。
+    admin_pw = env.get("M365_ADMIN_PASSWORD", "admin123")
     listen = env.get("M365_LISTEN", "0.0.0.0:9090")
     env.update({
         "M365_LISTEN": listen,
@@ -77,11 +76,10 @@ def start():
         "M365_CLEANUP_MODE": "keep_n",
         "M365_CLEANUP_KEEP_N": "3",
     })
-    if admin_pw:
-        env["M365_ADMIN_PASSWORD"] = admin_pw
-    elif not os.path.exists(os.path.join(DATA_DIR, "admin-password")):
-        print("No M365_ADMIN_PASSWORD set: the server will generate a one-time random admin password "
-              "and print it to the local log (see `python manage.py logs`). Change it after first login.")
+    env["M365_ADMIN_PASSWORD"] = admin_pw
+    if admin_pw == "admin123" and not os.path.exists(os.path.join(DATA_DIR, "admin-password")):
+        print("Using default admin password 'admin123' (first login will require changing it). "
+              "Set M365_ADMIN_PASSWORD to override.")
 
     log = open(LOG_FILE, 'w')
     err = open(ERR_FILE, 'w')

@@ -76,6 +76,10 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .form-group:last-child{margin-bottom:0}
 .form-label{display:block;font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text)}
 .form-input{width:100%;border:1.5px solid var(--line);border-radius:var(--radius-sm);padding:9px 12px;outline:0;font:inherit;font-size:13px;background:rgba(255,255,255,0.5);color:var(--text);transition:border-color .15s ease,box-shadow .15s ease,background .15s ease}
+.password-wrap{position:relative}
+.password-wrap .form-input{padding-right:38px}
+.password-toggle{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:0;color:var(--muted);cursor:pointer;padding:4px 6px;margin:0;width:auto;font-size:15px;line-height:1;border-radius:6px;min-height:auto;transition:color .15s ease}
+.password-toggle:hover{color:var(--text);background:transparent}
 @media(prefers-color-scheme:dark){.form-input{background:rgba(0,0,0,0.2)}}
 .form-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,113,227,0.12);background:rgba(255,255,255,0.7)}
 @media(prefers-color-scheme:dark){.form-input:focus{background:rgba(0,0,0,0.3);box-shadow:0 0 0 3px rgba(10,132,255,0.15)}}
@@ -665,7 +669,7 @@ if (response.output_text) {
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
         <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:9090"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div></div></div>
-        <div class="card" style="margin-top:16px"><div class="card-head"><span class="card-title">Change administrator password</span></div><div class="card-body"><form id="changePasswordForm" onsubmit="changeAdminPassword(event)" style="max-width:520px"><div class="form-group"><label class="form-label" for="currentAdminPassword">Current password</label><input class="form-input" id="currentAdminPassword" type="password" autocomplete="current-password" required></div><div class="form-group"><label class="form-label" for="newAdminPassword">New password (at least 6 characters)</label><input class="form-input" id="newAdminPassword" type="password" autocomplete="new-password" minlength="6" required></div><div class="form-group"><label class="form-label" for="confirmAdminPassword">Confirm new password</label><input class="form-input" id="confirmAdminPassword" type="password" autocomplete="new-password" minlength="6" required></div><button class="btn primary" id="changePasswordButton" type="submit"><i data-lucide="key-round" style="width:14px;height:14px"></i> Change password</button></form><p class="form-hint" style="margin-top:12px">Changing the password signs out all administrator sessions. You will be redirected to the login page.</p></div></div>
+        <div class="card" style="margin-top:16px"><div class="card-head"><span class="card-title">Change administrator password</span></div><div class="card-body"><form id="changePasswordForm" onsubmit="changeAdminPassword(event)" style="max-width:520px"><div class="form-group"><label class="form-label" for="currentAdminPassword">Current password</label><div class="password-wrap"><input class="form-input" id="currentAdminPassword" type="password" autocomplete="current-password" required><button type="button" class="password-toggle" onclick="toggleAdminPassword(this)" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><div class="form-group"><label class="form-label" for="newAdminPassword">New password (at least 6 characters)</label><div class="password-wrap"><input class="form-input" id="newAdminPassword" type="password" autocomplete="new-password" minlength="6" required><button type="button" class="password-toggle" onclick="toggleAdminPassword(this)" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><div class="form-group"><label class="form-label" for="confirmAdminPassword">Confirm new password</label><div class="password-wrap"><input class="form-input" id="confirmAdminPassword" type="password" autocomplete="new-password" minlength="6" required><button type="button" class="password-toggle" onclick="toggleAdminPassword(this)" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><button class="btn primary" id="changePasswordButton" type="submit"><i data-lucide="key-round" style="width:14px;height:14px"></i> Change password</button></form><p class="form-hint" style="margin-top:12px">Changing the password signs out all administrator sessions. You will be redirected to the login page.</p></div></div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
           <div><h2 style="font-size:18px;font-weight:700">Model routing</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Enable or disable model routes and set each model's default reasoning level. Disabled models are hidden from the model list and rejected at request time.</p></div>
           <button class="btn primary" onclick="saveModelRoutes()"><i data-lucide="save" style="width:14px;height:14px"></i> Save model routing</button>
@@ -1896,6 +1900,15 @@ async function changeAdminPassword(event){
     showNotice(e.message,'error');
     button.disabled=false;
   }
+}
+
+function toggleAdminPassword(btn){
+  const ico=btn.querySelector('[data-lucide]');
+  const inp=btn.parentElement.querySelector('input');
+  if(!inp)return;
+  const isPassword=inp.type==='password';
+  inp.type=isPassword?'text':'password';
+  if(ico){try{ico.setAttribute('data-lucide',isPassword?'eye-off':'eye');lucide.createIcons();}catch(e){}}
 }
 
 let routeMappings=[],routeLevels=[],routeCodexModels=[];
