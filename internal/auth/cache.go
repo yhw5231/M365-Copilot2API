@@ -1,8 +1,14 @@
 package auth
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -74,6 +80,7 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	// Normalize oid/tid for older cache entries.
+	legacyPlain := false
 	for i := range s.data.Accounts {
 		a := &s.data.Accounts[i]
 		if a.OID == "" {
@@ -82,8 +89,105 @@ func OpenStore(path string) (*Store, error) {
 		if a.ID == "" {
 			a.ID = a.OID
 		}
+		if (a.AccessToken != "" && !strings.HasPrefix(a.AccessToken, encryptedTokenPrefix)) ||
+			(a.RefreshToken != "" && !strings.HasPrefix(a.RefreshToken, encryptedTokenPrefix)) {
+			legacyPlain = true
+		}
+	}
+	aead, err := tokenCipher()
+	if err != nil {
+		return nil, err
+	}
+	if aead != nil {
+		if err := decryptAccountsLocked(&s.data.Accounts, aead); err != nil {
+			return nil, err
+		}
+		// Migrate legacy plaintext storage: the next save rewrites every
+		// account with encrypted tokens.
+		if legacyPlain && len(s.data.Accounts) > 0 {
+			_ = s.saveLocked()
+		}
 	}
 	return s, nil
+}
+
+// tokenCipher derives the AES-256-GCM AEAD from M365_TOKEN_ENC_KEY. A missing
+// key disables encryption (nil AEAD); a malformed key is a hard error so the
+// server never silently falls back to plaintext storage.
+func tokenCipher() (cipher.AEAD, error) {
+	raw := strings.TrimSpace(os.Getenv("M365_TOKEN_ENC_KEY"))
+	if raw == "" {
+		return nil, nil
+	}
+	key, err := hex.DecodeString(raw)
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("M365_TOKEN_ENC_KEY must be a hex-encoded 32-byte key (64 hex characters)")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+// encryptedTokenPrefix marks stored values that were encrypted at rest.
+const encryptedTokenPrefix = "enc:v1:"
+
+func encryptToken(aead cipher.AEAD, plain string) (string, error) {
+	if aead == nil || plain == "" {
+		return plain, nil
+	}
+	// Idempotent: a value already encrypted (e.g. an in-memory account that
+	// was read back from an encrypted file) is never re-encrypted.
+	if strings.HasPrefix(plain, encryptedTokenPrefix) {
+		return plain, nil
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	sealed := aead.Seal(nonce, nonce, []byte(plain), nil)
+	return encryptedTokenPrefix + base64.StdEncoding.EncodeToString(sealed), nil
+}
+
+func decryptToken(aead cipher.AEAD, stored string) (string, error) {
+	if stored == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(stored, encryptedTokenPrefix) {
+		return stored, nil // legacy plaintext value
+	}
+	if aead == nil {
+		return "", errors.New("M365_TOKEN_ENC_KEY is not configured but accounts.json contains encrypted tokens")
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(stored, encryptedTokenPrefix))
+	if err != nil || len(raw) < aead.NonceSize() {
+		return "", errors.New("stored token is not valid encrypted data")
+	}
+	plain, err := aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], nil)
+	if err != nil {
+		return "", errors.New("stored token failed to decrypt (wrong M365_TOKEN_ENC_KEY?)")
+	}
+	return string(plain), nil
+}
+
+// decryptAccountsLocked restores in-memory plaintext for every account. The
+// JSON file itself keeps ciphertext; only this process holds plaintext.
+func decryptAccountsLocked(accounts *[]AccountToken, aead cipher.AEAD) error {
+	for i := range *accounts {
+		a := &(*accounts)[i]
+		at, err := decryptToken(aead, a.AccessToken)
+		if err != nil {
+			return fmt.Errorf("account %s accessToken: %w", a.ID, err)
+		}
+		rt, err := decryptToken(aead, a.RefreshToken)
+		if err != nil {
+			return fmt.Errorf("account %s refreshToken: %w", a.ID, err)
+		}
+		a.AccessToken = at
+		a.RefreshToken = rt
+	}
+	return nil
 }
 
 func (s *Store) Path() string {
@@ -91,7 +195,29 @@ func (s *Store) Path() string {
 }
 
 func (s *Store) saveLocked() error {
-	b, err := json.MarshalIndent(s.data, "", "  ")
+	aead, err := tokenCipher()
+	if err != nil {
+		return err
+	}
+	// Serialize a snapshot: in-memory tokens must stay plaintext for callers,
+	// only the on-disk copy carries ciphertext.
+	snap := Cache{Accounts: make([]AccountToken, len(s.data.Accounts))}
+	copy(snap.Accounts, s.data.Accounts)
+	if aead != nil {
+		for i := range snap.Accounts {
+			at, err := encryptToken(aead, snap.Accounts[i].AccessToken)
+			if err != nil {
+				return err
+			}
+			rt, err := encryptToken(aead, snap.Accounts[i].RefreshToken)
+			if err != nil {
+				return err
+			}
+			snap.Accounts[i].AccessToken = at
+			snap.Accounts[i].RefreshToken = rt
+		}
+	}
+	b, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return err
 	}

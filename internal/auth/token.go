@@ -70,7 +70,9 @@ func Refresh(refreshToken string) (TokenSet, error) {
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("scope", Scope())
-	return requestToken(context.Background(), form)
+	ctx, cancel := context.WithTimeout(context.Background(), TokenExchangeTimeout)
+	defer cancel()
+	return requestToken(ctx, form)
 }
 
 // RefreshWithScope redeems the same account refresh token for a separately
@@ -86,7 +88,9 @@ func RefreshWithScope(refreshToken, clientID, scope string) (TokenSet, error) {
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("scope", scope)
-	return requestToken(context.Background(), form)
+	ctx, cancel := context.WithTimeout(context.Background(), TokenExchangeTimeout)
+	defer cancel()
+	return requestToken(ctx, form)
 }
 
 func ROPC(username, password string) (TokenSet, error) {
@@ -96,7 +100,9 @@ func ROPC(username, password string) (TokenSet, error) {
 	form.Set("username", username)
 	form.Set("password", password)
 	form.Set("scope", Scope())
-	return requestTokenTenant(context.Background(), form, Authority()+"/organizations/oauth2/v2.0/token")
+	ctx, cancel := context.WithTimeout(context.Background(), TokenExchangeTimeout)
+	defer cancel()
+	return requestTokenTenant(ctx, form, Authority()+"/organizations/oauth2/v2.0/token")
 }
 
 func requestTokenTenant(ctx context.Context, form url.Values, endpoint string) (TokenSet, error) {
