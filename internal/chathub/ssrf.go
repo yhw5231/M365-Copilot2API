@@ -3,14 +3,16 @@ package chathub
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 )
 
-// validateRemoteDownloadURL blocks SSRF: only https and public routable
+// ValidateRemoteDownloadURL blocks SSRF: only https and public routable
 // addresses are accepted, with a lookup-time recheck against private,
-// loopback, link-local and cloud metadata ranges.
-func validateRemoteDownloadURL(raw string) error {
+// loopback, link-local and cloud metadata ranges. It is the single gate used
+// both by ChatHub attachment downloads and by the web image-fetch path.
+func ValidateRemoteDownloadURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("invalid attachment URL")
@@ -30,6 +32,24 @@ func validateRemoteDownloadURL(raw string) error {
 		if ipUnsafe(ip) {
 			return fmt.Errorf("attachment URL targets a non-public address")
 		}
+	}
+	return nil
+}
+
+// MaxRedirects caps how many redirects a validated fetch may follow; every
+// hop is re-validated by the caller's CheckRedirect.
+const MaxRedirects = 3
+
+// RedirectCheck validates each redirect target with the same SSRF rules as
+// the initial request and rejects chains longer than MaxRedirects. Use it as
+// http.Client.CheckRedirect for any client that fetches attacker-influenced
+// URLs.
+func RedirectCheck(req *http.Request, via []*http.Request) error {
+	if len(via) >= MaxRedirects {
+		return fmt.Errorf("too many redirects (%d)", len(via))
+	}
+	if err := ValidateRemoteDownloadURL(req.URL.String()); err != nil {
+		return fmt.Errorf("redirect target rejected: %w", err)
 	}
 	return nil
 }

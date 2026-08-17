@@ -223,7 +223,16 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 
 	dialStarted := time.Now()
-	conn, resp, err := dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
+	// The access token travels in the Authorization header, never in the WS
+	// query string: query tokens leak into proxy logs, HTTP traces and error
+	// output. If an upstream ever requires query auth, re-introduce it with a
+	// documented warning that proxy logs must not capture query strings.
+	dialHeaders := c.HTTPHeader.Clone()
+	if dialHeaders == nil {
+		dialHeaders = make(http.Header)
+	}
+	dialHeaders.Set("Authorization", "Bearer "+acc.AccessToken)
+	conn, resp, err := dialer.DialContext(ctx, wsURL, dialHeaders)
 	log.Printf("chathub timing ws_dial_ms=%d total_ms=%d", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds())
 	if err != nil {
 		if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403) {
@@ -584,7 +593,9 @@ func buildWSURL(acc Account, sessionID, conversationID, requestID string) (strin
 	q.Set("clientrequestid", requestID)
 	q.Set("X-SessionId", sessionID)
 	q.Set("ConversationId", conversationID)
-	q.Set("access_token", acc.AccessToken)
+	// Note: the access token is deliberately NOT part of the query string.
+	// It is sent as "Authorization: Bearer" on the dial request so it never
+	// lands in proxy logs / traces. See Client.Chat.
 	q.Set("variants", variants)
 	// source must keep quotes like the browser probe
 	q.Set("source", `"officeweb"`)
@@ -614,7 +625,7 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 		// For non-data URLs, download the image first
 		imageData := a.URL
 		if !strings.HasPrefix(a.URL, "data:") {
-			if err := validateRemoteDownloadURL(a.URL); err != nil {
+			if err := ValidateRemoteDownloadURL(a.URL); err != nil {
 				return err
 			}
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
