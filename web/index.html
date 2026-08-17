@@ -588,7 +588,7 @@ if (response.output_text) {
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Key list</span><span style="font-size:11px;color:var(--muted)">Keys can be viewed and copied again at any time</span></div>
-          <table class="table"><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Status</th><th>Last used</th><th style="text-align:right">Actions</th></tr></thead><tbody id="keyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>Name</th><th>API Key</th><th>Created</th><th>Status</th><th>Last used</th><th style="text-align:right">Actions</th></tr></thead><tbody id="keyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
 
@@ -1302,7 +1302,7 @@ async function loadKeys(){
   try{
     const d=await api('/api/admin/keys');
     const k=d.keys||[];
-    $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${x.name}</b></td><td><code>${x.prefix}</code></td><td style="font-size:12px;color:var(--muted)">${new Date(x.createdAt).toLocaleString()}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?new Date(x.lastUsedAt).toLocaleString():'-'}</td><td style="text-align:right;white-space:nowrap">
+    $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td style="max-width:340px"><code style="display:block;font-size:11px;word-break:break-all;white-space:pre-wrap">${x.raw||x.prefix}</code>${x.raw?`<button class="btn-sm btn" style="margin-top:4px" onclick="copyKeyText('${x.raw}')">Copy</button>`:''}</td><td style="font-size:12px;color:var(--muted)">${new Date(x.createdAt).toLocaleString()}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?new Date(x.lastUsedAt).toLocaleString():'-'}</td><td style="text-align:right;white-space:nowrap">
       <button class="btn-sm btn" onclick="openUseKey('${x.id}')">Use key</button>
       <button class="btn-sm btn" onclick="editKey('${x.id}','${x.name.replace(/'/g,"\\'")}')">Edit</button>
       <button class="btn-sm btn ${x.revoked?'success':'danger'}" onclick="toggleKey('${x.id}',${x.revoked})">${x.revoked?'Enable':'Disable'}</button>
@@ -1328,6 +1328,7 @@ async function toggleKey(id,revoked){
 function openKeyModal(){$('keyModal').classList.add('open');$('keyResult').style.display='none';$('keyName').value='default';setTimeout(()=>$('keyName').focus(),50);}
 function closeKeyModal(){$('keyModal').classList.remove('open');}
 async function copyKey(){try{await navigator.clipboard.writeText($('keyValue').value);showNotice('Copied','success');}catch(e){}}
+function copyKeyText(v){try{navigator.clipboard.writeText(v).then(()=>showNotice('Copied','success')).catch(()=>{});}catch(e){}}
 async function createKey(e){
   e.preventDefault();
   try{

@@ -64,6 +64,55 @@ func TestAPIKeyCreateRollsBackWhenPersistenceFails(t *testing.T) {
 	}
 }
 
+// 旧 hash-only 时代的密钥（只有 hash、没有明文）在加载时被轮换为明文密钥，
+// 旧的 hash 保留在 legacyHash 中继续可用，控制台能重新显示完整密钥。
+func TestAPIKeyLegacyHashOnlyRotatedToPlaintext(t *testing.T) {
+	path := t.TempDir() + "/api-keys.json"
+	legacyHash := keyHash("m365_old_plaintext_that_was_never_stored")
+	legacy := `{"keys":[{"id":"legacy1","name":"old","prefix":"m365_old_plain","hash":"` + legacyHash + `","createdAt":"2025-01-01T00:00:00Z"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("M365_API_KEYS", path)
+	s := openAPIKeys()
+	if len(s.Keys) != 1 {
+		t.Fatalf("keys=%d, want 1", len(s.Keys))
+	}
+	k := s.Keys[0]
+	if k.Raw == "" {
+		t.Fatal("legacy key was not rotated to a plaintext raw")
+	}
+	if k.Hash != keyHash(k.Raw) {
+		t.Fatalf("hash does not match rotated raw: %q", k.Hash)
+	}
+	if k.LegacyHash != legacyHash {
+		t.Fatalf("legacy hash not preserved: got %q want %q", k.LegacyHash, legacyHash)
+	}
+	// 磁盘上现在有明文，可重复显示。
+	re := newAPIKeyStore(path)
+	if b, e := os.ReadFile(path); e != nil || json.Unmarshal(b, re) != nil {
+		t.Fatalf("reload failed: %v", e)
+	}
+	if got := re.Keys[0].Raw; got == "" {
+		t.Fatal("rotated plaintext not persisted to disk")
+	}
+	// list 不下发 hash/legacyHash，但下发 raw。
+	out := s.list()
+	if len(out) != 1 || out[0].Raw == "" || out[0].Hash != "" || out[0].LegacyHash != "" {
+		t.Fatalf("list must expose raw but not hashes: %#v", out)
+	}
+	// 旧值仍然有效（兼容既有客户端），新值也有效。
+	if !s.valid("m365_old_plaintext_that_was_never_stored") {
+		t.Fatal("legacy raw value must remain valid through legacyHash")
+	}
+	if !s.valid(k.Raw) {
+		t.Fatal("rotated raw must be valid")
+	}
+	if s.valid("m365_totally_wrong_key") {
+		t.Fatal("unknown key must not validate")
+	}
+}
+
 func TestAPIKeyRevokeRollsBackWhenPersistenceFails(t *testing.T) {
 	store := newAPIKeyStore(t.TempDir() + "/api-keys.json")
 	record, _, err := store.create("test")

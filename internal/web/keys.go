@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -16,6 +17,12 @@ type apiKeyRecord struct {
 	Name       string     `json:"name"`
 	Prefix     string     `json:"prefix"`
 	Hash       string     `json:"hash"`
+	// LegacyHash keeps the hash of a key that was created during the brief
+	// hash-only era (plaintext never stored, so it cannot be re-displayed).
+	// On migration the record is rotated to a fresh plaintext key and the old
+	// hash is preserved here so existing clients keep working until the
+	// operator deletes the record.
+	LegacyHash string     `json:"legacyHash,omitempty"`
 	Raw        string     `json:"raw,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
@@ -44,12 +51,28 @@ func openAPIKeys() *apiKeyStore {
 	if e == nil && json.Unmarshal(b, s) == nil {
 		migrated := false
 		for i := range s.Keys {
+			k := &s.Keys[i]
 			// Keys created before the hash migration carry a raw plaintext but
 			// no hash: backfill the hash and keep the plaintext so the console
 			// can still redisplay the full key (see list()).
-			if s.Keys[i].Raw != "" && s.Keys[i].Hash == "" {
-				s.Keys[i].Hash = keyHash(s.Keys[i].Raw)
+			if k.Raw != "" && k.Hash == "" {
+				k.Hash = keyHash(k.Raw)
 				migrated = true
+				continue
+			}
+			// Keys created during the hash-only era have a hash but no stored
+			// plaintext, which SHA-256 cannot recover. Rotate them in place:
+			// persist a fresh plaintext key so the console can display and copy
+			// it again, while the old hash stays valid (LegacyHash) so existing
+			// clients keep working until the operator deletes the record.
+			if k.Raw == "" && k.Hash != "" {
+				newRaw := newKeyRaw()
+				k.LegacyHash = k.Hash
+				k.Hash = keyHash(newRaw)
+				k.Prefix = newRaw[:12]
+				k.Raw = newRaw
+				migrated = true
+				log.Printf("[api-keys] rotated key %q (%s): plaintext was never stored under the old hash-only scheme; new value is persisted and shown in the console, old value remains valid", k.Name, k.ID)
 			}
 		}
 		if migrated {
@@ -71,15 +94,18 @@ func (s *apiKeyStore) flush() error {
 	return writeFileAtomic(s.Path, b, 0600)
 }
 func keyHash(k string) string { h := sha256.Sum256([]byte(k)); return hex.EncodeToString(h[:]) }
-func (s *apiKeyStore) create(name string) (apiKeyRecord, string, error) {
+func newKeyRaw() string {
 	b := make([]byte, 32)
 	if _, e := rand.Read(b); e != nil {
-		return apiKeyRecord{}, "", e
+		panic("api key rng failure: " + e.Error())
 	}
-	raw := "m365_" + hex.EncodeToString(b)
+	return "m365_" + hex.EncodeToString(b)
+}
+func (s *apiKeyStore) create(name string) (apiKeyRecord, string, error) {
+	raw := newKeyRaw()
 	// 明文 Raw 与 Hash 一同持久化：控制台可以随时重新显示并复制完整密钥
 	// （前端 openUseKey 依赖 list() 返回的 raw 字段）。
-	r := apiKeyRecord{ID: hex.EncodeToString(b[:8]), Name: name, Prefix: raw[:12], Hash: keyHash(raw), Raw: raw, CreatedAt: time.Now()}
+	r := apiKeyRecord{ID: raw[5:21], Name: name, Prefix: raw[:12], Hash: keyHash(raw), Raw: raw, CreatedAt: time.Now()}
 	s.mu.Lock()
 	s.Keys = append(s.Keys, r)
 	s.mu.Unlock()
@@ -100,6 +126,7 @@ func (s *apiKeyStore) list() []apiKeyRecord {
 	for i := range out {
 		// Hash 永不下发；Raw 保留以便控制台重复显示密钥。
 		out[i].Hash = ""
+		out[i].LegacyHash = ""
 	}
 	return out
 }
@@ -174,7 +201,10 @@ func (s *apiKeyStore) valid(raw string) bool {
 	h := keyHash(raw)
 	found := false
 	for i := range s.Keys {
-		if s.Keys[i].Hash == h && !s.Keys[i].Revoked {
+		if s.Keys[i].Revoked {
+			continue
+		}
+		if s.Keys[i].Hash == h || (s.Keys[i].LegacyHash != "" && s.Keys[i].LegacyHash == h) {
 			now := time.Now()
 			s.Keys[i].LastUsedAt = &now
 			found = true
