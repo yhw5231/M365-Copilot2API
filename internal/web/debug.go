@@ -44,6 +44,7 @@ func openDebugStore() *debugStore {
 	}
 	return &debugStore{path: p}
 }
+
 var sensitiveKeys = map[string]bool{
 	"api_key": true, "apikey": true, "apiKey": true, "authorization": true,
 	"access_token": true, "accessToken": true, "refresh_token": true, "refreshToken": true,
@@ -222,6 +223,11 @@ func (c *captureWriter) Write(b []byte) (int, error) {
 func (s *Server) debugMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/v1/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		logLevel := currentSettings().LogLevel
+		if logLevel == "silent" || debugLevelRank(logLevel) > debugLevelRank("debug") {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -31,7 +31,7 @@ func TestSessionsListOmitsContextHistory(t *testing.T) {
 	now := time.Now()
 	sr.mu.Lock()
 	sr.sessions["sess-1"] = sessionBinding{
-		SessionID:  "sess-1",
+		SessionID:      "sess-1",
 		ConversationID: "conv-1",
 		AccountID:      "acc-1",
 		CreatedAt:      now,

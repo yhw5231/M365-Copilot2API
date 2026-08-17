@@ -20,18 +20,6 @@ import (
 	"github.com/google/uuid"
 )
 
-type imageGenerationRequest struct {
-	Prompt         string               `json:"prompt"`
-	N              int                  `json:"n"`
-	Size           string               `json:"size"`
-	ResponseFormat string               `json:"response_format"`
-	Model          string               `json:"model"`
-	AccountID      string               `json:"accountId"`
-	User           string               `json:"user"`
-	Operation      string               `json:"operation,omitempty"`
-	Attachments    []chathub.Attachment `json:"attachments,omitempty"`
-}
-
 const (
 	designerAppServiceScope  = "https://designerappservice.officeapps.live.com/.default"
 	maxGeneratedImageBytes   = 20 << 20
@@ -44,6 +32,18 @@ type generatedImage struct {
 	Data        []byte
 	ContentType string
 	ExpiresAt   time.Time
+}
+
+type imageGenerationRequest struct {
+	Prompt         string               `json:"prompt"`
+	N              int                  `json:"n"`
+	Size           string               `json:"size"`
+	ResponseFormat string               `json:"response_format"`
+	Model          string               `json:"model"`
+	AccountID      string               `json:"accountId"`
+	User           string               `json:"user"`
+	Operation      string               `json:"operation,omitempty"`
+	Attachments    []chathub.Attachment `json:"attachments,omitempty"`
 }
 
 func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
@@ -61,8 +61,8 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	if b.N <= 0 {
 		b.N = 1
 	}
-	if b.N > 4 {
-		http.Error(w, "n must be between 1 and 4", 400)
+	if b.N > 10 {
+		writeOpenAIError(w, 400, "invalid_request_error", "n must be between 1 and 10")
 		return
 	}
 	format := strings.ToLower(strings.TrimSpace(b.ResponseFormat))
@@ -82,7 +82,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		acc.OID, acc.TID = extractOIDTID(acc.AccessToken)
 	}
 	if acc.OID == "" || acc.TID == "" {
-		http.Error(w, "account missing oid/tid", 400)
+		writeOpenAIError(w, 400, "invalid_request_error", "account missing oid/tid — re-login with PKCE")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ImageTimeoutSeconds)*time.Second)
@@ -92,14 +92,14 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		size = "1024x1024"
 	}
 	endpoint := "/v1/images/generations"
-	prompt := fmt.Sprintf("Generate an image with the Flux model. Size: %s. Description: %s. Return the image URL directly.", size, b.Prompt)
+	prompt := fmt.Sprintf("Generate an image with GPT Image 2. Size: %s. Description: %s. Return the image URL directly.", size, b.Prompt)
 	if b.Operation == "edit" {
 		if len(b.Attachments) == 0 {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "image is required")
 			return
 		}
 		endpoint = "/v1/images/edits"
-		prompt = fmt.Sprintf("Edit the first attached image with the Flux model. Size: %s. Instructions: %s. Preserve everything not requested to change. Return the edited image URL directly.", size, b.Prompt)
+		prompt = fmt.Sprintf("Edit the first attached image with GPT Image 2. Size: %s. Instructions: %s. Preserve everything not requested to change. Return the edited image URL directly.", size, b.Prompt)
 	}
 	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{Text: prompt, Tone: "magic", Attachments: b.Attachments, BindAccount: acc.ID})
 	if err != nil {
@@ -107,24 +107,22 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 			Time:         time.Now(),
 			APIKeyPrefix: apiKeyPrefix(r),
 			AccountEmail: acc.Email,
-			Model:        firstNonEmpty(b.Model, "flux"),
+			Model:        firstNonEmpty(b.Model, "gpt-image-2"),
 			Endpoint:     endpoint,
 			DurationMs:   time.Since(startedAt).Milliseconds(),
 			Status:       502,
 			Error:        truncatedError(err),
 		})
-		http.Error(w, upstreamError(err), 502)
+		writeUpstreamError(w, err)
 		return
 	}
 	log.Printf("[image-gen] conversation=%s images=%d text_len=%d events=%d raw_len=%d", res.ConversationID, len(res.Images), len(res.Text), len(res.Events), len(res.RawResult))
 	if len(res.Images) == 0 {
-		// Fallback: try to find image URLs in the raw result
 		if urls := extractImageURLs(res.RawResult); len(urls) > 0 {
 			res.Images = urls
 		}
 	}
 	if len(res.Images) == 0 {
-		// Fallback: try to find image URLs in the response text
 		if urls := extractImageURLs(res.Text); len(urls) > 0 {
 			res.Images = urls
 		}
@@ -148,13 +146,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 				rawPreview = rawPreview[:500]
 			}
 		}
-		debug := map[string]any{
-			"text":        textPreview,
-			"raw_len":     len(res.RawResult),
-			"events":      len(res.Events),
-			"images":      res.Images,
-			"raw_preview": rawPreview,
-		}
+		debug := map[string]any{"text": textPreview, "raw_len": len(res.RawResult), "events": len(res.Events), "images": res.Images, "raw_preview": rawPreview}
 		b, _ := json.Marshal(debug)
 		log.Printf("[image-gen-debug] %s", string(b))
 		http.Error(w, `{"error":{"message":"upstream returned no image resource","type":"upstream_error"}}`, 502)
@@ -209,12 +201,13 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		id := s.storeGeneratedImage(imageData, contentType)
 		data = append(data, map[string]string{"url": generatedImageURL(r, id)})
 	}
+
 	s.usage.record(UsageRecord{
 		Time:         time.Now(),
 		APIKeyPrefix: apiKeyPrefix(r),
 		AccountEmail: acc.Email,
-		Model:        firstNonEmpty(b.Model, "flux"),
-		Endpoint:     "/v1/images/generations",
+		Model:        firstNonEmpty(b.Model, "gpt-image-2"),
+		Endpoint:     endpoint,
 		InputTokens:  EstimateTokens(prompt),
 		DurationMs:   time.Since(startedAt).Milliseconds(),
 		Status:       200,
@@ -222,46 +215,6 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"created": time.Now().Unix(), "data": data, "m365": map[string]any{"conversationId": res.ConversationID, "sessionId": res.SessionID, "images": images}})
 }
 
-// extractImageURLs finds image URLs in a raw JSON string by searching for URL patterns.
-func extractImageURLs(raw string) []string {
-	if raw == "" {
-		return nil
-	}
-	var out []string
-	seen := map[string]bool{}
-	var v any
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return nil
-	}
-	var walk func(any)
-	walk = func(v any) {
-		switch x := v.(type) {
-		case []any:
-			for _, e := range x {
-				walk(e)
-			}
-		case map[string]any:
-			for k, e := range x {
-				lk := strings.ToLower(k)
-				if s, ok := e.(string); ok && (lk == "url" || lk == "imageurl" || lk == "thumbnailurl" || lk == "downloadurl" || lk == "src" || lk == "value" || lk == "data") {
-					if strings.HasPrefix(s, "https://") && !seen[s] {
-						if strings.Contains(strings.ToLower(s), "image") || strings.HasSuffix(strings.ToLower(s), ".png") || strings.HasSuffix(strings.ToLower(s), ".jpg") || strings.HasSuffix(strings.ToLower(s), ".jpeg") || strings.HasSuffix(strings.ToLower(s), ".webp") || strings.HasSuffix(strings.ToLower(s), ".gif") {
-							seen[s] = true
-							out = append(out, s)
-						}
-					}
-				} else {
-					walk(e)
-				}
-			}
-		}
-	}
-	walk(v)
-	return out
-}
-
-// imageEdits implements POST /v1/images/edits by converting the multipart form
-// into an image-generation request with an embedded attachment.
 func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -379,21 +332,18 @@ func isDesignerImageURL(raw string) bool {
 
 func downloadDesignerImage(ctx context.Context, rawURL, accessToken string) ([]byte, string, error) {
 	if !isDesignerImageURL(rawURL) {
-		return nil, "", fmt.Errorf("not a Designer image URL")
+		return nil, "", fmt.Errorf("unsupported generated image host")
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	client := outbound.HTTPClient()
-	// Every redirect hop must stay on the Designer allowlist host.
+	req.Header.Set("Accept", "image/*")
+	client := *outbound.HTTPClient()
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if len(via) >= chathub.MaxRedirects {
-			return fmt.Errorf("Designer image download too many redirects")
-		}
-		if !isDesignerImageURL(next.URL.String()) {
-			return fmt.Errorf("Designer image download redirected off the allowlist host")
+		if len(via) >= 3 || !isDesignerImageURL(next.URL.String()) {
+			return http.ErrUseLastResponse
 		}
 		return nil
 	}
@@ -402,21 +352,24 @@ func downloadDesignerImage(ctx context.Context, rawURL, accessToken string) ([]b
 		return nil, "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, "", fmt.Errorf("Designer image download HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxGeneratedImageBytes+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGeneratedImageBytes+1))
 	if err != nil {
 		return nil, "", err
 	}
-	if len(data) > maxGeneratedImageBytes {
-		return nil, "", fmt.Errorf("Designer image exceeds size limit")
+	if len(body) > maxGeneratedImageBytes {
+		return nil, "", fmt.Errorf("generated image exceeds %d bytes", maxGeneratedImageBytes)
 	}
-	contentType := http.DetectContentType(data)
-	if !strings.HasPrefix(contentType, "image/") {
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" || !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		contentType = http.DetectContentType(body)
+	}
+	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
 		return nil, "", fmt.Errorf("Designer returned non-image content")
 	}
-	return data, contentType, nil
+	return body, contentType, nil
 }
 
 func (s *Server) storeGeneratedImage(data []byte, contentType string) string {
@@ -452,6 +405,14 @@ func (s *Server) storeGeneratedImage(data []byte, contentType string) string {
 	return id
 }
 
+func generatedImageURL(r *http.Request, id string) string {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host + "/v1/images/files/" + id
+}
+
 func (s *Server) generatedImageFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -480,14 +441,6 @@ func (s *Server) generatedImageFile(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(img.Data)
 }
 
-func generatedImageURL(r *http.Request, id string) string {
-	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		scheme = "https"
-	}
-	return scheme + "://" + r.Host + "/v1/images/files/" + id
-}
-
 func isImageQuotaRefusal(text string) bool {
 	low := strings.ToLower(strings.TrimSpace(text))
 	for _, phrase := range []string{
@@ -503,6 +456,44 @@ func isImageQuotaRefusal(text string) bool {
 		}
 	}
 	return false
+}
+
+// extractImageURLs finds image URLs in a raw JSON string by searching for URL patterns.
+func extractImageURLs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return nil
+	}
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for k, e := range x {
+				lk := strings.ToLower(k)
+				if s, ok := e.(string); ok && (lk == "url" || lk == "imageurl" || lk == "thumbnailurl" || lk == "downloadurl" || lk == "src" || lk == "value" || lk == "data") {
+					if strings.HasPrefix(s, "https://") && !seen[s] {
+						if strings.Contains(strings.ToLower(s), "image") || strings.HasSuffix(strings.ToLower(s), ".png") || strings.HasSuffix(strings.ToLower(s), ".jpg") || strings.HasSuffix(strings.ToLower(s), ".jpeg") || strings.HasSuffix(strings.ToLower(s), ".webp") || strings.HasSuffix(strings.ToLower(s), ".gif") {
+							seen[s] = true
+							out = append(out, s)
+						}
+					}
+				} else {
+					walk(e)
+				}
+			}
+		}
+	}
+	walk(v)
+	return out
 }
 
 func downloadImageAsBase64(url string) (b64, contentType string, err error) {

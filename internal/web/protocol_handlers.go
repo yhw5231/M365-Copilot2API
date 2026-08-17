@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,9 +48,14 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	irw := &pipeResponseWriter{h: make(http.Header), w: pw}
 	innerDone := make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[responses] inner goroutine panic: %v", r)
+			}
+			_ = pw.Close()
+			close(innerDone)
+		}()
 		s.openaiChat(irw, r2)
-		_ = pw.Close()
-		close(innerDone)
 	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -181,11 +187,9 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 				emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
 				continue
 			}
-			item := map[string]any{"type": "function_call", "id": "fc_" + uuid.NewString(), "call_id": st.ID, "name": st.Name, "arguments": st.Args, "status": "completed"}
+			item := map[string]any{"type": "function_call", "id": st.ItemID, "call_id": st.ID, "name": st.Name, "arguments": st.Args, "status": "completed"}
 			output = append(output, item)
-			emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": i, "item": map[string]any{"type": "function_call", "id": item["id"], "call_id": st.ID, "name": st.Name, "arguments": "", "status": "in_progress"}})
-			emit("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "output_index": i, "item_id": item["id"], "delta": st.Args})
-			emit("response.function_call_arguments.done", map[string]any{"type": "response.function_call_arguments.done", "output_index": i, "item_id": item["id"], "arguments": st.Args})
+			emit("response.function_call_arguments.done", map[string]any{"type": "response.function_call_arguments.done", "output_index": i, "item_id": st.ItemID, "arguments": st.Args})
 			emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
 		}
 	} else {

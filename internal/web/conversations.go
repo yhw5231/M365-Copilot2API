@@ -117,8 +117,9 @@ func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := cacheStats.GetStats()
 	jsonOut(w, map[string]any{
-		"object": "cache_stats",
-		"stats":  stats,
+		"object":     "cache_stats",
+		"stats":      stats,
+		"conv_cache": s.convCache.Stats(),
 	})
 }
 
@@ -217,101 +218,6 @@ func conversationTimestamp(row map[string]any) int64 {
 	return 0
 }
 
-func (s *Server) handleM365Delete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if m365CloudClient == nil {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "M365 cloud client not configured. Please add an M365 account first via PKCE authorization.")
-		return
-	}
-	var body struct {
-		ConversationID string `json:"conversation_id"`
-	}
-	if json.NewDecoder(r.Body).Decode(&body) != nil || body.ConversationID == "" {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	if err := m365CloudClient.DeleteConversation(body.ConversationID); err != nil {
-		writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
-		return
-	}
-	jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
-}
-
-func (s *Server) handleM365Cleanup(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if m365CloudClient == nil {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "M365 cloud client not configured. Please add an M365 account first via PKCE authorization.")
-		return
-	}
-	var body struct {
-		MaxAgeHours int `json:"max_age_hours"`
-		KeepN       int `json:"keep_n"`
-	}
-	json.NewDecoder(r.Body).Decode(&body)
-
-	maxAge := time.Duration(body.MaxAgeHours) * time.Hour
-	if maxAge <= 0 {
-		maxAge = 24 * time.Hour
-	}
-	keepN := body.KeepN
-	if keepN <= 0 {
-		keepN = 5
-	}
-
-	deleted, err := m365CloudClient.CleanupOldConversations(maxAge, keepN)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
-		return
-	}
-	jsonOut(w, map[string]any{"status": "cleaned", "deleted": deleted})
-}
-
-func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	sessionID := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
-	if sessionID == "" {
-		http.Error(w, "session_id required", http.StatusBadRequest)
-		return
-	}
-	if s.sessionResolver.DeleteSession(sessionID) {
-		jsonOut(w, map[string]any{"status": "deleted", "session_id": sessionID})
-	} else {
-		http.Error(w, "session not found", http.StatusNotFound)
-	}
-}
-
-type conversationWhitelistRequest struct {
-	ConversationID string `json:"conversation_id"`
-	Add            bool   `json:"add"`
-}
-
-func (s *Server) conversationWhitelist(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var body conversationWhitelistRequest
-	if json.NewDecoder(r.Body).Decode(&body) != nil || body.ConversationID == "" {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	if body.Add {
-		s.conversationManager.Whitelist(body.ConversationID)
-	} else {
-		s.conversationManager.Unwhitelist(body.ConversationID)
-	}
-	jsonOut(w, map[string]any{"status": "updated", "conversation_id": body.ConversationID, "whitelisted": body.Add})
-}
-
 // handleM365ConversationDetail returns the locally tracked context history for
 // one cloud conversation so the admin UI can show a per-conversation detail
 // view without re-fetching remote chats (upstream PR #24).
@@ -394,4 +300,100 @@ func stripControlChars(s string) string {
 		}
 		return r
 	}, s)
+}
+
+func (s *Server) handleM365Delete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if m365CloudClient == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "M365 cloud client not configured. Please add an M365 account first via PKCE authorization.")
+		return
+	}
+	var body struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.ConversationID == "" {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if err := m365CloudClient.DeleteConversation(body.ConversationID); err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
+		return
+	}
+	s.dropConversation(body.ConversationID)
+	jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
+}
+
+func (s *Server) handleM365Cleanup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if m365CloudClient == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "M365 cloud client not configured. Please add an M365 account first via PKCE authorization.")
+		return
+	}
+	var body struct {
+		MaxAgeHours int `json:"max_age_hours"`
+		KeepN       int `json:"keep_n"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	maxAge := time.Duration(body.MaxAgeHours) * time.Hour
+	if maxAge <= 0 {
+		maxAge = 24 * time.Hour
+	}
+	keepN := body.KeepN
+	if keepN <= 0 {
+		keepN = 5
+	}
+
+	deleted, err := m365CloudClient.CleanupOldConversations(maxAge, keepN)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
+		return
+	}
+	jsonOut(w, map[string]any{"status": "cleaned", "deleted": deleted})
+}
+
+func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sessionID := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
+	if sessionID == "" {
+		http.Error(w, "session_id required", http.StatusBadRequest)
+		return
+	}
+	if s.sessionResolver.DeleteSession(sessionID) {
+		jsonOut(w, map[string]any{"status": "deleted", "session_id": sessionID})
+	} else {
+		http.Error(w, "session not found", http.StatusNotFound)
+	}
+}
+
+type conversationWhitelistRequest struct {
+	ConversationID string `json:"conversation_id"`
+	Add            bool   `json:"add"`
+}
+
+func (s *Server) conversationWhitelist(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body conversationWhitelistRequest
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.ConversationID == "" {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if body.Add {
+		s.conversationManager.Whitelist(body.ConversationID)
+	} else {
+		s.conversationManager.Unwhitelist(body.ConversationID)
+	}
+	jsonOut(w, map[string]any{"status": "updated", "conversation_id": body.ConversationID, "whitelisted": body.Add})
 }

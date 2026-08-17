@@ -222,37 +222,37 @@ func modelRouteTable(mappings []modelMapping, upstream []upstreamMapping, hidden
 }
 
 type runtimeSettings struct {
-	MaxToolCallsPerTurn int            `json:"maxToolCallsPerTurn"`
-	MaxToolRounds       int            `json:"maxToolRounds"`
-	ContextWindow       int            `json:"contextWindow"`
-	MaxOutputTokens     int            `json:"maxOutputTokens"`
-	ChatTimeoutSeconds  int            `json:"chatTimeoutSeconds"`
-	ImageTimeoutSeconds int            `json:"imageTimeoutSeconds"`
-	LogLevel            string         `json:"logLevel"`
-	DebugLogPath        string         `json:"debugLogPath"`
-	ListenAddress       string         `json:"listenAddress"`
-	ConfigPath          string         `json:"configPath"`
-	TokenCachePath      string         `json:"tokenCachePath"`
-	SessionCachePath    string         `json:"sessionCachePath"`
-	OutboundProxy       string         `json:"outboundProxy"`
-	ProxyPool           []string       `json:"proxyPool,omitempty"`
+	MaxToolCallsPerTurn int      `json:"maxToolCallsPerTurn"`
+	MaxToolRounds       int      `json:"maxToolRounds"`
+	ContextWindow       int      `json:"contextWindow"`
+	MaxOutputTokens     int      `json:"maxOutputTokens"`
+	ChatTimeoutSeconds  int      `json:"chatTimeoutSeconds"`
+	ImageTimeoutSeconds int      `json:"imageTimeoutSeconds"`
+	LogLevel            string   `json:"logLevel"`
+	DebugLogPath        string   `json:"debugLogPath"`
+	ListenAddress       string   `json:"listenAddress"`
+	ConfigPath          string   `json:"configPath"`
+	TokenCachePath      string   `json:"tokenCachePath"`
+	SessionCachePath    string   `json:"sessionCachePath"`
+	OutboundProxy       string   `json:"outboundProxy"`
+	ProxyPool           []string `json:"proxyPool,omitempty"`
 	// ProxyMode is the three-state proxy policy: "direct" (never use the
 	// pool), "loose" (prefer the pool, fall back to direct), "strict"
 	// (mandatory once a pool is configured; the default when absent).
-	ProxyMode string `json:"proxyMode,omitempty"`
-	ClientID            string         `json:"clientId"`
-	Authority           string         `json:"authority"`
-	RedirectURI         string         `json:"redirectUri"`
-	Scope               string         `json:"scope"`
-	ModelMappings       []modelMapping `json:"modelMappings"`
+	ProxyMode     string         `json:"proxyMode,omitempty"`
+	ClientID      string         `json:"clientId"`
+	Authority     string         `json:"authority"`
+	RedirectURI   string         `json:"redirectUri"`
+	Scope         string         `json:"scope"`
+	ModelMappings []modelMapping `json:"modelMappings"`
 	// UpstreamMappings is the set of named upstream route targets ("上游映射")
 	// the routing table can point public models at. Missing on legacy files; the
 	// defaults are applied on load.
 	UpstreamMappings []upstreamMapping `json:"upstreamMappings,omitempty"`
 	// HiddenModels lists public model ids removed from the routing console.
 	// Built-in models reappear when a matching mapping is re-added.
-	HiddenModels     []string         `json:"hiddenModels,omitempty"`
-	ToolPlanningMode string           `json:"toolPlanningMode"`
+	HiddenModels     []string `json:"hiddenModels,omitempty"`
+	ToolPlanningMode string   `json:"toolPlanningMode"`
 	// TraceEnabled turns on the request-tracing debug mode that keeps the most
 	// recent TraceMaxRecords full request/response captures (default 50).
 	TraceEnabled    bool `json:"traceEnabled,omitempty"`

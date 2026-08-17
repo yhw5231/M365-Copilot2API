@@ -209,17 +209,17 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	if explicitID != "" {
 		if sessID, ok := sr.byExplicit[explicitID]; ok {
 			if sess, ok := sr.sessions[sessID]; ok && sessionOwnedBy(sess, key) {
-			sess.LastUsedAt = time.Now().UTC()
-			sr.sessions[sessID] = sess
-			sr.persist.markDirty()
-			return ResolveResult{
-				SessionID:      sess.SessionID,
-				ConversationID: sess.ConversationID,
-				AccountID:      sess.AccountID,
-				MatchedBy:      "explicit",
-				IsNew:          false,
-				HistoryLen:     len(sess.ContextHistory),
-			}
+				sess.LastUsedAt = time.Now().UTC()
+				sr.sessions[sessID] = sess
+				sr.persist.markDirty()
+				return ResolveResult{
+					SessionID:      sess.SessionID,
+					ConversationID: sess.ConversationID,
+					AccountID:      sess.AccountID,
+					MatchedBy:      "explicit",
+					IsNew:          false,
+					HistoryLen:     len(sess.ContextHistory),
+				}
 			}
 		}
 		if sess, ok := sr.sessions[explicitID]; ok && sessionOwnedBy(sess, key) {
@@ -334,9 +334,9 @@ func (sr *sessionResolver) matchContextLocked(ipFinger, key string, messages []o
 		return "", 0
 	}
 	type match struct {
-		id      string
-		n       int
-		recent  time.Time
+		id     string
+		n      int
+		recent time.Time
 	}
 	best := match{}
 	for id, sess := range sr.sessions {
@@ -575,6 +575,9 @@ func (sr *sessionResolver) UnbindByConversation(conversationID string) int {
 }
 
 func cloneMessages(msgs []oaiMsg) []oaiMsg {
+	if len(msgs) > 20 {
+		msgs = msgs[len(msgs)-20:]
+	}
 	out := make([]oaiMsg, len(msgs))
 	copy(out, msgs)
 	return out

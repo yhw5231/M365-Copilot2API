@@ -13,10 +13,10 @@ import (
 )
 
 type apiKeyRecord struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Prefix     string     `json:"prefix"`
-	Hash       string     `json:"hash"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Prefix string `json:"prefix"`
+	Hash   string `json:"hash"`
 	// LegacyHash keeps the hash of a key that was created during the brief
 	// hash-only era (plaintext never stored, so it cannot be re-displayed).
 	// On migration the record is rotated to a fresh plaintext key and the old

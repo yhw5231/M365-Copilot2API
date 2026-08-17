@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,7 +54,19 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 				case "image_url":
 					img, _ := part["image_url"].(map[string]any)
 					if u, _ := img["url"].(string); u != "" {
-						blocks = append(blocks, map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": u}})
+						if strings.HasPrefix(u, "data:") {
+							parts := strings.SplitN(u, ",", 2)
+							meta := parts[0]
+							b64 := ""
+							if len(parts) == 2 {
+								b64 = parts[1]
+							}
+							media := strings.TrimPrefix(meta, "data:")
+							media = strings.SplitN(media, ";", 2)[0]
+							blocks = append(blocks, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": media, "data": b64}})
+						} else {
+							blocks = append(blocks, map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": u}})
+						}
 					}
 				}
 			}

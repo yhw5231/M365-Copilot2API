@@ -91,6 +91,27 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 - Go 1.23+（`go.mod` 声明的最低版本）
 - Windows / Linux 均可；Windows 上推荐用仓库自带的 `manage.py` 管理生命周期
 
+### 预编译二进制（推荐）
+
+从 [GitHub Releases](https://github.com/HEXUXIU/M365-Copilot2API/releases) 下载对应平台的二进制：
+
+| 平台 | 架构 | 文件 |
+|------|------|------|
+| Linux | x86_64 / arm64 / i386 | `m365-copilot2api-linux-{amd64,arm64,386}` |
+| Windows | x86_64 / arm64 / i386 | `m365-copilot2api-windows-{amd64,arm64,386}.exe` |
+| macOS | x86_64 / arm64 | `m365-copilot2api-darwin-{amd64,arm64}` |
+
+```bash
+# Linux / macOS 示例
+chmod +x m365-copilot2api-linux-amd64
+./m365-copilot2api-linux-amd64
+```
+
+```powershell
+# Windows 示例
+.\m365-copilot2api-windows-amd64.exe
+```
+
 ### 源码编译
 
 ```powershell
@@ -155,8 +176,14 @@ M365_ADMIN_PASSWORD=your_strong_password
 
 浏览器打开控制台（默认 `http://127.0.0.1:9090`）：
 
-1. 用管理员密码登录（首次登录**强制要求修改密码**）。
-2. 在「账号」页发起 **PKCE 授权**，按引导完成 M365 账号登录。
+1. 用管理员密码登录（首次登录**强制要求修改密码**，默认密码 `admin123`）。
+2. 在「账号」页点击**开始授权**：
+   - 浏览器会弹出新窗口，跳转到 Microsoft 登录页。
+   - 用你的 M365 账号完成登录。
+   - 登录完成后弹出窗口会显示空白页或错误页——**这是正常的**，因为回调端点不是真正的网站，授权**尚未完成**。
+   - 从弹出窗口的**地址栏**复制完整 URL（包含 `code=...&state=...` 参数）。
+   - 回到控制台，将 URL 粘贴到「Callback URL」输入框，点击「Confirm and add」。
+   - 如果浏览器拦截了弹窗，请允许本站弹窗后重试。
 3. 授权成功后，在「API Key」页**创建第一个 API Key**。
 4. 用下面的 API 示例验证调用。
 
@@ -179,6 +206,8 @@ M365_ADMIN_PASSWORD=your_strong_password
 | `M365_CONTEXT_TTL_MINUTES` | `120` | 上下文指纹复用窗口（分钟） |
 | `M365_CONTEXT_SIMILARITY` | `0.6` | 上下文相似度复用阈值（0~1，Jaccard 相似度） |
 | `M365_LOG_LEVEL` | `info` | 日志级别 |
+| `M365_ACCOUNT_DEFAULT_CONCURRENCY` | `8` | 每个账号同时进行的上游调用上限；其余账号仍可继续接收请求 |
+| `M365_PUBLIC_IDENTITY_POLICY` | `false` | 公开身份策略总开关；仅在微软反代渠道显式设为 `true` 时启用身份预设及正文、推理、引用和流式清洗 |
 
 ### 自动清理
 
@@ -217,8 +246,9 @@ M365_ADMIN_PASSWORD=your_strong_password
 | `M365_PROXY_MODE` | `strict` | 代理模式三选一：`direct`（直连，不走代理池）、`loose`（优先代理，无健康节点时回退直连）、`strict`（配置了代理池就必须走健康节点，否则报错）。旧开关 `M365_ENFORCE_PROXY=1/0` 仍兼容（映射 strict / loose）。也可在 Web 控制台「Proxy pool」页面切换（设置项 `proxyMode`），保存后即时生效 |
 | `M365_PROXY_INSECURE_TLS` | — | 信任自签代理证书（`1` / `true`） |
 | `M365_PROXY_HEALTH_URL` | 默认探测地址 | 代理健康检查目标 |
-| `M365_CLIENT_ID` | 内置 | Azure 应用 Client ID |
-| `M365_AUTHORITY` / `M365_REDIRECT_URI` / `M365_SCOPE` | 内置 | OAuth 端点自定义覆盖 |
+| `M365_BROWSER_CLIENT_ID` / `M365_BROWSER_AUTHORITY` / `M365_BROWSER_REDIRECT_URI` / `M365_BROWSER_SCOPE` | 内置 | 浏览器 PKCE 的 OAuth 配置 |
+| `M365_DEVICE_CLIENT_ID` / `M365_DEVICE_AUTHORITY` / `M365_DEVICE_SCOPE` | 内置 | Device Code 的 OAuth 配置 |
+| `M365_CLIENT_ID` / `M365_AUTHORITY` / `M365_REDIRECT_URI` / `M365_SCOPE` | 内置 | 兼容旧配置；流程专用变量未设置时作为回退 |
 
 ### 数据文件
 
@@ -346,6 +376,8 @@ curl http://127.0.0.1:9090/v1/messages \
 ```
 
 其他任何支持 OpenAI / Anthropic `base_url` 配置的客户端（OpenCode、Cursor、Codex 等）同理，把 `BASE_URL` 指向网关即可。
+
+> 作者不针对任何第三方 Agent 框架的兼容性提供适配与排查。如有需要，自行适配。
 
 控制台「API Keys」页的「使用 API 密钥」弹窗可直接生成 Claude Code 的 `settings.json` 配置与终端环境变量，复制即可。
 

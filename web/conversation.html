@@ -83,7 +83,7 @@ pre{margin:0;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere;word-break
   <div id="conversationView" hidden>
     <section class="heading">
       <div class="heading-copy">
-        <div class="eyebrow">Conversation detail</div>
+<div class="eyebrow">对话详情</div>
         <h1 id="title">-</h1>
         <div class="identity" id="conversationId">-</div>
       </div>
@@ -149,7 +149,7 @@ function messageHTML(message,index){
       <div class="message-head"><span class="role-name">${escapeHTML(meta.name)}</span><span class="message-index">#${index+1}</span></div>
       ${contentHTML(message?.content)}
       ${toolCallsHTML(message?.tool_calls)}
-      ${reasoning?`<details><summary>Reasoning</summary><div class="reasoning">${escapeHTML(reasoning)}</div></details>`:''}
+${reasoning?`<details><summary>推理</summary><div class="reasoning">${escapeHTML(reasoning)}</div></details>`:''}
     </div>
   </article>`;
 }

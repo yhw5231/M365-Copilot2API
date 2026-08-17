@@ -24,6 +24,7 @@ services:
       M365_ADMIN_PASSWORD_BOOTSTRAP_FILE: /run/secrets/m365_admin_password
       M365_CHAT_TIMEOUT_SECONDS: "120"
       M365_IMAGE_TIMEOUT_SECONDS: "150"
+      M365_PUBLIC_IDENTITY_POLICY: "${M365_PUBLIC_IDENTITY_POLICY:-false}"
     volumes:
       # 挂载前请确保宿主机的 ./data 和 ./secrets 目录存在且可写
       #（项目源码已自带空的 data/ 与 secrets/ 目录，clone 后即可直接部署）。

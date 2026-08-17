@@ -107,6 +107,9 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .table tr:hover td{background:rgba(0,113,227,0.03)}
 @media(prefers-color-scheme:dark){.table tr:hover td{background:rgba(10,132,255,0.04)}}
 .table tr:last-child td{border-bottom:0}
+.conv-row{cursor:pointer}
+.conv-link{display:block;max-width:360px;padding:0;border:0;background:transparent;color:var(--accent);font:inherit;font-weight:600;text-align:left;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
+.conv-meta{font-size:11px;color:var(--muted);margin-top:3px}
 
 /* Notice */
 .notice{position:fixed;right:24px;bottom:24px;background:var(--primary);color:var(--bg);padding:12px 18px;border-radius:var(--radius-sm);display:none;box-shadow:var(--shadow-lg);font-weight:600;font-size:13px;z-index:99;animation:slideUp .3s var(--ease-out)}
@@ -123,6 +126,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .status i{width:6px;height:6px;border-radius:50%;background:currentColor}
 .status.online{color:var(--green)}
 .status.offline{color:var(--muted)}
+.status.cooldown{color:#d97706}
 .status.warn{color:#d97706}
 
 /* Empty */
@@ -289,7 +293,8 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
     <form id="loginForm" style="background:var(--surface);-webkit-backdrop-filter:blur(40px) saturate(180%);backdrop-filter:blur(40px) saturate(180%);border:1px solid var(--surface-border);border-radius:var(--radius);padding:32px;box-shadow:var(--shadow-lg)">
       <div class="form-group">
         <label class="form-label">Password</label>
-        <input class="form-input" id="loginPassword" type="password" placeholder="Enter administrator password" autofocus>
+        <input class="form-input" id="loginPassword" type="password" placeholder="请输入管理员密码（默认：admin123）" autofocus>
+        <div class="form-hint" style="margin-top:4px">默认密码为 <code>admin123</code>，首次登录后需修改密码。</div>
       </div>
       <button type="submit" class="btn primary" style="width:100%;margin-top:8px">Log in</button>
     </form>
@@ -356,13 +361,13 @@ if (response.output_text) {
               <button class="onb-step" id="onb-s1" onclick="onbStep1()">
                 <span class="onb-step-num" id="onb-n1">1</span>
                 <span class="onb-step-icon"><i data-lucide="user-plus" style="width:15px;height:15px"></i></span>
-                <span class="onb-step-text"><b>Add an account</b><p>Authorize a Microsoft account and add it to the available pool</p></span>
+                <span class="onb-step-text"><b>Add a Microsoft account</b><p>Sign in via browser OAuth and add the account to the pool</p></span>
                 <svg class="onb-step-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
               </button>
               <button class="onb-step" id="step-s2" onclick="onbStep2()">
                 <span class="onb-step-num" id="onb-n2">2</span>
                 <span class="onb-step-icon"><i data-lucide="key-round" style="width:15px;height:15px"></i></span>
-                <span class="onb-step-text"><b>Create an API key</b><p>Create an access key for this application or service</p></span>
+                <span class="onb-step-text"><b>Create an API key</b><p>Generate a key to authenticate API requests</p></span>
                 <svg class="onb-step-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
               </button>
               <button class="onb-step" id="step-s3" onclick="onbStep3()">
@@ -421,11 +426,11 @@ if (response.output_text) {
             <div class="quick-grid">
               <div class="quick-action" onclick="showPage('accounts');setTimeout(startPKCE,200)">
                 <div class="quick-action-icon blue"><i data-lucide="plus" style="width:18px;height:18px"></i></div>
-                <div class="quick-action-text"><h4>Add account</h4><p>Authorize a Microsoft account</p></div>
+                <div class="quick-action-text"><h4>Add account</h4><p>Sign in via Microsoft OAuth</p></div>
               </div>
               <div class="quick-action" onclick="openKeyModal()">
                 <div class="quick-action-icon green"><i data-lucide="key" style="width:18px;height:18px"></i></div>
-                <div class="quick-action-text"><h4>Create API key</h4><p>Generate a new access key</p></div>
+                <div class="quick-action-text"><h4>Create API key</h4><p>Generate a key for API access</p></div>
               </div>
               <div class="quick-action" onclick="showPage('conversations')">
                 <div class="quick-action-icon purple"><i data-lucide="trash-2" style="width:18px;height:18px"></i></div>
@@ -530,17 +535,17 @@ if (response.output_text) {
               <div class="onb-step">
                 <span class="onb-step-num">1</span>
                 <span class="onb-step-icon"><i data-lucide="mouse-pointer-click" style="width:15px;height:15px"></i></span>
-                <span class="onb-step-text"><b>Click "Start authorization" below</b><p>Your browser will open the Microsoft sign-in page</p></span>
+                <span class="onb-step-text"><b>点击下方"开始授权"</b><p>弹出窗口将打开 Microsoft 登录页面，完成登录后返回此页面。</p></span>
               </div>
               <div class="onb-step">
                 <span class="onb-step-num">2</span>
                 <span class="onb-step-icon"><i data-lucide="clipboard-copy" style="width:15px;height:15px"></i></span>
-                <span class="onb-step-text"><b>Copy the full callback URL</b><p>After signing in, copy the full URL beginning with http from the address bar</p></span>
+                <span class="onb-step-text"><b>复制弹出页地址栏中的回调地址</b><p>登录后弹出页会显示空白或错误——这是正常的。复制<b>弹出页地址栏</b>的完整网址（包含 <code>code=...</code> 和 <code>state=...</code>）。</p></span>
               </div>
               <div class="onb-step">
                 <span class="onb-step-num">3</span>
                 <span class="onb-step-icon"><i data-lucide="check-check" style="width:15px;height:15px"></i></span>
-                <span class="onb-step-text"><b>Paste and confirm</b><p>Paste it below and click "Confirm and add" to finish authorization</p></span>
+                <span class="onb-step-text"><b>粘贴并确认</b><p>粘贴到下方"回调地址"输入框，点击"确认添加"完成授权</p></span>
               </div>
             </div>
             <button class="btn primary" onclick="startPKCE()" style="width:100%;margin-bottom:12px;"><i data-lucide="link" style="width:15px;height:15px"></i> Start authorization</button>
@@ -553,12 +558,12 @@ if (response.output_text) {
               <p style="margin:6px 0 0;font-size:12px;color:var(--muted)">If the login page does not open automatically, click the address above to open it in a new tab.</p>
             </div>
             <div class="highlight-box warning" style="margin-top:0;margin-bottom:16px">
-              <div class="highlight-box-title"><i data-lucide="alert-circle" style="width:14px;height:14px"></i> Important</div>
+<div class="highlight-box-title"><i data-lucide="alert-circle" style="width:14px;height:14px"></i> Important</div>
               <p>After authorization, <strong>ignore the content of the authorization page</strong> and copy the full callback URL from the browser address bar, including the <code>code</code> and <code>state</code> parameters.</p>
             </div>
             <label class="form-label">Callback URL</label>
             <div class="copy-field">
-              <input class="form-input" id="callbackInput" placeholder="Paste the full callback URL, e.g. https://app.example.com/api/auth/callback?code=...&state=..." autocomplete="off">
+              <input class="form-input" id="callbackInput" placeholder="Paste the full callback URL, e.g. http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123" autocomplete="off">
               <button class="btn primary" onclick="submitCallback()" style="min-width:96px">Confirm and add</button>
             </div>
             <div id="authStatus" style="margin-top:12px"></div>
@@ -572,11 +577,12 @@ if (response.output_text) {
               <div class="seg" id="accountFilter">
                 <button data-f="all" class="active" onclick="setAccountFilter('all')">All</button>
                 <button data-f="online" onclick="setAccountFilter('online')">Online</button>
+                <button data-f="cooldown" onclick="setAccountFilter('cooldown')">Cooldown</button>
                 <button data-f="offline" onclick="setAccountFilter('offline')">Offline</button>
               </div>
             </div>
           </div>
-          <table class="table"><thead><tr><th>Account</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>Account</th><th>Calls</th><th>Status</th><th>Updated</th><th>Scheduling</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
 
@@ -610,7 +616,7 @@ if (response.output_text) {
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Conversation list</span></div>
-          <table class="table"><thead><tr><th>Conversation ID</th><th>Name</th><th>Created</th><th>Actions</th></tr></thead><tbody id="convRows"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>Name</th><th>Messages</th><th>Account</th><th>Last updated</th><th>Actions</th></tr></thead><tbody id="convRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
 
@@ -688,11 +694,12 @@ if (response.output_text) {
 <div class="modal-overlay" id="keyModal">
   <div class="modal">
     <h3>Create API key</h3>
-    <p class="subtitle">You can view or copy this key again from the key list. Store it securely.</p>
+<p class="subtitle">You can view or copy this key again from the key list. Store it securely.</p>
     <form onsubmit="createKey(event)">
       <div class="form-group">
         <label class="form-label">Name</label>
         <input class="form-input" id="keyName" value="default" autofocus>
+        <div class="form-hint">用于标识此密钥的标签（如"my-laptop"、"claude-code"）</div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="closeKeyModal()">Cancel</button>
@@ -747,6 +754,7 @@ if (response.output_text) {
 const $=id=>document.getElementById(id);
 const pages={dashboard:'Dashboard',usage:'Usage',accounts:'Accounts',apikeys:'API Keys',conversations:'Conversations',proxies:'Proxy Pool',modeltest:'Model Test',settings:'Settings'};
 const localeStorageKey='m365_locale';
+const localeSelectionKey='m365_locale_selected';
 const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
 const localeText={
   'Administrator Login': {'zh-CN':'管理员登录','zh-TW':'管理員登入','ja':'管理者ログイン','ko':'관리자 로그인','es':'Inicio de sesión de administrador','fr':'Connexion administrateur','de':'Administrator-Anmeldung','pt-BR':'Login de administrador','ru':'Вход администратора','ar':'تسجيل دخول المسؤول'},
@@ -805,6 +813,9 @@ const localeText={
   'Endpoint': {'zh-CN':'端点','zh-TW':'端點','ja':'エンドポイント','ko':'엔드포인트','es':'Punto final','fr':'Point d\'entrée','de':'Endpunkt','pt-BR':'Endpoint','ru':'Конечная точка','ar':'نقطة النهاية'},
   'Tokens': {'zh-CN':'Tokens','zh-TW':'Tokens','ja':'トークン','ko':'토큰','es':'Tokens','fr':'Tokens','de':'Tokens','pt-BR':'Tokens','ru':'Токены','ar':'الرموز'},
   'Status': {'zh-CN':'状态','zh-TW':'狀態','ja':'ステータス','ko':'상태','es':'Estado','fr':'Statut','de':'Status','pt-BR':'Status','ru':'Статус','ar':'الحالة'},
+  'Calls': {'zh-CN':'调用次数','zh-TW':'呼叫次數','ja':'呼び出し回数','ko':'호출 횟수','es':'Llamadas','fr':'Appels','de':'Aufrufe','pt-BR':'Chamadas','ru':'Вызовы','ar':'الاستدعاءات'},
+  'Scheduling': {'zh-CN':'调度','zh-TW':'調度','ja':'スケジュール','ko':'스케줄링','es':'Programación','fr':'Planification','de':'Planung','pt-BR':'Agendamento','ru':'Планирование','ar':'الجدولة'},
+  'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
   'Loading...': {'zh-CN':'加载中...','zh-TW':'載入中...','ja':'読み込み中...','ko':'로딩 중...','es':'Cargando...','fr':'Chargement...','de':'Wird geladen...','pt-BR':'Carregando...','ru':'Загрузка...','ar':'جارٍ التحميل...'},
   'Token usage statistics and request details': {'zh-CN':'Token 用量统计与请求明细','zh-TW':'Token 用量統計與要求明細','ja':'トークン使用量の統計とリクエスト詳細','ko':'토큰 사용 통계 및 요청 상세','es':'Estadísticas de uso de tokens y detalles de solicitudes','fr':'Statistiques d\'utilisation des tokens et détails des requêtes','de':'Token-Nutzungsstatistik und Anfragedetails','pt-BR':'Estatísticas de uso de tokens e detalhes de solicitações','ru':'Статистика использования токенов и детали запросов','ar':'إحصائيات استخدام الرموز وتفاصيل الطلبات'},
   '7 days': {'zh-CN':'7天','zh-TW':'7天','ja':'7日','ko':'7일','es':'7 días','fr':'7 jours','de':'7 Tage','pt-BR':'7 dias','ru':'7 дней','ar':'7 أيام'},
@@ -867,6 +878,7 @@ const localeText={
   'Authorized accounts': {'zh-CN':'已授权账号','zh-TW':'已授權帳號','ja':'承認済みアカウント','ko':'인증된 계정','es':'Cuentas autorizadas','fr':'Comptes autorisés','de':'Autorisierte Konten','pt-BR':'Contas autorizadas','ru':'Авторизованные аккаунты','ar':'الحسابات المفوضة'},
   'Search accounts…': {'zh-CN':'搜索账号…','zh-TW':'搜尋帳號…','ja':'アカウントを検索…','ko':'계정 검색…','es':'Buscar cuentas…','fr':'Rechercher des comptes…','de':'Konten suchen…','pt-BR':'Pesquisar contas…','ru':'Поиск аккаунтов…','ar':'البحث عن الحسابات…'},
   'All': {'zh-CN':'全部','zh-TW':'全部','ja':'すべて','ko':'전체','es':'Todos','fr':'Tous','de':'Alle','pt-BR':'Todos','ru':'Все','ar':'الكل'},
+  'Cooldown': {'zh-CN':'冷却','zh-TW':'冷卻','ja':'クールダウン','ko':'쿨다운','es':'Enfriamiento','fr':'Refroidissement','de':'Abkühlung','pt-BR':'Resfriamento','ru':'Ожидание','ar':'التهدئة'},
   'Offline': {'zh-CN':'离线','zh-TW':'離線','ja':'オフライン','ko':'오프라인','es':'Sin conexión','fr':'Hors ligne','de':'Offline','pt-BR':'Offline','ru':'Не в сети','ar':'غير متصل'},
   'Updated': {'zh-CN':'更新时间','zh-TW':'更新時間','ja':'更新日時','ko':'업데이트 시간','es':'Actualizado','fr':'Mis à jour','de':'Aktualisiert','pt-BR':'Atualizado','ru':'Обновлено','ar':'تم التحديث'},
   'Actions': {'zh-CN':'操作','zh-TW':'操作','ja':'操作','ko':'작업','es':'Acciones','fr':'Actions','de':'Aktionen','pt-BR':'Ações','ru':'Действия','ar':'الإجراءات'},
@@ -884,7 +896,11 @@ const localeText={
   'Clear': {'zh-CN':'清空','zh-TW':'清空','ja':'クリア','ko':'지우기','es':'Borrar','fr':'Effacer','de':'Leeren','pt-BR':'Limpar','ru':'Очистить','ar':'مسح'},
   'Conversation list': {'zh-CN':'对话列表','zh-TW':'對話列表','ja':'会話一覧','ko':'대화 목록','es':'Lista de conversaciones','fr':'Liste des conversations','de':'Unterhaltungsliste','pt-BR':'Lista de conversas','ru':'Список разговоров','ar':'قائمة المحادثات'},
   'Conversation ID': {'zh-CN':'对话 ID','zh-TW':'對話 ID','ja':'会話 ID','ko':'대화 ID','es':'ID de conversación','fr':'ID de conversation','de':'Unterhaltungs-ID','pt-BR':'ID da conversa','ru':'ID разговора','ar':'معرف المحادثة'},
-  'Configure outbound proxies with http / https / socks5; each account keeps its proxy node, other accounts avoid it, and on failure an unbound node is preferred, falling back to any available node': {'zh-CN':'配置出口代理，支持 http / https / socks5。帐号与节点绑定：帐号始终使用首次分配的节点，其他帐号不使用该节点；节点故障时优先切换空闲节点，无空闲节点时回退到任一可用节点','zh-TW':'設定出口代理，支援 http / https / socks5。帳號與節點綁定：帳號持續使用首次分配的節點，其他帳號不使用該節點；節點故障時優先切換閒置節點，無閒置節點時回退到任一可用節點','ja':'http / https / socks5 の送信プロキシを設定します。アカウントはノードに固定され、他のアカウントはそのノードを使用しません。ノード障害時は未使用ノードを優先し、なければ利用可能なノードを使用します','ko':'http / https / socks5 발신 프록시를 구성합니다. 계정은 노드에 고정되어 계속 사용하며 다른 계정은 해당 노드를 사용하지 않습니다. 노드 장애 시 미사용 노드를 우선하고, 없으면 사용 가능한 노드를 사용합니다','es':'Configure proxies de salida con http / https / socks5; cada cuenta conserva su nodo, las demás cuentas no lo usan y, ante un fallo, se prefiere un nodo libre, con cualquier nodo disponible como reserva','fr':'Configurez des proxys sortants http / https / socks5 ; chaque compte garde son nœud, les autres comptes ne l\'utilisent pas, et en cas de panne un nœud libre est préféré, avec repli sur tout nœud disponible','de':'Ausgehende Proxys mit http / https / socks5 konfigurieren; jedes Konto behält seinen Knoten, andere Konten nutzen ihn nicht, und bei Ausfällen wird ein freier Knoten bevorzugt, sonst jeder verfügbare Knoten','pt-BR':'Configure proxies de saída http / https / socks5; cada conta mantém seu nó, outras contas não o usam e, em falha, um nó livre é preferido, com qualquer nó disponível como reserva','ru':'Настройте исходящие прокси http / https / socks5; каждый аккаунт сохраняет свой узел, другие аккаунты его не используют, а при сбое предпочтителен свободный узел, иначе любой доступный','ar':'قم بتكوين بروكسيات الخروج http / https / socks5؛ يحتفظ كل حساب بعقده ولا تستخدم الحسابات الأخرى هذا العقد، وعند العطل يُفضَّل عقد غير مشغول، مع التراجع إلى أي عقد متاح'},
+'Configure outbound proxies with http / https / socks5; each account keeps its proxy node, other accounts avoid it, and on failure an unbound node is preferred, falling back to any available node': {'zh-CN':'配置出口代理，支持 http / https / socks5。帐号与节点绑定：帐号始终使用首次分配的节点，其他帐号不使用该节点；节点故障时优先切换空闲节点，无空闲节点时回退到任一可用节点','zh-TW':'設定出口代理，支援 http / https / socks5。帳號與節點綁定：帳號持續使用首次分配的節點，其他帳號不使用該節點；節點故障時優先切換閒置節點，無閒置節點時回退到任一可用節點','ja':'http / https / socks5 の送信プロキシを設定します。アカウントはノードに固定され、他のアカウントはそのノードを使用しません。ノード障害時は未使用ノードを優先し、なければ利用可能なノードを使用します','ko':'http / https / socks5 발신 프록시를 구성합니다. 계정은 노드에 고정되어 계속 사용하며 다른 계정은 해당 노드를 사용하지 않습니다. 노드 장애 시 미사용 노드를 우선하고, 없으면 사용 가능한 노드를 사용합니다','es':'Configure proxies de salida con http / https / socks5; cada cuenta conserva su nodo, las demás cuentas no lo usan y, ante un fallo, se prefiere un nodo libre, con cualquier nodo disponible como reserva','fr':'Configurez des proxys sortants http / https / socks5 ; chaque compte garde son nœud, les autres comptes ne l\'utilisent pas, et en cas de panne un nœud libre est préféré, avec repli sur tout nœud disponible','de':'Ausgehende Proxys mit http / https / socks5 konfigurieren; jedes Konto behält seinen Knoten, andere Konten nutzen ihn nicht, und bei Ausfällen wird ein freier Knoten bevorzugt, sonst jeder verfügbare Knoten','pt-BR':'Configure proxies de saída http / https / socks5; cada conta mantém seu nó, outras contas não o usam e, em falha, um nó livre é preferido, com qualquer nó disponível como reserva','ru':'Настройте исходящие прокси http / https / socks5; каждый аккаунт сохраняет свой узел, другие аккаунты его не используют, а при сбое предпочтителен свободный узел, иначе любой доступный','ar':'قم بتكوين بروكسيات الخروج http / https / socks5؛ يحتفظ كل حساب بعقده ولا تستخدم الحسابات الأخرى هذا العقد، وعند العطل يُفضَّل عقد غير مشغول، مع التراجع إلى أي عقد متاح'},
+  'Messages': {'zh-CN':'消息数','zh-TW':'訊息數','ja':'メッセージ数','ko':'메시지 수','es':'Mensajes','fr':'Messages','de':'Nachrichten','pt-BR':'Mensagens','ru':'Сообщения','ar':'الرسائل'},
+  'Last updated': {'zh-CN':'最近更新','zh-TW':'最近更新','ja':'最終更新','ko':'최근 업데이트','es':'Última actualización','fr':'Dernière mise à jour','de':'Zuletzt aktualisiert','pt-BR':'Última atualização','ru':'Последнее обновление','ar':'آخر تحديث'},
+  'View': {'zh-CN':'查看','zh-TW':'檢視','ja':'表示','ko':'보기','es':'Ver','fr':'Voir','de':'Anzeigen','pt-BR':'Ver','ru':'Открыть','ar':'عرض'},
+  'Configure outbound proxies with http / https / socks5 and automatic failover': {'zh-CN':'配置出口代理，支持 http / https / socks5，故障自动切换','zh-TW':'設定出口代理，支援 http / https / socks5，故障自動切換','ja':'http / https / socks5 の送信プロキシを設定し、障害時は自動フェイルオーバー','ko':'http / https / socks5 발신 프록시 구성 및 자동 장애 조치','es':'Configure proxies de salida con http / https / socks5 y conmutación automática por error','fr':'Configurez des proxys sortants http / https / socks5 avec bascule automatique','de':'Ausgehende Proxys mit http / https / socks5 und automatischem Failover konfigurieren','pt-BR':'Configure proxies de saída com http / https / socks5 e failover automático','ru':'Настройте исходящие прокси http / https / socks5 с автоматическим переключением','ar':'قم بتكوين بروكسيات الخروج http / https / socks5 مع التبديل التلقائي'},
   'Check all': {'zh-CN':'全部健康检查','zh-TW':'全部健康檢查','ja':'すべてチェック','ko':'전체 확인','es':'Comprobar todo','fr':'Tout vérifier','de':'Alle prüfen','pt-BR':'Verificar tudo','ru':'Проверить все','ar':'فحص الكل'},
   'Add proxy': {'zh-CN':'添加代理','zh-TW':'新增代理','ja':'プロキシを追加','ko':'프록시 추가','es':'Añadir proxy','fr':'Ajouter un proxy','de':'Proxy hinzufügen','pt-BR':'Adicionar proxy','ru':'Добавить прокси','ar':'إضافة بروكسي'},
   'Proxy URLs (one per line; bulk paste supported)': {'zh-CN':'代理地址（一行一个，支持批量粘贴）','zh-TW':'代理位址（一行一個，支援批量貼上）','ja':'プロキシ URL（1 行 1 件、一括貼り付け対応）','ko':'프록시 URL (한 줄에 하나, 일괄 붙여넣기 지원)','es':'URLs de proxy (una por línea; se admite pegado masivo)','fr':'URLs de proxy (une par ligne ; collage en masse pris en charge)','de':'Proxy-URLs (eine pro Zeile; Masseneinfügen unterstützt)','pt-BR':'URLs de proxy (uma por linha; colagem em massa suportada)','ru':'URL прокси (по одному в строке; поддерживается массовая вставка)','ar':'عناوين البروكسي (واحد لكل سطر؛ دعم اللصق الجماعي)'},
@@ -970,8 +986,7 @@ const localeText={
   'Detail': {'zh-CN':'详情','zh-TW':'詳情','ja':'詳細','ko':'상세','es':'Detalle','fr':'Détail','de':'Details','pt-BR':'Detalhe','ru':'Подробности','ar':'التفاصيل'},
   'Search...': {'zh-CN':'搜索…','zh-TW':'搜尋…','ja':'検索…','ko':'검색…','es':'Buscar…','fr':'Rechercher…','de':'Suchen…','pt-BR':'Buscar…','ru':'Поиск…','ar':'بحث…'},
   'Search…': {'zh-CN':'搜索…','zh-TW':'搜尋…','ja':'検索…','ko':'검색…','es':'Buscar…','fr':'Rechercher…','de':'Suchen…','pt-BR':'Buscar…','ru':'Поиск…','ar':'بحث…'},
-  'View': {'zh-CN':'查看','zh-TW':'查看','ja':'表示','ko':'보기','es':'Ver','fr':'Voir','de':'Ansehen','pt-BR':'Ver','ru':'Просмотр','ar':'عرض'}
-}; const passwordLocaleText={
+  }; const passwordLocaleText={
   'Change administrator password': {'zh-CN':'修改管理员密码','zh-TW':'修改管理員密碼','ja':'管理者パスワードを変更','ko':'관리자 비밀번호 변경','es':'Cambiar contraseña de administrador','fr':'Modifier le mot de passe administrateur','de':'Administrator-Passwort ändern','pt-BR':'Alterar senha do administrador','ru':'Изменить пароль администратора','ar':'تغيير كلمة مرور المسؤول'},
   'Current password': {'zh-CN':'当前密码','zh-TW':'目前密碼','ja':'現在のパスワード','ko':'현재 비밀번호','es':'Contraseña actual','fr':'Mot de passe actuel','de':'Aktuelles Passwort','pt-BR':'Senha atual','ru':'Текущий пароль','ar':'كلمة المرور الحالية'},
   'New password (at least 6 characters)': {'zh-CN':'新密码（至少 6 个字符）','zh-TW':'新密碼（至少 6 個字元）','ja':'新しいパスワード（6文字以上）','ko':'새 비밀번호(6자 이상)','es':'Nueva contraseña (al menos 6 caracteres)','fr':'Nouveau mot de passe (6 caractères minimum)','de':'Neues Passwort (mindestens 6 Zeichen)','pt-BR':'Nova senha (pelo menos 6 caracteres)','ru':'Новый пароль (не менее 6 символов)','ar':'كلمة المرور الجديدة (6 أحرف على الأقل)'},
@@ -982,14 +997,24 @@ const localeText={
   'Password changed. Please log in again.': {'zh-CN':'密码已修改，请重新登录。','zh-TW':'密碼已修改，請重新登入。','ja':'パスワードを変更しました。もう一度ログインしてください。','ko':'비밀번호가 변경되었습니다. 다시 로그인하세요.','es':'Contraseña cambiada. Inicie sesión de nuevo.','fr':'Mot de passe modifié. Veuillez vous reconnecter.','de':'Passwort geändert. Bitte melden Sie sich erneut an.','pt-BR':'Senha alterada. Faça login novamente.','ru':'Пароль изменён. Войдите снова.','ar':'تم تغيير كلمة المرور. يرجى تسجيل الدخول مرة أخرى.'},
   'Changing the password signs out all administrator sessions. You will be redirected to the login page.': {'zh-CN':'修改密码会退出所有管理员会话，随后将跳转到登录页面。','zh-TW':'修改密碼會登出所有管理員工作階段，接著將跳轉到登入頁面。','ja':'パスワードを変更するとすべての管理者セッションが終了し、ログインページに移動します。','ko':'비밀번호를 변경하면 모든 관리자 세션이 로그아웃되고 로그인 페이지로 이동합니다.','es':'Cambiar la contraseña cierra todas las sesiones de administrador y le redirige a la página de inicio de sesión.','fr':'La modification du mot de passe déconnecte toutes les sessions administrateur et vous redirige vers la page de connexion.','de':'Beim Ändern des Passworts werden alle Administratorsitzungen abgemeldet und Sie werden zur Anmeldeseite weitergeleitet.','pt-BR':'Alterar a senha encerra todas as sessões de administrador e redireciona para a página de login.','ru':'После смены пароля все сеансы администратора будут завершены, и вы перейдёте на страницу входа.','ar':'يؤدي تغيير كلمة المرور إلى تسجيل خروج جميع جلسات المسؤول وإعادة توجيهك إلى صفحة تسجيل الدخول.'},
 }; Object.assign(localeText,passwordLocaleText);
-let currentLocale='en';
+function preferredLocale(){
+  try{
+    const stored=localStorage.getItem(localeStorageKey);
+    if(stored==='en'&&localStorage.getItem(localeSelectionKey)==='1')return 'en';
+    if(stored&&stored!=='en'&&SUPPORTED_LOCALES.includes(stored))return stored;
+  }catch(e){}
+  return 'zh-CN';
+}
+let currentLocale=preferredLocale();
 let localeObserver=null;
 function localeReverse(){const out={};Object.entries(localeText).forEach(([en,v])=>{if(v&&typeof v==='object'){Object.values(v).forEach(t=>{if(t&&!out[t])out[t]=en;});}else if(v&&!out[v]){out[v]=en;}});return out;}
 const localeTextReverse=localeReverse();
 function translateDynamic(value,locale){
   if(!value)return value;
   if(locale==='zh'||locale.startsWith('zh')){
-    let m=value.match(/^(\d+) requests today$/);if(m)return '今日 '+m[1]+' 次请求';
+    let m=value.match(/^Called (\d+) times$/);if(m)return locale==='zh-TW'?'已呼叫'+m[1]+'次':'已调用'+m[1]+'次';
+    m=value.match(/^Limited after (\d+) calls$/);if(m)return locale==='zh-TW'?'呼叫'+m[1]+'次限流':'调用'+m[1]+'次限流';
+    m=value.match(/^(\d+) requests today$/);if(m)return '今日 '+m[1]+' 次请求';
     m=value.match(/^(\d+) requests$/);if(m)return m[1]+' 次请求';
     m=value.match(/^Hit rate (.+)$/);if(m)return '命中率 '+m[1];
     m=value.match(/^Today \+(\d+)$/);if(m)return '今日 +'+m[1];
@@ -1000,7 +1025,11 @@ function translateDynamic(value,locale){
     m=value.match(/^Connection healthy: (.+)$/);if(m)return '连通正常：'+m[1];
     m=value.match(/^Finished: (\d+) succeeded, (\d+) failed, (\d+) rounds total\.$/);if(m)return '完成：成功 '+m[1]+' 个，失败 '+m[2]+' 个，共 '+m[3]+' 轮。';
   }else{
-    let m=value.match(/^今日 (\d+) 次请求$/);if(m)return m[1]+' requests today';
+    let m=value.match(/^已调用(\d+)次$/);if(m)return 'Called '+m[1]+' times';
+    m=value.match(/^已呼叫(\d+)次$/);if(m)return 'Called '+m[1]+' times';
+    m=value.match(/^调用(\d+)次限流$/);if(m)return 'Limited after '+m[1]+' calls';
+    m=value.match(/^呼叫(\d+)次限流$/);if(m)return 'Limited after '+m[1]+' calls';
+    m=value.match(/^今日 (\d+) 次请求$/);if(m)return m[1]+' requests today';
     m=value.match(/^(\d+) 次请求$/);if(m)return m[1]+' requests';
     m=value.match(/^命中率 (.+)$/);if(m)return 'Hit rate '+m[1];
     m=value.match(/^今日 \+(\d+)$/);if(m)return 'Today +'+m[1];
@@ -1043,9 +1072,13 @@ function applyLocale(locale){
   translatePage();
   if(!localeObserver){localeObserver=new MutationObserver(()=>translatePage());localeObserver.observe(document.body,{childList:true,subtree:true,characterData:true});}
 }
-try{const l=localStorage.getItem(localeStorageKey);currentLocale=SUPPORTED_LOCALES.includes(l)?l:'en';}catch(e){}
 applyLocale(currentLocale);
-document.addEventListener('change',e=>{if(e.target?.id==='languageSelect')applyLocale(e.target.value);});
+document.addEventListener('change',e=>{
+  if(e.target?.id==='languageSelect'){
+    try{localStorage.setItem(localeSelectionKey,'1');}catch(err){}
+    applyLocale(e.target.value);
+  }
+});
 let pkceTimer=null;
 
 function showNotice(msg,type='info'){
@@ -1092,7 +1125,7 @@ function buildCurl(keyPrefix){
   return `curl ${base}/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${keyPrefix}..." \\\n  -d '{"model":"auto","messages":[{"role":"user","content":"Say hello in one sentence."}]}'`;
 }
 async function copyCurl(){
-  try{await navigator.clipboard.writeText($('onbCurl').textContent.trim());showNotice('curl copied','success');}catch(e){}
+  try{await navigator.clipboard.writeText($('onbCurl').textContent.trim());showNotice('curl 已复制','success');}catch(e){}
 }
 async function loadOnboarding(){
   let acc=0,key=0,prefix='sk-';
@@ -1130,10 +1163,10 @@ $('loginForm')?.addEventListener('submit',async e=>{
   e.preventDefault();
   try{
     const d=await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:$('loginPassword').value})});
-    if(d.must_change_password){location.href='/login';return;}
+if(d.must_change_password){location.replace('/login');return;}
     $('login').style.display='none';$('app').style.display='flex';
     showPage(savedPage());loadStats();
-    showNotice('Logged in successfully','success');
+    showNotice('登录成功','success');
   }catch(e){showNotice(e.message,'error');}
 });
 
@@ -1183,23 +1216,39 @@ function renderAccounts(){
   const q=($('accountSearch').value||'').trim().toLowerCase();
   const list=_accountsCache.filter(x=>{
     if(_accountFilter==='online'&&x.status!=='online')return false;
-    if(_accountFilter==='offline'&&x.status==='online')return false;
+    if(_accountFilter==='cooldown'&&x.status!=='cooldown')return false;
+    if(_accountFilter==='offline'&&(x.status==='online'||x.status==='cooldown'))return false;
     if(q&&!((x.displayName||'')+' '+(x.email||'')).toLowerCase().includes(q))return false;
     return true;
   });
-  $('accountRows').innerHTML=list.length?list.map(x=>`<tr><td><div class="account-cell"><div class="avatar">${(x.displayName||x.email||'M')[0]}</div><div><b>${x.displayName||x.email}</b><div style="font-size:11px;color:var(--muted)">${x.email||''}</div></div></div></td><td><span class="status ${x.status==='online'?'online':'offline'}"><i></i>${x.status==='online'?'Online':'Offline'}</span></td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn danger" onclick="deleteAccount('${x.id}')">Delete</button></td></tr>`).join(''):'<tr><td colspan="4" class="empty">No matching accounts</td></tr>';
+  $('accountRows').innerHTML=list.length?list.map(x=>{
+    const cooldown=x.cooldownUntil?`<div style="font-size:11px;color:var(--muted);margin-top:3px"><span>Cooldown until</span> ${new Date(x.cooldownUntil).toLocaleString()}</div>`:'';
+    const status=x.status==='cooldown'?`<div><span class="status cooldown"><i></i>Cooldown</span>${cooldown}</div>`:x.status==='online'?'<span class="status online"><i></i>Online</span>':'<span class="status offline"><i></i>Offline</span>';
+    const calls=x.rateLimited?`Limited after ${x.callCount||0} calls`:`Called ${x.callCount||0} times`;
+    const scheduleEnabled=x.scheduleEnabled!==false;
+    return `<tr><td><div class="account-cell"><div class="avatar">${(x.displayName||x.email||'M')[0]}</div><div><b>${x.displayName||x.email}</b><div style="font-size:11px;color:var(--muted)">${x.email||''}</div></div></div></td><td style="font-size:12px;white-space:nowrap">${calls}</td><td>${status}</td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn${scheduleEnabled?'':' danger'}" onclick="toggleAccountSchedule('${x.id}',${!scheduleEnabled})">${scheduleEnabled?'Enabled':'Disabled'}</button></td><td><button class="btn-sm btn danger" onclick="deleteAccount('${x.id}')">Delete</button></td></tr>`;
+  }).join(''):'<tr><td colspan="6" class="empty">No matching accounts</td></tr>';
 }
 async function loadAccounts(){
   try{
     const d=await api('/api/accounts');
     _accountsCache=d.accounts||[];
     renderAccounts();
-  }catch(e){$('accountRows').innerHTML=`<tr><td colspan="4" class="empty">${e.message}</td></tr>`;}
+  }catch(e){$('accountRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;}
+}
+
+async function toggleAccountSchedule(id,enabled){
+  try{
+    await api('/api/accounts/schedule',{method:'POST',body:JSON.stringify({id,enabled})});
+    const account=_accountsCache.find(x=>x.id===id);
+    if(account)account.scheduleEnabled=enabled;
+    renderAccounts();
+  }catch(e){showNotice(e.message,'error');}
 }
 
 async function deleteAccount(id){
-  if(!confirm('Delete this account?'))return;
-  try{await api('/api/accounts/delete',{method:'POST',body:JSON.stringify({id})});showNotice('Deleted','success');loadAccounts();showPage('dashboard');}
+  if(!confirm('确定删除此账号？'))return;
+  try{await api('/api/accounts/delete',{method:'POST',body:JSON.stringify({id})});showNotice('已删除','success');loadAccounts();showPage('dashboard');}
   catch(e){showNotice(e.message,'error');}
 }
 
@@ -1207,7 +1256,7 @@ async function startPKCE(){
   try{
     const d=await api('/api/auth/start');
     $('callbackInput').dataset.state=d.state;
-    // Show the authorization address with one-click copy, then open it in a
+// Show the authorization address with one-click copy, then open it in a
     // new tab (popup windows get blocked by browser settings far too often).
     $('authUrlInput').value=d.url;
     $('authUrlBox').style.display='block';
@@ -1248,7 +1297,7 @@ async function copyAuthUrl(){
 
 async function submitCallback(){
   const raw=$('callbackInput').value.trim();
-  if(!raw)return showNotice('Paste the callback URL','error');
+if(!raw)return showNotice('Paste the callback URL','error');
   const state=$('callbackInput').dataset.state||'';
   try{
     let u='/api/auth/callback?';
@@ -1316,8 +1365,8 @@ function editKey(id,name){editKeyId=id;$('editKeyName').value=name;$('editKeyMod
 function closeEditKeyModal(){$('editKeyModal').classList.remove('open');editKeyId=null;}
 async function saveEditKey(){
   const name=$('editKeyName').value.trim();
-  if(!name)return showNotice('Name cannot be empty','error');
-  try{await api('/api/admin/keys',{method:'PUT',body:JSON.stringify({id:editKeyId,name})});closeEditKeyModal();showNotice('Updated','success');loadKeys();}
+  if(!name)return showNotice('名称不能为空','error');
+  try{await api('/api/admin/keys',{method:'PUT',body:JSON.stringify({id:editKeyId,name})});closeEditKeyModal();showNotice('已更新','success');loadKeys();}
   catch(e){showNotice(e.message,'error');}
 }
 async function toggleKey(id,revoked){
@@ -1327,8 +1376,8 @@ async function toggleKey(id,revoked){
 
 function openKeyModal(){$('keyModal').classList.add('open');$('keyResult').style.display='none';$('keyName').value='default';setTimeout(()=>$('keyName').focus(),50);}
 function closeKeyModal(){$('keyModal').classList.remove('open');}
-async function copyKey(){try{await navigator.clipboard.writeText($('keyValue').value);showNotice('Copied','success');}catch(e){}}
-function copyKeyText(v){try{navigator.clipboard.writeText(v).then(()=>showNotice('Copied','success')).catch(()=>{});}catch(e){}}
+async function copyKey(){try{await navigator.clipboard.writeText($('keyValue').value);showNotice('已复制','success');}catch(e){}}
+function copyKeyText(v){try{navigator.clipboard.writeText(v).then(()=>showNotice('已复制','success')).catch(()=>{});}catch(e){}}
 async function createKey(e){
   e.preventDefault();
   try{
@@ -1336,7 +1385,7 @@ async function createKey(e){
     $('keyValue').value=d.key;$('keyResult').style.display='block';copyKey();loadKeys();
   }catch(e){showNotice(e.message,'error');}
 }
-async function revokeKey(id){if(!confirm('Delete this key?'))return;try{await api('/api/admin/keys?id='+id,{method:'DELETE'});loadKeys();}catch(e){showNotice(e.message,'error');}}
+async function revokeKey(id){if(!confirm('确定删除此密钥？'))return;try{await api('/api/admin/keys?id='+id,{method:'DELETE'});loadKeys();}catch(e){showNotice(e.message,'error');}}
 
 // ===== Usage page =====
 let usageDays=7, ugPageNo=0, ugTotal=0;
@@ -1615,8 +1664,8 @@ async function openUseKey(id){
   useKeyId=id;
   const d=await api('/api/admin/keys');
   const rec=(d.keys||[]).find(x=>x.id===id);
-  if(!rec){showNotice('Key not found','error');return;}
-  $('useKeyName').textContent='Current key: '+rec.name+' ('+rec.prefix+')';
+if(!rec){showNotice('找不到密钥','error');return;}
+  $('useKeyName').textContent='当前密钥：'+rec.name+' ('+rec.prefix+')';
   if(!rec.raw){showNotice('Full key is unavailable for keys created before this feature','error');}
   $('useKeyVal').value=rec.raw||'';
   $('useKeyModal').classList.add('open');
@@ -1629,10 +1678,10 @@ function renderUkeTabs(){
   $('useKeyOs').innerHTML=ukeOs.map(o=>`<button class="uke-tab ${o.id===ukeOsSel?'active':''}" onclick="ukeOsSel='${o.id}';renderUkeFiles()">${o.label}</button>`).join('');
   try{lucide.createIcons();}catch(e){}
 }
-function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function ukeFile(path,content){
   return `<div class="uke-file">
-    <div class="uke-file-head"><code>${esc(path)}</code><button class="btn btn-sm" onclick="navigator.clipboard.writeText(this.closest('.uke-file').querySelector('pre').textContent.trim());showNotice('Copied','success')">Copy</button></div>
+    <div class="uke-file-head"><code>${esc(path)}</code><button class="btn btn-sm" onclick="navigator.clipboard.writeText(this.closest('.uke-file').querySelector('pre').textContent.trim());showNotice('已复制','success')">Copy</button></div>
     <pre>${esc(content)}</pre>
   </div>`;
 }
@@ -1702,8 +1751,8 @@ goals = true`;
 }
 async function copyUseKey(){
   const v=$('useKeyVal').value;
-  if(!v){showNotice('Full key is unavailable','error');return;}
-  try{await navigator.clipboard.writeText(v);showNotice('Copied','success');}catch(e){}
+  if(!v){showNotice('完整密钥不可用','error');return;}
+  try{await navigator.clipboard.writeText(v);showNotice('已复制','success');}catch(e){}
 }
 
 // jsq escapes a value for embedding inside a single-quoted JS string that
@@ -1716,24 +1765,44 @@ async function loadConversations(){
   try{
     const d=await api('/api/m365/conversations');
     const c=d.data||[];
-    $('convRows').innerHTML=c.length?c.map(x=>`<tr><td><code style="font-size:11px">${esc(String(x.conversationId||'')).slice(0,16)}...</code></td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(String(x.chatName||'-'))}</td><td style="font-size:12px;color:var(--muted)">${x.createTimeUtc?new Date(x.createTimeUtc).toLocaleString():'-'}</td><td><button class="btn-sm btn danger" onclick="deleteConv('${jsq(x.conversationId)}')">Delete</button></td></tr>`).join(''):'<tr><td colspan="4" class="empty">No conversations</td></tr>';
-  }catch(e){$('convRows').innerHTML=`<tr><td colspan="4" class="empty">${esc(e.message)}</td></tr>`;}
+$('convRows').innerHTML=c.length?c.map(x=>{
+      const id=String(x.conversationId||'');
+      const updated=x.updateTimeUtc||x.createTimeUtc;
+      return `<tr class="conv-row" data-conversation-id="${esc(id)}">
+        <td><button class="conv-link" type="button">${esc(x.chatName||'未命名对话')}</button><div class="conv-meta"><code>${esc(id)}</code></div></td>
+        <td>${Number(x.messageCount||0)}</td>
+        <td>${esc(x.accountEmail||x.accountId||'-')}</td>
+        <td style="font-size:12px;color:var(--muted)">${updated?new Date(updated).toLocaleString():'-'}</td>
+        <td><div style="display:flex;gap:6px"><button class="btn-sm btn" data-conv-action="view">View</button><button class="btn-sm btn danger" data-conv-action="delete">Delete</button></div></td>
+      </tr>`;
+    }).join(''):'<tr><td colspan="5" class="empty">No conversations</td></tr>';
+    $('convRows').querySelectorAll('.conv-row').forEach(row=>{
+      row.addEventListener('click',event=>{
+        const action=event.target.closest('[data-conv-action]')?.dataset.convAction;
+        if(action==='delete'){event.stopPropagation();deleteConv(row.dataset.conversationId);return;}
+        openConversation(row.dataset.conversationId);
+      });
+    });
+    applyLocale(currentLocale);
+  }catch(e){$('convRows').innerHTML=`<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`;}
 }
+
+function openConversation(id){window.open('/conversation?id='+encodeURIComponent(id),'_blank','noopener');}
 
 function termOpen(title){$('termTitle').textContent=title;$('termBody').innerHTML='';$('termBox').style.display='block';}
 function termLine(msg,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent='> '+msg;$('termBody').appendChild(d);$('termBody').scrollTop=$('termBody').scrollHeight;}
 function termClear(){$('termBody').innerHTML='';}
 
-async function deleteConv(id){if(!confirm('Delete this conversation?'))return;try{await api('/api/m365/conversations/delete',{method:'POST',body:JSON.stringify({conversation_id:id})});showNotice('Deleted','success');loadConversations();}catch(e){showNotice(e.message,'error');}}
+async function deleteConv(id){if(!confirm('确定删除此对话？'))return;try{await api('/api/m365/conversations/delete',{method:'POST',body:JSON.stringify({conversation_id:id})});showNotice('已删除','success');loadConversations();}catch(e){showNotice(e.message,'error');}}
 async function cleanupAll(){
-  const total=confirm('Clean up all conversations?\nEach conversation will be deleted one by one and logged in the terminal.');
+  const total=confirm('确定清理所有对话？\n每条对话将逐一删除并在终端记录日志。');
   if(!total)return;
   termOpen('cleanup — m365-copilot2api');
-  termLine('Starting cleanup of all conversations…');
+  termLine('开始清理所有对话…');
   let ok=0,fail=0,round=0;
   for(round=1;round<=100;round++){
     let d;
-    try{d=await api('/api/m365/conversations');}catch(e){termLine('Failed to get conversation list: '+e.message,'err');break;}
+    try{d=await api('/api/m365/conversations');}catch(e){termLine('获取对话列表失败：'+e.message,'err');break;}
     const c=d.data||[];
     if(!c.length){
       termLine('Round '+round+': list is empty.','dim');
@@ -1742,7 +1811,7 @@ async function cleanupAll(){
     termLine('Round '+round+': found '+c.length+' conversations (paged loading; fetch the next batch after deletion)','dim');
     for(let i=0;i<c.length;i++){
       const x=c[i];
-      const name=x.chatName||'Unnamed';
+      const name=x.chatName||'未命名';
       termLine('['+(i+1)+'/'+c.length+'] Deleting "'+name+'" '+String(x.conversationId||'').slice(0,8)+'…');
       try{
         await api('/api/m365/conversations/delete',{method:'POST',body:JSON.stringify({conversation_id:x.conversationId})});
@@ -1753,7 +1822,7 @@ async function cleanupAll(){
     await new Promise(r=>setTimeout(r,500));
   }
   termLine('Finished: '+ok+' succeeded, '+fail+' failed, '+round+' rounds total.',fail?'warn':'ok');
-  showNotice('Cleanup complete','success');loadConversations();
+  showNotice('清理完成','success');loadConversations();
 }
 
 function proxyRow(x){
@@ -1766,7 +1835,7 @@ function proxyRow(x){
     <td style="font-size:12px;color:var(--muted)">${x.failures||0}</td>
     <td style="font-size:12px;color:var(--muted)">${x.cooldownUntil?new Date(x.cooldownUntil).toLocaleString():'-'}</td>
     <td style="text-align:right;white-space:nowrap">
-      <button class="btn-sm btn" onclick="proxyCheckOne('${esc(x.url)}')">Check</button>
+      <button class="btn-sm btn" onclick="proxyCheckOne('${esc(x.url)}')">检测</button>
       <button class="btn-sm btn danger" onclick="proxyRemove('${esc(x.url)}')">Delete</button>
     </td>
   </tr>`;
@@ -1794,15 +1863,15 @@ async function saveProxyMode(){
 }
 async function proxyAdd(){
   const raw=$('proxyInput').value.trim();
-  if(!raw)return showNotice('Enter a proxy URL','error');
+  if(!raw)return showNotice('请输入代理地址','error');
   try{
     const d=await api('/api/admin/proxy-pool',{method:'POST',body:JSON.stringify({urls:[raw]})});
     showNotice('Added '+d.added+' proxies','success');$('proxyInput').value='';loadProxies();
   }catch(e){showNotice(e.message,'error');}
 }
 async function proxyRemove(url){
-  if(!confirm('Delete proxy '+url+'?'))return;
-  try{await api('/api/admin/proxy-pool?url='+encodeURIComponent(url),{method:'DELETE'});showNotice('Deleted','success');loadProxies();}
+  if(!confirm('确定删除代理 '+url+'？'))return;
+  try{await api('/api/admin/proxy-pool?url='+encodeURIComponent(url),{method:'DELETE'});showNotice('已删除','success');loadProxies();}
   catch(e){showNotice(e.message,'error');}
 }
 async function proxyCheckOne(url){
@@ -1810,13 +1879,13 @@ async function proxyCheckOne(url){
     const d=await api('/api/admin/proxy-pool?action=check',{method:'PUT',body:JSON.stringify({url})});
     const rec=(d.proxies||[]).find(x=>x.url===url);
     if(rec&&rec.health==='reachable')showNotice('Connection healthy: '+rec.latencyMs+' ms','success');
-    else showNotice(rec&&rec.lastError?rec.lastError:'Connection failed','error');
+    else showNotice(rec&&rec.lastError?rec.lastError:'连接失败','error');
     loadProxies();
   }catch(e){showNotice(e.message,'error');}
 }
 async function proxyCheckAll(){
   termOpen('proxy check — m365-copilot2api');
-  termLine('Checking all proxies…');
+  termLine('正在检测所有代理…');
   try{
     const d=await api('/api/admin/proxy-pool?action=check',{method:'PUT'});
     const p=d.proxies||[];
@@ -1826,7 +1895,7 @@ async function proxyCheckAll(){
       else termLine('✗ '+x.url+(x.lastError?' — '+x.lastError:''),'err');
     }
     termLine('Finished: '+ok+'/'+p.length+' proxies available.',ok===p.length&&p.length?'ok':'warn');
-    showNotice('Health check complete','success');loadProxies();
+    showNotice('健康检查完成','success');loadProxies();
   }catch(e){termLine('Check failed: '+e.message,'err');}
 }
 async function proxyTest(){
@@ -1839,7 +1908,7 @@ async function loadModelTest(){
     const d=await api('/api/admin/models');
     const models=d.data||[];
     if(!models.length){$('modelTestRows').innerHTML='<tr><td colspan="4" class="empty">No models available</td></tr>';return;}
-    $('modelTestRows').innerHTML=models.map(m=>`<tr data-model="${esc(m.id)}"><td><b>${esc(m.id)}</b></td><td><span class="status"><i></i>Not tested</span></td><td style="font-size:12px;color:var(--muted)">-</td><td style="font-size:12px;color:var(--muted)">Click "Test all"</td></tr>`).join('');
+    $('modelTestRows').innerHTML=models.map(m=>`<tr data-model="${esc(m.id)}"><td><b>${esc(m.id)}</b></td><td><span class="status"><i></i>Not tested</span></td><td style="font-size:12px;color:var(--muted)">-</td><td style="font-size:12px;color:var(--muted)">点击"测试全部"</td></tr>`).join('');
   }catch(e){$('modelTestRows').innerHTML=`<tr><td colspan="4" class="empty">${e.message}</td></tr>`;}
 }
 async function modelTestOne(id,row){
@@ -1852,7 +1921,7 @@ async function modelTestOne(id,row){
   try{
     const d=await api('/api/admin/models/test',{method:'POST',body:JSON.stringify({model:id})});
     const ms=Math.round(performance.now()-start);
-    const content=d.reply||'(Empty reply)';
+    const content=d.reply||'（空回复）';
     badge.innerHTML='<span class="status online"><i></i>Healthy</span>';
     lat.textContent=ms+' ms';
     reply.textContent=String(content).slice(0,80);
@@ -1864,22 +1933,23 @@ async function modelTestOne(id,row){
 }
 async function modelTestAll(){
   const rows=[...document.querySelectorAll('#modelTestRows tr[data-model]')];
-  if(!rows.length){showNotice('Load the model list first','error');return;}
+  if(!rows.length){showNotice('请先加载模型列表','error');return;}
   for(let i=0;i<rows.length;i++){
     modelTestOne(rows[i].dataset.model,rows[i]);
     await new Promise(r=>setTimeout(r,250));
   }
-  showNotice('Model test complete','success');
+  showNotice('模型测试完成','success');
 }
 
-async function saveSettings(){  try{
+async function saveSettings(){
+  try{
     const listen=$('setListen').value.trim();
     const timeout=$('setTimeout').value.trim();
     const body={};
     if(listen)body.listenAddress=listen;
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
-    showNotice('Settings saved','success');
+    showNotice('设置已保存','success');
   }catch(e){showNotice(e.message,'error');}
 }
 
@@ -1996,6 +2066,7 @@ async function saveModelRoutes(){
     loadSettings();
   }catch(e){showNotice(e.message,'error');}
 }
+setInterval(()=>{if($('page-accounts').style.display!=='none')loadAccounts();},15000);
 
 // Init
 try{lucide.createIcons();}catch(e){}
@@ -2003,7 +2074,7 @@ window.addEventListener('hashchange',()=>{
   if($('login')&&$('login').style.display==='none')showPage(savedPage());
 });
 fetch('/api/admin/session').then(r=>r.json()).then(d=>{
-  if(d.authenticated&&d.must_change_password){location.href='/login';return;}
+  if(d.authenticated&&d.must_change_password){location.replace('/login');return;}
   if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage(savedPage());loadStats();loadOnboarding();}
   else{$('login').style.display='grid';}
 }).catch(()=>{$('login').style.display='grid';});

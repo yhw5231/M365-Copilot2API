@@ -94,9 +94,13 @@ func (c *accountConcurrency) Snapshot() map[string]any {
 	return map[string]any{"limit": c.limit, "inflight": inflight}
 }
 
-// accountAvailable is the combined health gate: the account must be out of
-// cooldown/auth-failure AND below its per-account concurrency limit.
+// accountAvailable is the combined health gate: the account must be scheduled
+// (not disabled), out of cooldown/auth-failure AND below its per-account
+// concurrency limit.
 func (s *Server) accountAvailable(accountID string) bool {
+	if s.tokens != nil && !s.tokens.ScheduleEnabled(accountID) {
+		return false
+	}
 	return s.accountPool.Available(accountID) && s.accountConcurrency.Available(accountID)
 }
 
@@ -107,7 +111,12 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 		return chathub.Result{}, err
 	}
 	defer release()
-	return s.chat.Chat(ctx, account, request)
+	if s.accountPool != nil {
+		s.accountPool.MarkCall(accountID)
+	}
+	result, err := s.chat.Chat(ctx, account, request)
+	s.markAccountResult(accountID, err)
+	return result, err
 }
 
 // chatWithAccountEvents runs one streaming chat request under the account's
@@ -118,7 +127,12 @@ func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, ac
 		return chathub.Result{}, err
 	}
 	defer release()
-	return s.chat.ChatWithEvents(ctx, account, request, onEvent)
+	if s.accountPool != nil {
+		s.accountPool.MarkCall(accountID)
+	}
+	result, err := s.chat.ChatWithEvents(ctx, account, request, onEvent)
+	s.markAccountResult(accountID, err)
+	return result, err
 }
 
 // chatWithAccountReasoning runs one reasoning-stream chat request under the
@@ -129,5 +143,10 @@ func (s *Server) chatWithAccountReasoning(ctx context.Context, accountID string,
 		return chathub.Result{}, err
 	}
 	defer release()
-	return s.chat.ChatWithReasoning(ctx, account, request, onDelta, onReasoning)
+	if s.accountPool != nil {
+		s.accountPool.MarkCall(accountID)
+	}
+	result, err := s.chat.ChatWithReasoning(ctx, account, request, onDelta, onReasoning)
+	s.markAccountResult(accountID, err)
+	return result, err
 }

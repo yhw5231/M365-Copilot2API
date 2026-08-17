@@ -58,9 +58,9 @@ func TestAdminSettingsHTTP(t *testing.T) {
 		t.Fatalf("GET=%d %s", w.Code, w.Body.String())
 	}
 	var getBody struct {
-		Settings        runtimeSettings   `json:"settings"`
-		CodexModels     []string          `json:"codexModels"`
-		UpstreamTones   []string          `json:"upstreamTones"`
+		Settings         runtimeSettings   `json:"settings"`
+		CodexModels      []string          `json:"codexModels"`
+		UpstreamTones    []string          `json:"upstreamTones"`
 		UpstreamMappings []upstreamMapping `json:"upstreamMappings"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &getBody); err != nil {

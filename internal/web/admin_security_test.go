@@ -178,7 +178,7 @@ func TestRootPageServesLoginPageForLoginPath(t *testing.T) {
 		t.Fatalf("/login status=%d", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "Change the default password now") {
+	if !strings.Contains(body, "请立即修改默认密码") && !strings.Contains(body, "Change the default password now") {
 		t.Fatal("/login did not serve login.html (missing forced change UI)")
 	}
 	if strings.Contains(body, "pageTitle") {

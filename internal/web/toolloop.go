@@ -39,6 +39,50 @@ func allowedToolNames(tools []map[string]any) map[string]bool {
 	return out
 }
 
+type rejectedToolCall struct {
+	Name   string
+	Reason string
+}
+
+// validateDetectedToolCalls is the final trust boundary before a model-selected
+// call is serialized to the client. ChatHub/native events and model-generated
+// routing text are both untrusted: an undeclared name such as "unknown_tool"
+// must never escape to Claude Code, Codex, or another local tool runner.
+func validateDetectedToolCalls(calls []detectedToolCall, tools []map[string]any, choice any) ([]detectedToolCall, []rejectedToolCall) {
+	valid := make([]detectedToolCall, 0, len(calls))
+	rejected := make([]rejectedToolCall, 0)
+	for _, call := range calls {
+		fn := toolFunction(call.Name, tools)
+		if fn == nil {
+			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "tool was not declared by the client"})
+			continue
+		}
+		if !toolChoiceAllows(choice, call.Name) {
+			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "tool_choice does not allow this tool"})
+			continue
+		}
+		args := map[string]any{}
+		if len(call.Arguments) == 0 || string(call.Arguments) == "null" {
+			call.Arguments = json.RawMessage(`{}`)
+		} else if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "arguments are not a JSON object"})
+			continue
+		}
+		if err := schemaValid(args, fn); err != nil {
+			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: err.Error()})
+			continue
+		}
+		if call.ID == "" {
+			call.ID = callID(call.Name, string(call.Arguments), len(valid))
+		}
+		if call.Type == "" {
+			call.Type = toolType(call.Name, tools)
+		}
+		valid = append(valid, call)
+	}
+	return valid, rejected
+}
+
 func toolChoiceAllows(choice any, name string) bool {
 	if choice == nil {
 		return true
@@ -66,32 +110,41 @@ func callID(name, args string, index int) string {
 }
 
 func extractToolCalls(text string, tools []map[string]any, choice any) ([]detectedToolCall, bool) {
-	start := strings.Index(text, "<m365-tool-call>")
-	end := strings.Index(text, "</m365-tool-call>")
-	if start < 0 || end <= start {
-		return nil, false
-	}
-	var raw any
-	if json.Unmarshal([]byte(text[start+len("<m365-tool-call>"):end]), &raw) != nil {
-		return nil, false
-	}
-	items := []any{raw}
-	if arr, ok := raw.([]any); ok {
-		items = arr
-	}
 	allowed := allowedToolNames(tools)
-	out := make([]detectedToolCall, 0, len(items))
-	for i, item := range items {
-		m, ok := item.(map[string]any)
-		if !ok {
+	var out []detectedToolCall
+	remaining := text
+	for {
+		start := strings.Index(remaining, "<m365-tool-call>")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(remaining[start:], "</m365-tool-call>")
+		if end < 0 {
+			break
+		}
+		end += start
+		content := remaining[start+len("<m365-tool-call>") : end]
+		remaining = remaining[end+len("</m365-tool-call>"):]
+		var raw any
+		if json.Unmarshal([]byte(content), &raw) != nil {
 			continue
 		}
-		n, _ := m["name"].(string)
-		if !allowed[n] || !toolChoiceAllows(choice, n) {
-			continue
+		items := []any{raw}
+		if arr, ok := raw.([]any); ok {
+			items = arr
 		}
-		a, _ := json.Marshal(m["arguments"])
-		out = append(out, detectedToolCall{ID: callID(n, string(a), i), Type: toolType(n, tools), Name: n, Arguments: a})
+		for _, item := range items {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			n, _ := m["name"].(string)
+			if !allowed[n] || !toolChoiceAllows(choice, n) {
+				continue
+			}
+			a, _ := json.Marshal(m["arguments"])
+			out = append(out, detectedToolCall{ID: callID(n, string(a), len(out)), Type: toolType(n, tools), Name: n, Arguments: a})
+		}
 	}
 	return out, len(out) > 0
 }
@@ -166,46 +219,65 @@ func isToolRefusal(text string) bool {
 	return false
 }
 
-type rejectedToolCall struct {
-	Name   string
-	Reason string
+var contentPolicyPatterns = []string{
+	"很抱歉，我无法响应",
+	"我很抱歉，我无法响应",
+	"i'm sorry, i can't respond",
+	"i'm sorry, i cannot respond",
 }
 
-// validateDetectedToolCalls is the final trust boundary before a model-selected
-// call is serialized to the client. ChatHub/native events and model-generated
-// routing text are both untrusted: an undeclared name such as "unknown_tool"
-// must never escape to Claude Code, Codex, or another local tool runner.
-func validateDetectedToolCalls(calls []detectedToolCall, tools []map[string]any, choice any) ([]detectedToolCall, []rejectedToolCall) {
-	valid := make([]detectedToolCall, 0, len(calls))
-	rejected := make([]rejectedToolCall, 0)
-	for _, call := range calls {
-		fn := toolFunction(call.Name, tools)
-		if fn == nil {
-			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "tool was not declared by the client"})
-			continue
-		}
-		if !toolChoiceAllows(choice, call.Name) {
-			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "tool_choice does not allow this tool"})
-			continue
-		}
-		args := map[string]any{}
-		if len(call.Arguments) == 0 || string(call.Arguments) == "null" {
-			call.Arguments = json.RawMessage(`{}`)
-		} else if err := json.Unmarshal(call.Arguments, &args); err != nil {
-			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "arguments are not a JSON object"})
-			continue
-		}
-		if err := schemaValid(args, fn); err != nil {
-			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: err.Error()})
-			continue
-		}
-		if call.ID == "" {
-			call.ID = callID(call.Name, string(call.Arguments), len(valid))
-		}
-		if call.Type == "" {
-			call.Type = toolType(call.Name, tools)
-		}
-		valid = append(valid, call)
+func isContentPolicyBlock(text string) bool {
+	if len(text) > 300 {
+		return false
 	}
-	return valid, rejected
+	low := strings.ToLower(text)
+	for _, p := range contentPolicyPatterns {
+		if strings.Contains(low, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+var sandboxHallucinationPatterns = []string{
+	"I can run that for you",
+	"I'll run that",
+	"let me run that",
+	"let me execute",
+	"running in sandbox",
+	"executing in sandbox",
+	"code interpreter",
+	"python sandbox",
+	"sandbox environment",
+	"/mnt/data",
+	"linux container",
+	"linux sandbox",
+	"cloud sandbox",
+	"execution environment has changed",
+	"cannot access the Windows path",
+	"only provides Linux",
+	"只提供 Linux 容器",
+	"no Windows execution",
+	"don't have a Windows",
+	"cannot execute on Windows",
+	"no execution channel",
+	"没有 Windows 执行通道",
+	"没有执行通道",
+	"cannot run commands on",
+	"don't have command execution",
+	"无法执行命令",
+	"执行环境已经切换",
+	"I don't have SSH access tools",
+	"I don't have any tools",
+	"none of which can reach",
+}
+
+func isSandboxHallucination(text string) bool {
+	low := strings.ToLower(text)
+	for _, p := range sandboxHallucinationPatterns {
+		if strings.Contains(low, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
 }

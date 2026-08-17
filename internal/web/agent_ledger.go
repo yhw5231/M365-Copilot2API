@@ -196,6 +196,9 @@ func completionEvidenceAllows(answer string, l agentLedger) bool {
 	if len(l.Pending) > 0 {
 		return false
 	}
+	if len(l.Completed) == 0 && len(l.Pending) == 0 {
+		return !unsupportedSuccess.MatchString(answer)
+	}
 	low := strings.ToLower(answer)
 	failureKeywords := []string{"cannot confirm", "not confirmed", "unable to confirm", "no tool result", "no matching tool results were returned", "no external action has been verified"}
 	hasFailure := false

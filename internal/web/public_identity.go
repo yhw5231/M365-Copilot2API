@@ -2,22 +2,15 @@ package web
 
 import (
 	"encoding/json"
-	"net/http"
 	"os"
 	"regexp"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/google/uuid"
 )
 
 const (
 	publicAssistantIdentity = "GPT-5 系列 AI 助手"
-	// defaultPublicModelName is the model name shown in public-identity answers
-	// when the request does not name a model.
-	defaultPublicModelName = "m365-copilot"
 )
 
 // publicIdentityPolicyEnabled is opt-in so ordinary upstream responses remain
@@ -518,70 +511,4 @@ func lastPublicIdentityBoundary(value string) int {
 		}
 	}
 	return last
-}
-
-// writePublicIdentityChatResponse short-circuits a chat request whose messages
-// ask the assistant about its own identity, returning the policy answer
-// without consuming a cloud round trip. Mirrors the upstream handler so the
-// identity test suite can exercise the same entry point.
-func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.Request, body *oaiReq, prompt, answer string, startedAt time.Time) {
-	model := firstNonEmpty(body.Model, defaultPublicModelName)
-	id := "chatcmpl-" + uuid.NewString()
-	created := time.Now().Unix()
-	inputTokens := EstimateTokens(prompt)
-	outputTokens := EstimateTokens(answer)
-	usage := map[string]any{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens}
-	if s.usage != nil {
-		s.usage.record(UsageRecord{
-			Time:         time.Now(),
-			APIKeyPrefix: apiKeyPrefix(r),
-			AccountEmail: "",
-			Model:        model,
-			Endpoint:     "/v1/chat/completions",
-			Stream:       body.Stream,
-			InputTokens:  inputTokens,
-			OutputTokens: outputTokens,
-			DurationMs:   time.Since(startedAt).Milliseconds(),
-			Status:       http.StatusOK,
-		})
-	}
-	if !body.Stream {
-		jsonOut(w, map[string]any{
-			"id":      id,
-			"object":  "chat.completion",
-			"created": created,
-			"model":   model,
-			"choices": []map[string]any{{
-				"index":         0,
-				"message":       map[string]any{"role": "assistant", "content": answer},
-				"finish_reason": "stop",
-			}},
-			"usage": usage,
-		})
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "stream unsupported", http.StatusInternalServerError)
-		return
-	}
-	chunk := map[string]any{
-		"id":      id,
-		"object":  "chat.completion.chunk",
-		"created": created,
-		"model":   model,
-		"choices": []map[string]any{{
-			"index":         0,
-			"delta":         map[string]any{"role": "assistant", "content": answer},
-			"finish_reason": nil,
-		}},
-	}
-	_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(chunk)+"\n\n")
-	finish := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usage}
-	_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finish)+"\n\n")
-	_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 }

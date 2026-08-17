@@ -130,7 +130,7 @@ func TestProxyModeEnvParsing(t *testing.T) {
 	cases := map[string]string{
 		"direct": ProxyModeDirect, "loose": ProxyModeLoose, "strict": ProxyModeStrict,
 		"DIRECT": ProxyModeDirect, " Loose ": ProxyModeLoose,
-		"bogus":  ProxyModeStrict, // unknown values normalize to strict
+		"bogus": ProxyModeStrict, // unknown values normalize to strict
 	}
 	for raw, want := range cases {
 		t.Setenv(EnvProxyMode, raw)
