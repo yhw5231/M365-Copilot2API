@@ -53,6 +53,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b imageGenerationRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxImageRequestBody)
 	if json.NewDecoder(r.Body).Decode(&b) != nil || strings.TrimSpace(b.Prompt) == "" {
 		http.Error(w, `{"error":{"message":"prompt is required","type":"invalid_request_error"}}`, 400)
 		return
@@ -386,19 +387,23 @@ func downloadDesignerImage(ctx context.Context, rawURL, accessToken string) ([]b
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	client := outbound.HTTPClient()
+	// Every redirect hop must stay on the Designer allowlist host.
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if len(via) >= chathub.MaxRedirects {
+			return fmt.Errorf("Designer image download too many redirects")
+		}
+		if !isDesignerImageURL(next.URL.String()) {
+			return fmt.Errorf("Designer image download redirected off the allowlist host")
+		}
+		return nil
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		var via []*url.URL
-		if resp.Request != nil {
-			via = append(via, resp.Request.URL)
-		}
-		if len(via) >= 3 || !isDesignerImageURL(resp.Request.URL.String()) {
-			return nil, "", fmt.Errorf("Designer image download HTTP %d", resp.StatusCode)
-		}
+		return nil, "", fmt.Errorf("Designer image download HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxGeneratedImageBytes+1))
 	if err != nil {
@@ -505,6 +510,11 @@ func downloadImageAsBase64(url string) (b64, contentType string, err error) {
 }
 
 func downloadImageAsBase64WithToken(url, token string) (b64, contentType string, err error) {
+	// SSRF gate: https-only, public-routable destination, re-checked on every
+	// redirect hop (see chathub.ValidateRemoteDownloadURL / RedirectCheck).
+	if err := chathub.ValidateRemoteDownloadURL(url); err != nil {
+		return "", "", err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -515,6 +525,7 @@ func downloadImageAsBase64WithToken(url, token string) (b64, contentType string,
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := outbound.HTTPClient()
+	client.CheckRedirect = chathub.RedirectCheck
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", err
@@ -544,6 +555,10 @@ func downloadImageAsDataURI(url string) (string, error) {
 }
 
 func downloadImageAsDataURIWithToken(url, token string) (string, error) {
+	// data: URLs carry no network fetch; pass them through untouched.
+	if strings.HasPrefix(strings.ToLower(url), "data:image/") {
+		return url, nil
+	}
 	b64, ct, err := downloadImageAsBase64WithToken(url, token)
 	if err != nil {
 		log.Printf("[image-download] failed url=%s token_len=%d err=%v", url[:minInt(len(url), 80)], len(token), err)

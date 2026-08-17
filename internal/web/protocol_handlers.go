@@ -230,6 +230,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body responsesRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatRequestBody)
 	if json.NewDecoder(r.Body).Decode(&body) != nil {
 		writeResponsesError(w, 400, "invalid_request_error", "bad json")
 		return
@@ -359,6 +360,7 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body anthropicRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatRequestBody)
 	if json.NewDecoder(r.Body).Decode(&body) != nil {
 		writeAnthropicError(w, 400, "invalid_request_error", "bad json")
 		return

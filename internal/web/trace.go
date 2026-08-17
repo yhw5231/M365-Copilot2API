@@ -323,7 +323,7 @@ func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxDebugRequestBytes))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, requestBodyLimit(r)))
 		if err != nil {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return

@@ -31,9 +31,29 @@ func postJSON(t *testing.T, c *http.Client, url, body string) *http.Response {
 	return r
 }
 
-func TestDefaultPasswordForcesChangeAndRotatesSessions(t *testing.T) {
+func TestGeneratedPasswordWhenNothingConfigured(t *testing.T) {
 	t.Setenv("M365_ADMIN_PASSWORD", "")
 	t.Setenv("M365_ADMIN_PASSWORD_FILE", t.TempDir()+"/admin-password")
+	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
+	got, mustChange := loadAdminPassword()
+	if mustChange != true {
+		t.Fatalf("mustChange=%v, want true for a generated one-time password", mustChange)
+	}
+	if got == "" || got == "admin123" || len(got) < 20 {
+		t.Fatalf("weak generated admin password: %q", got)
+	}
+}
+
+func TestDefaultPasswordForcesChangeAndRotatesSessions(t *testing.T) {
+	// A leftover persisted file holding the legacy default (e.g. a clone of a
+	// previously initialized data directory) must still force a change and
+	// rotate sessions after the change.
+	path := t.TempDir() + "/admin-password"
+	if err := os.WriteFile(path, []byte("admin123\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("M365_ADMIN_PASSWORD", "")
+	t.Setenv("M365_ADMIN_PASSWORD_FILE", path)
 	s, err := New()
 	if err != nil {
 		t.Fatal(err)

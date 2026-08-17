@@ -1,9 +1,13 @@
 package web
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -55,7 +59,25 @@ func loadAdminPassword() (string, bool) {
 			return p, p == defaultAdminPassword
 		}
 	}
-	return defaultAdminPassword, true
+	// No password configured anywhere. Never boot with a hardcoded default:
+	// generate a strong one-time random password and print it to the local
+	// log only. It is not persisted — the administrator must log in with it
+	// and set their own password (saveAdminPassword) before the console is
+	// usable (mustChange=true blocks everything but the change endpoint).
+	pw := generateAdminPassword()
+	log.Printf("[admin] M365_ADMIN_PASSWORD is not configured; generated one-time admin password: %s (log in now and change it)", pw)
+	return pw, true
+}
+
+// generateAdminPassword produces a cryptographically random one-time admin
+// password. The fallback path (rand failure) still yields a novel value and
+// never a well-known default.
+func generateAdminPassword() string {
+	b := make([]byte, 18)
+	if _, err := rand.Read(b); err == nil {
+		return base64.RawURLEncoding.EncodeToString(b)
+	}
+	return "pw-" + fmt.Sprintf("%d", time.Now().UnixNano())
 }
 func saveAdminPassword(password string) error {
 	p := adminPasswordPath()

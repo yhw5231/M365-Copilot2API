@@ -81,6 +81,7 @@ type Server struct {
 	accountPool         *accountHealth
 	accountConcurrency  *accountConcurrency
 	pkce                map[string]pendingPKCE
+	pkceStarts          map[string][]time.Time
 	chat                *chathub.Client
 	sessions            *sessionStore
 	userSessions        *userSessionStore
@@ -122,10 +123,10 @@ func New() (*Server, error) {
 		}
 	}
 	srv := &Server{
-		tokens:      store,
-		accountPool: newAccountHealth(),
+		tokens:             store,
+		accountPool:        newAccountHealth(),
 		accountConcurrency: newAccountConcurrency(),
-		pkce:        map[string]pendingPKCE{},
+		pkce:               map[string]pendingPKCE{},
 		chat: func() *chathub.Client {
 			c := chathub.NewClient()
 			c.Trace = func(meta map[string]any) { fmt.Printf("[multimodal-trace] %s\\n", mustJSON(meta)) }
@@ -268,6 +269,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/images/generations", s.imageGenerations)
 	m.HandleFunc("/v1/images/edits", s.imageEdits)
 	m.HandleFunc("/v1/images/files/", s.generatedImageFile)
+	m.HandleFunc("/vendor/", vendorFiles)
 	m.HandleFunc("/", s.rootPage)
 	return recoverPanics(requestID(httpTrace(securityHeaders(s.adminMiddleware(s.traceCaptureMiddleware(s.debugMiddleware(m)))))))
 }
@@ -275,6 +277,12 @@ func (s *Server) Routes() http.Handler {
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/images/files/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/vendor/") {
+			// Vendored static assets (e.g. the local lucide icon shim) are
+			// needed by the login page before any session exists.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -599,21 +607,83 @@ func (s *Server) provisionAccount(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-func (s *Server) startPKCE(w http.ResponseWriter, _ *http.Request) {
+const maxPKCEStates = 1024
+const pkceStateTTL = 10 * time.Minute
+
+// pkceStartWindow / pkceStartLimit bound how often a single client may open a
+// new PKCE flow; the pool itself is additionally capped by maxPKCEStates.
+const pkceStartWindow = time.Minute
+const pkceStartLimit = 10
+
+func (s *Server) prunePKCELocked(now time.Time) {
+	for state, p := range s.pkce {
+		if now.Sub(p.Created) > pkceStateTTL {
+			delete(s.pkce, state)
+		}
+	}
+}
+
+// pkceStartAllowedLocked enforces the per-client start rate limit and records
+// the attempt. Callers must hold s.mu.
+func (s *Server) pkceStartAllowedLocked(ip string, now time.Time) bool {
+	if s.pkceStarts == nil {
+		s.pkceStarts = map[string][]time.Time{}
+	}
+	cutoff := now.Add(-pkceStartWindow)
+	recent := s.pkceStarts[ip][:0]
+	for _, t := range s.pkceStarts[ip] {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) >= pkceStartLimit {
+		s.pkceStarts[ip] = recent
+		return false
+	}
+	s.pkceStarts[ip] = append(recent, now)
+	return true
+}
+
+func oldestPKCEState(states map[string]pendingPKCE) string {
+	var oldest string
+	var oldestCreated time.Time
+	for state, p := range states {
+		if oldest == "" || p.Created.Before(oldestCreated) {
+			oldest = state
+			oldestCreated = p.Created
+		}
+	}
+	return oldest
+}
+
+func (s *Server) startPKCE(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	now := time.Now()
+	s.mu.Lock()
+	if !s.pkceStartAllowedLocked(ip, now) {
+		s.mu.Unlock()
+		writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "too many PKCE authorization starts; try again later")
+		return
+	}
 	v, err := auth.Verifier()
 	if err != nil {
+		s.mu.Unlock()
 		http.Error(w, "pkce failure", http.StatusInternalServerError)
 		return
 	}
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
+		s.mu.Unlock()
 		http.Error(w, "state failure", http.StatusInternalServerError)
 		return
 	}
 	state := hex.EncodeToString(b)
 	redirectURI := auth.RedirectURI()
-	s.mu.Lock()
-	s.pkce[state] = pendingPKCE{Verifier: v, Created: time.Now(), Status: "pending"}
+	s.prunePKCELocked(now)
+	if len(s.pkce) >= maxPKCEStates {
+		delete(s.pkce, oldestPKCEState(s.pkce))
+	}
+	s.pkce[state] = pendingPKCE{Verifier: v, Created: now, Status: "pending"}
 	s.mu.Unlock()
 	jsonOut(w, map[string]string{
 		"status": "pkce_ready",
@@ -632,14 +702,14 @@ func (s *Server) startPKCE(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) pkceStatus(w http.ResponseWriter, r *http.Request) {
-	state := r.URL.Query().Get("state")
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
 	if state == "" {
 		http.Error(w, "missing state", http.StatusBadRequest)
 		return
 	}
 	s.mu.Lock()
 	p, ok := s.pkce[state]
-	if ok && time.Since(p.Created) > 10*time.Minute {
+	if ok && time.Since(p.Created) > pkceStateTTL {
 		delete(s.pkce, state)
 		ok = false
 	}
@@ -657,7 +727,6 @@ func (s *Server) pkceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonOut(w, out)
 }
-
 func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
@@ -1004,34 +1073,34 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 			// request when the pool has other healthy accounts. Only auto-selected
 			// requests fail over; an explicitly chosen account is respected, and a
 			// conversation-bound chat stays on its account.
-		if body.AccountID == "" && body.ConversationID == "" && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
-			next, nerr := s.nextProxySafeAccount(acc.ID)
-			if nerr == nil {
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
-				res2, err2 := s.chat.Chat(ctx2, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{
-					Text:           text,
-					Tone:           body.Tone,
-					ConversationID: body.ConversationID,
-					SessionID:      body.SessionID,
-					Attachments:    body.Attachments,
-					BindAccount:    next.ID,
-				})
-				if err2 == nil {
-					s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
-					s.accountPool.MarkSuccess(next.ID)
-					acc = next
-					res = res2
-					err = nil
-				} else {
-					err = err2
+			if body.AccountID == "" && body.ConversationID == "" && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
+				next, nerr := s.nextProxySafeAccount(acc.ID)
+				if nerr == nil {
+					ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
+					defer cancel2()
+					res2, err2 := s.chat.Chat(ctx2, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{
+						Text:           text,
+						Tone:           body.Tone,
+						ConversationID: body.ConversationID,
+						SessionID:      body.SessionID,
+						Attachments:    body.Attachments,
+						BindAccount:    next.ID,
+					})
+					if err2 == nil {
+						s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+						s.accountPool.MarkSuccess(next.ID)
+						acc = next
+						res = res2
+						err = nil
+					} else {
+						err = err2
+					}
 				}
 			}
+			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+			writeUpstreamError(w, err)
+			return
 		}
-		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
-		writeUpstreamError(w, err)
-		return
-	}
 	}
 	s.accountPool.MarkSuccess(acc.ID)
 	if body.SessionKey != "" {

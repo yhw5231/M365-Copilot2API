@@ -119,11 +119,25 @@ func (d *debugStore) add(r debugRecord) {
 	if e := os.MkdirAll(filepath.Dir(d.path), 0700); e != nil {
 		return
 	}
+	d.rotateIfNeededLocked()
 	if f, e := os.OpenFile(d.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); e == nil {
 		b, _ := json.Marshal(r)
 		_, _ = f.Write(append(b, '\n'))
 		_ = f.Close()
 	}
+}
+
+// maxDebugLogBytes bounds a single debug-logs.jsonl file; the file is rotated
+// (renamed with a timestamp) before appending when it exceeds the limit so a
+// long-running server cannot fill the data directory.
+const maxDebugLogBytes = 10 << 20
+
+func (d *debugStore) rotateIfNeededLocked() {
+	st, err := os.Stat(d.path)
+	if err != nil || st.Size() < maxDebugLogBytes {
+		return
+	}
+	_ = os.Rename(d.path, d.path+"."+time.Now().Format("20060102-150405"))
 }
 func (d *debugStore) list() []debugRecord {
 	d.mu.RLock()
@@ -147,10 +161,22 @@ func (d *debugStore) get(id string) (debugRecord, bool) {
 
 const (
 	maxDebugCaptureBytes = 256 << 10
-	// Keep debug snapshots bounded without truncating the request forwarded to
-	// the actual handler. Images and audio data URLs commonly exceed 256 KiB.
-	maxDebugRequestBytes = 10 << 20
+	// Unified request-body ceilings for the open API. JSON chat endpoints
+	// (chat/completions, responses, messages) are capped at 10 MiB; the
+	// image endpoint may carry base64 attachments and gets a wider, still
+	// bounded, 32 MiB ceiling. Multipart /images/edits keeps its own tighter
+	// per-file cap (maxImageEditRequestBytes).
+	maxChatRequestBody  = 10 << 20
+	maxImageRequestBody = 32 << 20
 )
+
+// requestBodyLimit picks the matching body ceiling for a request path.
+func requestBodyLimit(r *http.Request) int64 {
+	if strings.HasPrefix(r.URL.Path, "/v1/images/") {
+		return maxImageRequestBody
+	}
+	return maxChatRequestBody
+}
 
 type limitedBuffer struct {
 	bytes.Buffer
@@ -199,7 +225,7 @@ func (s *Server) debugMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		in, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxDebugRequestBytes))
+		in, err := io.ReadAll(http.MaxBytesReader(w, r.Body, requestBodyLimit(r)))
 		if err != nil {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
