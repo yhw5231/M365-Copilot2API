@@ -31,16 +31,16 @@ func postJSON(t *testing.T, c *http.Client, url, body string) *http.Response {
 	return r
 }
 
-func TestGeneratedPasswordWhenNothingConfigured(t *testing.T) {
+func TestDefaultPasswordWhenNothingConfigured(t *testing.T) {
 	t.Setenv("M365_ADMIN_PASSWORD", "")
 	t.Setenv("M365_ADMIN_PASSWORD_FILE", t.TempDir()+"/admin-password")
 	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
 	got, mustChange := loadAdminPassword()
 	if mustChange != true {
-		t.Fatalf("mustChange=%v, want true for a generated one-time password", mustChange)
+		t.Fatalf("mustChange=%v, want true for the default password", mustChange)
 	}
-	if got == "" || got == "admin123" || len(got) < 20 {
-		t.Fatalf("weak generated admin password: %q", got)
+	if got != defaultAdminPassword {
+		t.Fatalf("default admin password=%q, want %q", got, defaultAdminPassword)
 	}
 }
 

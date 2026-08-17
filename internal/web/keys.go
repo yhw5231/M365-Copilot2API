@@ -44,13 +44,11 @@ func openAPIKeys() *apiKeyStore {
 	if e == nil && json.Unmarshal(b, s) == nil {
 		migrated := false
 		for i := range s.Keys {
-			// 安全改进：迁移旧文件时补写 Hash，然后立即清零明文 Raw，
-			// 磁盘上只保留哈希，杜绝明文泄露（上游 keys.go 行为）。
-			if s.Keys[i].Raw != "" {
-				if s.Keys[i].Hash == "" {
-					s.Keys[i].Hash = keyHash(s.Keys[i].Raw)
-				}
-				s.Keys[i].Raw = ""
+			// Keys created before the hash migration carry a raw plaintext but
+			// no hash: backfill the hash and keep the plaintext so the console
+			// can still redisplay the full key (see list()).
+			if s.Keys[i].Raw != "" && s.Keys[i].Hash == "" {
+				s.Keys[i].Hash = keyHash(s.Keys[i].Raw)
 				migrated = true
 			}
 		}
@@ -79,21 +77,21 @@ func (s *apiKeyStore) create(name string) (apiKeyRecord, string, error) {
 		return apiKeyRecord{}, "", e
 	}
 	raw := "m365_" + hex.EncodeToString(b)
-	// 不持久化明文 Raw，仅存哈希，创建时向调用方返回一次完整密钥。
-	r := apiKeyRecord{ID: hex.EncodeToString(b[:8]), Name: name, Prefix: raw[:12], Hash: keyHash(raw), CreatedAt: time.Now()}
+	// 明文 Raw 与 Hash 一同持久化：控制台可以随时重新显示并复制完整密钥
+	// （前端 openUseKey 依赖 list() 返回的 raw 字段）。
+	r := apiKeyRecord{ID: hex.EncodeToString(b[:8]), Name: name, Prefix: raw[:12], Hash: keyHash(raw), Raw: raw, CreatedAt: time.Now()}
 	s.mu.Lock()
 	s.Keys = append(s.Keys, r)
 	s.mu.Unlock()
-		if err := s.persist.flushNowBlocking(); err != nil {
-			s.mu.Lock()
-			s.Keys = s.Keys[:len(s.Keys)-1]
-			s.mu.Unlock()
-			return apiKeyRecord{}, "", err
-		}
-		r.Hash = ""
-		r.Raw = ""
-		return r, raw, nil
+	if err := s.persist.flushNowBlocking(); err != nil {
+		s.mu.Lock()
+		s.Keys = s.Keys[:len(s.Keys)-1]
+		s.mu.Unlock()
+		return apiKeyRecord{}, "", err
 	}
+	r.Hash = ""
+	return r, raw, nil
+}
 func (s *apiKeyStore) list() []apiKeyRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
