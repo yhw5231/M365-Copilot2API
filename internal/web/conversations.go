@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 func (s *Server) conversations(w http.ResponseWriter, r *http.Request) {
@@ -62,10 +63,24 @@ func (s *Server) conversationCleanup(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		// Only return a sanitized summary. Full contextHistory contains the
+		// conversation payload and must never leave the gateway through a
+		// plain API-key endpoint.
 		sessions := s.sessionResolver.ListSessions()
+		data := make([]map[string]any, 0, len(sessions))
+		for _, sess := range sessions {
+			data = append(data, map[string]any{
+				"id":              sess.SessionID,
+				"conversation_id": sess.ConversationID,
+				"account_id":      sess.AccountID,
+				"created_at":      sess.CreatedAt.Unix(),
+				"last_used_at":    sess.LastUsedAt.Unix(),
+				"message_count":   len(sess.ContextHistory),
+			})
+		}
 		jsonOut(w, map[string]any{
 			"object": "list",
-			"data":   sessions,
+			"data":   data,
 		})
 	case http.MethodPost:
 		var body struct {
@@ -161,6 +176,10 @@ func (s *Server) handleM365Conversations(w http.ResponseWriter, r *http.Request)
 		}
 		if name, _ := row["chatName"].(string); strings.TrimSpace(name) == "" {
 			row["chatName"] = conversationTitle(session.ContextHistory)
+		} else {
+			// Remote-supplied titles pass through the same sanitizer so the
+			// admin console never receives raw control characters.
+			row["chatName"] = sanitizeChatName(name)
 		}
 	}
 
@@ -330,6 +349,8 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 }
 
 // conversationTitle derives a short human title from the first user message.
+// The output is length-bounded (40 runes) and free of control characters so
+// the admin console can render it as a plain DOM text node without injection.
 func conversationTitle(messages []oaiMsg) string {
 	for _, message := range messages {
 		if message.Role != "user" {
@@ -340,11 +361,37 @@ func conversationTitle(messages []oaiMsg) string {
 		if text == "" {
 			continue
 		}
-		runes := []rune(text)
+		runes := []rune(stripControlChars(text))
 		if len(runes) > 40 {
 			return string(runes[:40]) + "…"
 		}
-		return text
+		return string(runes)
 	}
 	return "未命名会话"
+}
+
+// sanitizeChatName cleans a chat name coming from a remote source (cloud
+// conversation list) before it reaches the admin console: control characters
+// are removed and the length is capped.
+func sanitizeChatName(name string) string {
+	name = stripControlChars(strings.TrimSpace(name))
+	runes := []rune(name)
+	if len(runes) > 80 {
+		return string(runes[:80]) + "…"
+	}
+	return name
+}
+
+// stripControlChars removes C0/C1 control characters (which can break out of
+// DOM text nodes or log lines) while collapsing common whitespace to a space.
+func stripControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return ' '
+		}
+		if r == 0x2028 || r == 0x2029 || unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }

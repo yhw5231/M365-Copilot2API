@@ -59,14 +59,24 @@ func (p *persistStore) flushNowBlocking() error {
 var (
 	persistMu      sync.Mutex
 	persistList    []*persistStore
+	persistSeen    map[*persistStore]bool
 	persistOnce    sync.Once
 	persistStop    chan struct{}
 	persistStopped chan struct{}
 )
 
+// ensurePersistLoop registers a store exactly once. Repeated markDirty calls
+// for the same store must not grow persistList, otherwise FlushAllPersist
+// keeps doing increasingly redundant work on long-running processes.
 func ensurePersistLoop(p *persistStore) {
 	persistMu.Lock()
-	persistList = append(persistList, p)
+	if persistSeen == nil {
+		persistSeen = map[*persistStore]bool{}
+	}
+	if !persistSeen[p] {
+		persistSeen[p] = true
+		persistList = append(persistList, p)
+	}
 	persistMu.Unlock()
 	persistOnce.Do(func() {
 		persistStop = make(chan struct{})

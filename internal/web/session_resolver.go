@@ -24,6 +24,7 @@ type sessionBinding struct {
 	AccountID      string    `json:"accountId"`
 	CreatedAt      time.Time `json:"createdAt"`
 	LastUsedAt     time.Time `json:"lastUsedAt"`
+	APIKey         string    `json:"apiKey,omitempty"`
 	IPFingerprint  string    `json:"ipFingerprint,omitempty"`
 	UserField      string    `json:"userField,omitempty"`
 	ContextFinger  string    `json:"contextFinger,omitempty"`
@@ -201,12 +202,13 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	sr.evictLocked()
 
 	explicitID := r.Header.Get("X-M365-Session-Id")
+	key := extractAPIKey(r)
 
 	// 瀹㈡埛绔樉寮忔寚瀹氱殑浼氳瘽 ID 鏄渶楂樹紭鍏堢殑缁帴璇箟锛氫笉鍙備笌浠讳綍韬唤鍒ゅ畾锛?
 	// 鐢辫皟鐢ㄦ柟涓诲姩鍐冲畾瑕佺户缁摢涓簯绔璇濄€?
 	if explicitID != "" {
 		if sessID, ok := sr.byExplicit[explicitID]; ok {
-			if sess, ok := sr.sessions[sessID]; ok {
+			if sess, ok := sr.sessions[sessID]; ok && sessionOwnedBy(sess, key) {
 			sess.LastUsedAt = time.Now().UTC()
 			sr.sessions[sessID] = sess
 			sr.persist.markDirty()
@@ -220,7 +222,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 			}
 			}
 		}
-		if sess, ok := sr.sessions[explicitID]; ok {
+		if sess, ok := sr.sessions[explicitID]; ok && sessionOwnedBy(sess, key) {
 			sess.LastUsedAt = time.Now().UTC()
 			sr.sessions[explicitID] = sess
 			sr.persist.markDirty()
@@ -239,7 +241,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	// 浜戠瀵硅瘽锛屼絾鍙湪鍚屼竴 IP/UA 鎸囩汗涓嬶紝閬垮厤鐭秷鎭湪涓嶅悓鐢ㄦ埛闂翠簰绔?
 	// HistoryLen 杩斿洖璇ュ墠缂€闀垮害锛屼笂灞傛嵁姝ゅ彧鍙戦€?messages[HistoryLen:] 澧為噺銆?
 	ipFinger := clientIPFingerprint(r)
-	if bestID, n := sr.matchContextLocked(ipFinger, body.Messages); bestID != "" {
+	if bestID, n := sr.matchContextLocked(ipFinger, key, body.Messages); bestID != "" {
 		sess := sr.sessions[bestID]
 		sess.LastUsedAt = time.Now().UTC()
 		sr.sessions[bestID] = sess
@@ -256,7 +258,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 
 	// 寮辩害鏉熷厹搴曪細鍐呭涓嶆瀯鎴愪弗鏍煎墠缂€锛屼絾涓庢煇涓巻鍙查珮搴︾浉浼硷紙濡傚鎴风
 	// 鏈湴鎴柇浜嗗巻鍙诧級锛屼粛澶嶇敤璇ヤ細璇濄€傛鏃跺閲忚竟鐣屾湭鐭ワ紝涓婂眰鍙戦€佸叏閲忋€?
-	suffixID, suffixN := sr.matchSuffixLocked(ipFinger, body.Messages)
+	suffixID, suffixN := sr.matchSuffixLocked(ipFinger, key, body.Messages)
 	if suffixID != "" {
 		sess := sr.sessions[suffixID]
 		sess.LastUsedAt = time.Now().UTC()
@@ -275,7 +277,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	return ResolveResult{IsNew: true}
 }
 
-func (sr *sessionResolver) matchSuffixLocked(ipFinger string, messages []oaiMsg) (string, int) {
+func (sr *sessionResolver) matchSuffixLocked(ipFinger, key string, messages []oaiMsg) (string, int) {
 	if len(messages) < 2 {
 		return "", 0
 	}
@@ -291,6 +293,9 @@ func (sr *sessionResolver) matchSuffixLocked(ipFinger string, messages []oaiMsg)
 			continue
 		}
 		if sess.IPFingerprint != ipFinger {
+			continue
+		}
+		if !sessionOwnedBy(sess, key) {
 			continue
 		}
 		hist := sess.ContextHistory
@@ -324,7 +329,7 @@ func suffixMatchLen(hist, msgs []oaiMsg) int {
 // matchContextLocked 浠庡叏閮ㄤ細璇濅腑鎵惧埌鍏?contextHistory 涓ユ牸浣滀负娑堟伅鍓嶇紑鐨?
 // 閭ｄ釜浼氳瘽锛涘彧閫夊墠缂€鏈€闀跨殑涓€涓紝閬垮厤鐭墠缂€鍦ㄤ笉鍚屼細璇濋棿浜掓挒銆傝繑鍥?
 // (sessionID, 鍖归厤鍒扮殑娑堟伅鏉℃暟)銆?
-func (sr *sessionResolver) matchContextLocked(ipFinger string, messages []oaiMsg) (string, int) {
+func (sr *sessionResolver) matchContextLocked(ipFinger, key string, messages []oaiMsg) (string, int) {
 	if len(messages) == 0 {
 		return "", 0
 	}
@@ -339,6 +344,9 @@ func (sr *sessionResolver) matchContextLocked(ipFinger string, messages []oaiMsg
 			continue
 		}
 		if sess.IPFingerprint != ipFinger {
+			continue
+		}
+		if !sessionOwnedBy(sess, key) {
 			continue
 		}
 		n := contextPrefixLen(sess.ContextHistory, messages)
@@ -415,6 +423,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 		history = append(history, oaiMsg{Role: "assistant", Content: assistantText})
 	}
 	explicitID := r.Header.Get("X-M365-Session-Id")
+	key := extractAPIKey(r)
 	if explicitID != "" && sessionID == "" {
 		sessionID = explicitID
 	}
@@ -424,6 +433,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 		if sess, ok := sr.sessions[sessionID]; ok {
 			sess.ConversationID = conversationID
 			sess.AccountID = accountID
+			sess.APIKey = key
 			sess.LastUsedAt = now
 			sess.UserField = body.User
 			sess.IPFingerprint = clientIPFingerprint(r)
@@ -440,6 +450,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 			if sess.ConversationID == conversationID {
 				sess.LastUsedAt = now
 				sess.AccountID = accountID
+				sess.APIKey = key
 				sess.UserField = body.User
 				sess.IPFingerprint = clientIPFingerprint(r)
 				sess.ContextFinger = contextFingerprint(history)
@@ -459,6 +470,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 		AccountID:      accountID,
 		CreatedAt:      now,
 		LastUsedAt:     now,
+		APIKey:         key,
 		IPFingerprint:  clientIPFingerprint(r),
 		UserField:      body.User,
 		ContextFinger:  contextFingerprint(history),
@@ -467,6 +479,15 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 
 	sr.reindexLocked(sess)
 	sr.persist.markDirty()
+}
+
+// sessionOwnedBy reports whether a session recorded under one API key may be
+// reused by the current request. Legacy sessions persisted before key binding
+// (empty APIKey) are claimable by the first caller that binds them; newer
+// sessions are strictly bound to their creating key so tenants never share
+// context through the resolver.
+func sessionOwnedBy(s sessionBinding, key string) bool {
+	return s.APIKey == "" || s.APIKey == key
 }
 
 func (sr *sessionResolver) GetSession(sessionID string) (sessionBinding, bool) {
