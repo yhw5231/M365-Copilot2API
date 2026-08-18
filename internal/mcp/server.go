@@ -32,6 +32,21 @@ func (r *toolRegistry) RegisterTools(tools []Tool) {
 	r.tools = append([]Tool(nil), tools...)
 }
 
+// MergeTools adds tools that are not already in the registry by name.
+func (r *toolRegistry) MergeTools(tools []Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing := make(map[string]bool, len(r.tools))
+	for _, t := range r.tools {
+		existing[t.Name] = true
+	}
+	for _, t := range tools {
+		if !existing[t.Name] {
+			r.tools = append(r.tools, t)
+		}
+	}
+}
+
 // ListTools returns the currently registered tools.
 func (r *toolRegistry) ListTools() []Tool {
 	r.mu.RLock()

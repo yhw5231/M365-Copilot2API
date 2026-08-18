@@ -13,6 +13,7 @@ import (
 	"log"
 	"m365-copilot2api/internal/auth"
 	"m365-copilot2api/internal/chathub"
+	"m365-copilot2api/internal/mcp"
 	"m365-copilot2api/internal/outbound"
 	"net"
 	"net/http"
@@ -93,6 +94,7 @@ type Server struct {
 	pkce                map[string]pendingPKCE
 	pkceStarts          map[string][]time.Time
 	chat                *chathub.Client
+	proxyClients        sync.Map
 	sessions            *sessionStore
 	userSessions        *userSessionStore
 	sessionResolver     *sessionResolver
@@ -114,6 +116,31 @@ type Server struct {
 }
 
 const maxResponsesPerTenant = 256
+
+func (s *Server) clientForProxy(proxyURL string) *chathub.Client {
+	if proxyURL == "" {
+		return s.chat
+	}
+	if v, ok := s.proxyClients.Load(proxyURL); ok {
+		return v.(*chathub.Client)
+	}
+	clients, err := outbound.New(proxyURL)
+	if err != nil {
+		log.Printf("[bound-proxy] invalid proxy %q: %v", proxyURL, err)
+		return s.chat
+	}
+	c := &chathub.Client{
+		HTTPHeader: make(http.Header),
+		HTTPClient: clients.HTTP,
+		Dialer:     clients.WebSocket,
+		Pool:       chathub.NewConnPool(clients.WebSocket, make(http.Header)),
+		Trace:      s.chat.Trace,
+	}
+	c.HTTPHeader.Set("Origin", "https://m365.cloud.microsoft")
+	c.HTTPHeader.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0")
+	actual, _ := s.proxyClients.LoadOrStore(proxyURL, c)
+	return actual.(*chathub.Client)
+}
 
 type respHistory struct {
 	At       time.Time
@@ -277,6 +304,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/accounts/clear-cooldown", s.clearCooldown)
 	m.HandleFunc("/api/accounts/delete", s.deleteAccount)
 	m.HandleFunc("/api/accounts/provision", s.provisionAccount)
+	m.HandleFunc("/api/accounts/bind-proxy", s.bindProxy)
 	m.HandleFunc("/api/auth/start", s.startPKCE)
 	m.HandleFunc("/api/auth/status", s.pkceStatus)
 	m.HandleFunc("/api/auth/callback", s.callbackPKCE)
@@ -299,6 +327,9 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/models", s.openaiModels)
 	m.HandleFunc("/v1/chat/completions", s.openaiChat)
 	m.HandleFunc("/v1/responses", s.responses)
+	m.HandleFunc("/v1/mcp/sse", mcp.HandleSSE)
+	m.HandleFunc("/v1/mcp/message", mcp.HandleMessage)
+	m.HandleFunc("/v1/mcp/tools", mcp.HandleToolsList)
 	m.HandleFunc("/v1/messages", s.anthropicMessages)
 	m.HandleFunc("/v1/images/generations", s.imageGenerations)
 	m.HandleFunc("/v1/images/edits", s.imageEdits)
@@ -565,6 +596,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 		TID             string     `json:"tid,omitempty"`
 		ExpiresAt       time.Time  `json:"expiresAt,omitempty"`
 		UpdatedAt       time.Time  `json:"updatedAt,omitempty"`
+		BoundProxy      string     `json:"boundProxy,omitempty"`
 	}
 	out := make([]view, 0, len(list))
 	for _, a := range list {
@@ -584,7 +616,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
 			Status: status, ScheduleEnabled: !a.ScheduleDisabled, CallCount: callCount, RateLimited: rateLimited,
 			CooldownUntil: cooldownUntil, OID: a.OID, TID: a.TID,
-			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt,
+			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
 		})
 	}
 	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot()})
@@ -779,6 +811,45 @@ func oldestPKCEState(states map[string]pendingPKCE) string {
 		}
 	}
 	return oldest
+}
+
+func (s *Server) bindProxy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.validAdminSession(r) {
+		writeOpenAIError(w, http.StatusUnauthorized, "auth_error", "administrator login required")
+		return
+	}
+	var body struct {
+		ID       string `json:"id"`
+		ProxyURL string `json:"proxyUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+	if body.ProxyURL != "" {
+		if err := outbound.ValidateProxyURL(body.ProxyURL); err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_proxy", err.Error())
+			return
+		}
+	}
+	if err := s.tokens.SetBoundProxy(body.ID, body.ProxyURL); err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	acc, _ := s.tokens.Get(body.ID)
+	if acc.BoundProxy == "" {
+		s.proxyClients.Range(func(key, _ any) bool {
+			if keyStr, ok := key.(string); ok && keyStr != "" {
+				s.proxyClients.Delete(keyStr)
+			}
+			return true
+		})
+	}
+	jsonOut(w, map[string]any{"ok": true, "id": body.ID, "boundProxy": acc.BoundProxy})
 }
 
 func (s *Server) startPKCE(w http.ResponseWriter, r *http.Request) {
@@ -1435,7 +1506,7 @@ func normalizeLegacyTools(body *oaiReq) {
 	}
 }
 
-func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string) chathub.Request {
+func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string, mcpServerURL string) chathub.Request {
 	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
 		answerPrompt += "\n" + ledger.RouterContext()
 	}
@@ -1447,6 +1518,33 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 		req.Tools = body.Tools
 		req.ToolChoice = body.ToolChoice
 	}
+	if mcpServerURL != "" {
+		req.Tools = body.Tools
+		if req.ToolChoice == nil {
+			req.ToolChoice = body.ToolChoice
+		}
+	}
+	if len(body.Tools) > 0 {
+		mcpTools := make([]mcp.Tool, 0, len(body.Tools))
+		for _, t := range body.Tools {
+			var f struct {
+				Name, Description string
+				Parameters        json.RawMessage `json:"parameters"`
+			}
+			if json.Unmarshal(t.Function, &f) != nil || f.Name == "" {
+				continue
+			}
+			var schema map[string]any
+			if json.Unmarshal(f.Parameters, &schema) != nil {
+				schema = map[string]any{"type": "object"}
+			}
+			mcpTools = append(mcpTools, mcp.Tool{Name: f.Name, Description: f.Description, InputSchema: schema})
+		}
+		if len(mcpTools) > 0 {
+			mcp.GlobalToolRegistry.MergeTools(mcpTools)
+		}
+	}
+	req.MCPServerURL = mcpServerURL
 	return req
 }
 
@@ -1663,6 +1761,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if body.ToolChoice == nil && len(toolMaps) > 0 {
 		body.ToolChoice = "auto"
 	}
+	var mcpServerURL string
+	if len(toolMaps) > 0 {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		mcpServerURL = fmt.Sprintf("%s://%s/v1/mcp/sse", scheme, r.Host)
+		log.Printf("[mcp] tools=%d mcp_gateway=%s", len(toolMaps), mcpServerURL)
+	}
 	validateCalls := func(stage string, calls []detectedToolCall) ([]detectedToolCall, int) {
 		valid, rejected := validateDetectedToolCalls(calls, toolMaps, body.ToolChoice)
 		for _, call := range rejected {
@@ -1727,11 +1834,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.Stream {
-		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode)
+		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL)
 		answerReq.TraceID = requestID
 		answerReq.BindAccount = acc.ID
 		answerPrompt = answerReq.Text
-		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d", requestID, len(answerPrompt), len(answerReq.Tools))
+		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d mcp=%s", requestID, len(answerPrompt), len(answerReq.Tools), mcpServerURL)
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -2057,7 +2164,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return
 		}
 	}
-	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode)
+	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL)
 	answerReq.TraceID = requestID
 	answerReq.BindAccount = acc.ID
 	answerPrompt = answerReq.Text
