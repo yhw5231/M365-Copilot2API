@@ -1,0 +1,98 @@
+name: Docker Release (GHCR)
+
+# Publishes multi-arch container images to GHCR (github container registry)
+# so container deployments can upgrade with:
+#   docker compose pull && docker compose up -d
+#
+# Triggers:
+#   - every vX.Y.Z tag push (also refreshes :latest)
+#   - manual workflow_dispatch for an already-pushed tag (e.g. replay a release)
+#
+# The docker-compose.yml default image is ghcr.io/yhw5231/m365-copilot2api:latest;
+# override with M365_IMAGE in .env to pin a specific release.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to build (must exist already), e.g. v0.4.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    name: Build and push multi-arch image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version and image name
+        id: ref
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            checkout_ref="${{ inputs.version }}"
+            push_latest="false"
+          else
+            version="${{ github.ref_name }}"
+            checkout_ref="${{ github.ref }}"
+            push_latest="true"
+          fi
+          case "${version}" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "expected vX.Y.Z, got: ${version}"; exit 1 ;;
+          esac
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "checkout_ref=${checkout_ref}" >> "${GITHUB_OUTPUT}"
+          echo "push_latest=${push_latest}" >> "${GITHUB_OUTPUT}"
+          echo "image=ghcr.io/${owner}/m365-copilot2api" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ref.outputs.image }}
+          tags: |
+            type=raw,value=${{ steps.ref.outputs.version }}
+            type=raw,value=latest,enable=${{ steps.ref.outputs.push_latest }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.ref.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64,linux/386
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

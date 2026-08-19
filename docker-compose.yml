@@ -1,10 +1,19 @@
 services:
   m365-copilot2api:
+    # Local build (dev) and registry image (upgrades) are both supported:
+    #   - First deploy / local dev:  docker compose up -d --build
+    #   - Upgrade to latest image:   git pull && docker compose pull && docker compose up -d
+    #   - Pin a specific release:    set M365_IMAGE=ghcr.io/yhw5231/m365-copilot2api:v0.4.1 in .env
+    # Images are published to GHCR (linux/amd64, linux/arm64, linux/386) by
+    # .github/workflows/docker-release.yml on every vX.Y.Z tag.
     build: .
-    image: m365-copilot2api:latest
+    image: ${M365_IMAGE:-ghcr.io/yhw5231/m365-copilot2api:latest}
+    pull_policy: missing
     container_name: m365-copilot2api
     restart: unless-stopped
     ports:
+      # Only reachable from the host loopback; put a reverse proxy in front for
+      # LAN/Internet exposure.
       - "127.0.0.1:9090:9090"
     environment:
       M365_LISTEN: 0.0.0.0:9090
@@ -14,19 +23,36 @@ services:
       M365_SESSION_CACHE: /data/sessions.json
       M365_CONVERSATION_SESSION_CACHE: /data/conversation-sessions.json
       M365_API_KEYS: /data/api-keys.json
-      # 管理员密码直接从环境变量读取（优先），也支持从 .env 文件注入。
-      # 留空表示采用内置默认密码 admin123（首次登录仍会强制修改）。
+      # 管理员密码直接从环境变量读取（优先），支持从 .env 文件注入。
+      # 留空表示采用内置默认密码 admin123（首次登录仍会强制修改并写入 /data/admin-password）。
       M365_ADMIN_PASSWORD: ${M365_ADMIN_PASSWORD:-}
-      # 以下两个密码文件字段保留给需要文件注入的部署方式：
-      #  - /data/admin-password 持久化文件（web 修改后自动写入）
-      #  - /run/secrets/m365_admin_password 只读 bootstrap 密钥文件
+      # 持久化密码文件（web 修改后自动写入）；升级/重启后继续生效。
       M365_ADMIN_PASSWORD_FILE: /data/admin-password
+      # 只读 bootstrap 密钥文件（swarm/文件注入部署方式），未挂载时忽略。
       M365_ADMIN_PASSWORD_BOOTSTRAP_FILE: /run/secrets/m365_admin_password
-      M365_CHAT_TIMEOUT_SECONDS: "120"
-      M365_IMAGE_TIMEOUT_SECONDS: "150"
-      M365_PUBLIC_IDENTITY_POLICY: "${M365_PUBLIC_IDENTITY_POLICY:-false}"
+      # 以下配置全部支持 .env 覆盖（未设置时使用默认值）。
+      M365_CHAT_TIMEOUT_SECONDS: ${M365_CHAT_TIMEOUT_SECONDS:-120}
+      M365_IMAGE_TIMEOUT_SECONDS: ${M365_IMAGE_TIMEOUT_SECONDS:-150}
+      M365_LOG_LEVEL: ${M365_LOG_LEVEL:-warn}
+      M365_ACCOUNT_DEFAULT_CONCURRENCY: ${M365_ACCOUNT_DEFAULT_CONCURRENCY:-8}
+      M365_PUBLIC_IDENTITY_POLICY: ${M365_PUBLIC_IDENTITY_POLICY:-false}
+      M365_PROXY_MODE: ${M365_PROXY_MODE:-}
+      M365_BROWSER_CLIENT_ID: ${M365_BROWSER_CLIENT_ID:-}
+      M365_BROWSER_AUTHORITY: ${M365_BROWSER_AUTHORITY:-}
+      M365_BROWSER_SCOPE: ${M365_BROWSER_SCOPE:-}
+      M365_BROWSER_REDIRECT_URI: ${M365_BROWSER_REDIRECT_URI:-}
+      M365_DEVICE_CLIENT_ID: ${M365_DEVICE_CLIENT_ID:-}
+      M365_DEVICE_AUTHORITY: ${M365_DEVICE_AUTHORITY:-}
+      M365_DEVICE_SCOPE: ${M365_DEVICE_SCOPE:-}
     volumes:
-      # 挂载前请确保宿主机的 ./data 和 ./secrets 目录存在且可写
-      #（项目源码已自带空的 data/ 与 secrets/ 目录，clone 后即可直接部署）。
+      # 数据目录挂载在 ./data：升级/重新创建容器后账号、密钥、会话与配置全部保留。
       - ./data:/data
+      # 可选 bootstrap 密码文件。文件不存在时 Docker 会创建空目录，入口脚本
+      # 只对“常规文件”做权限处理，空目录会被安全忽略。
       - ./secrets/m365_admin_password:/run/secrets/m365_admin_password:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

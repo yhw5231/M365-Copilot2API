@@ -155,6 +155,21 @@ cp .env.example .env      # 可选：在 .env 里设置 M365_ADMIN_PASSWORD 等�
 docker compose up -d --build
 ```
 
+镜像发布在 GitHub Container Registry（`ghcr.io/yhw5231/m365-copilot2api`，支持 linux/amd64、linux/arm64、linux/386），由每次 `vX.Y.Z` 标签自动构建推送；`docker-compose.yml` 默认拉取 `latest` 标签。
+
+**升级（容器版）**
+
+```bash
+git pull                      # 或只更新容器镜像
+docker compose pull           # 从 GHCR 拉取新镜像
+docker compose up -d          # 重建容器；./data 挂载卷保留全部数据
+```
+
+- 数据完全持久化在宿主机 `./data`（账号、密钥、会话、配置、密码）；升级/重建容器不会丢失。
+- 需要锁定版本或回滚时，在 `.env` 中固定镜像：`M365_IMAGE=ghcr.io/yhw5231/m365-copilot2api:v0.4.1`，再执行 `docker compose pull && docker compose up -d`。
+- 本地改动代码想立即生效仍可 `docker compose up -d --build`（本地镜像优先于远程拉取）。
+- 不希望自动升级到 `latest` 时，请始终用 `M365_IMAGE` 固定具体版本后只执行 `docker compose pull`。
+
 **管理员密码（推荐从环境变量读取）**
 
 镜像优先读取环境变量 `M365_ADMIN_PASSWORD`（也支持通过 compose 的 `.env` 注入）。第一次登录若尚未修改过密码，仍会强制要求修改并持久化到 `/data/admin-password`。示例：

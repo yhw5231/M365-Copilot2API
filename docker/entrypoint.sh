@@ -21,8 +21,10 @@ if ! su-exec "$RUN_UID:$RUN_GID" /bin/sh -c 'test -w "$1"' sh "$DATA_DIR"; then
     exit 1
 fi
 
-# If a bootstrap secret is mounted, make sure it is readable by m365.
-if [ -n "${M365_ADMIN_PASSWORD_BOOTSTRAP_FILE:-}" ] && [ -e "$M365_ADMIN_PASSWORD_BOOTSTRAP_FILE" ]; then
+# If a bootstrap secret is mounted, make sure it is readable by m365. Only
+# regular files are touched: a bind-mount source that did not exist on the
+# host comes in as an empty directory and must be ignored, not chmod'ed.
+if [ -n "${M365_ADMIN_PASSWORD_BOOTSTRAP_FILE:-}" ] && [ -f "$M365_ADMIN_PASSWORD_BOOTSTRAP_FILE" ]; then
     chown "${RUN_UID}:${RUN_GID}" "$M365_ADMIN_PASSWORD_BOOTSTRAP_FILE" 2>/dev/null || true
     chmod 0400 "$M365_ADMIN_PASSWORD_BOOTSTRAP_FILE" 2>/dev/null || true
 fi

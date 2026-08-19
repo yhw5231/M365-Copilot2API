@@ -28,5 +28,8 @@ ENV M365_LISTEN=0.0.0.0:9090 \
     M365_API_KEYS=/data/api-keys.json \
     M365_ADMIN_PASSWORD_FILE=/data/admin-password \
     M365_ADMIN_PASSWORD_BOOTSTRAP_FILE=/run/secrets/m365_admin_password
-VOLUME ["/data"]
+# NOTE: no VOLUME declaration on purpose. An anonymous `/data` volume silently
+# replaces host data on every `docker run` recreate; persistence is delegated
+# to explicit mounts (docker-compose.yml binds ./data:/data, docker run should
+# use `-v m365-data:/data`).
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
