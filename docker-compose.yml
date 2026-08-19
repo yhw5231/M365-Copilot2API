@@ -15,8 +15,7 @@ services:
       # Only reachable from the host loopback; put a reverse proxy in front for
       # LAN/Internet exposure.
       - "127.0.0.1:9090:9090"
-    networks:
-      - default
+    network_mode: bridge
     environment:
       M365_LISTEN: 0.0.0.0:9090
       M365_DATA_DIR: /data
