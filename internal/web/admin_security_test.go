@@ -199,3 +199,93 @@ func TestRootPageServesIndexForRootPath(t *testing.T) {
 		t.Fatal("/ did not serve index.html dashboard shell")
 	}
 }
+
+func TestClientIPIgnoresXFFFromNonLoopbackPeerByDefault(t *testing.T) {
+	t.Setenv("TRUST_PROXY_HEADERS", "")
+	t.Setenv("M365_TRUST_PROXY_HEADERS", "")
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.18.0.5:54321"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7")
+	if got := clientIP(r); got != "172.18.0.5" {
+		t.Fatalf("clientIP=%q, want the direct peer without the flag", got)
+	}
+}
+
+func TestClientIPTrustsXFFFromNonLoopbackPeerWithFlag(t *testing.T) {
+	t.Setenv("TRUST_PROXY_HEADERS", "true")
+	t.Setenv("M365_TRUST_PROXY_HEADERS", "")
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.18.0.5:54321"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.3")
+	if got := clientIP(r); got != "198.51.100.3" {
+		t.Fatalf("clientIP=%q, want the right-most valid XFF entry", got)
+	}
+}
+
+func TestClientIPAcceptsM365AliasAndTruthyValues(t *testing.T) {
+	for _, v := range []string{"1", "TRUE", "yes", "on"} {
+		t.Setenv("TRUST_PROXY_HEADERS", "")
+		t.Setenv("M365_TRUST_PROXY_HEADERS", v)
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "172.18.0.5:54321"
+		r.Header.Set("X-Forwarded-For", "203.0.113.9")
+		if got := clientIP(r); got != "203.0.113.9" {
+			t.Fatalf("value %q: clientIP=%q", v, got)
+		}
+	}
+}
+
+func TestClientIPWithFlagSkipsMalformedXFF(t *testing.T) {
+	t.Setenv("TRUST_PROXY_HEADERS", "true")
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.18.0.5:54321"
+	r.Header.Set("X-Forwarded-For", "not-an-ip, 198.51.100.3, garbage")
+	if got := clientIP(r); got != "198.51.100.3" {
+		t.Fatalf("clientIP=%q, want the right-most parseable XFF entry", got)
+	}
+}
+
+func TestClientIPWithoutXFFFallsBackToDirectPeer(t *testing.T) {
+	t.Setenv("TRUST_PROXY_HEADERS", "true")
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.18.0.5:54321"
+	if got := clientIP(r); got != "172.18.0.5" {
+		t.Fatalf("clientIP=%q, want RemoteAddr host when no XFF is present", got)
+	}
+}
+
+func TestSecureAdminCookieTrustsForwardedProtoWithFlag(t *testing.T) {
+	t.Setenv("TRUST_PROXY_HEADERS", "true")
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.18.0.5:54321"
+	r.Header.Set("X-Forwarded-Proto", "https")
+	if !secureAdminCookie(r) {
+		t.Fatal("secureAdminCookie=false, want Secure cookies behind a trusted proxy")
+	}
+	t.Setenv("TRUST_PROXY_HEADERS", "")
+	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r2.RemoteAddr = "172.18.0.5:54321"
+	r2.Header.Set("X-Forwarded-Proto", "https")
+	if secureAdminCookie(r2) {
+		t.Fatal("secureAdminCookie=true from a non-loopback peer without the flag")
+	}
+}
+
+func TestClientIPFingerprintUsesRealClientIPBehindProxy(t *testing.T) {
+	t.Setenv("TRUST_PROXY_HEADERS", "true")
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "172.18.0.5:54321"
+	r.Header.Set("User-Agent", "ua/1")
+	r.Header.Set("X-Forwarded-For", "203.0.113.7")
+	f1 := clientIPFingerprint(r)
+	r.Header.Set("X-Forwarded-For", "203.0.113.8")
+	f2 := clientIPFingerprint(r)
+	if f1 == f2 {
+		t.Fatal("fingerprint did not change when the real client IP changed behind the proxy")
+	}
+	// Same client IP from the same proxy must keep a stable fingerprint.
+	f3 := clientIPFingerprint(r)
+	if f2 != f3 {
+		t.Fatal("fingerprint changed for an unchanged client IP")
+	}
+}

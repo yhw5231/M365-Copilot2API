@@ -15,6 +15,8 @@ services:
       # Only reachable from the host loopback; put a reverse proxy in front for
       # LAN/Internet exposure.
       - "127.0.0.1:9090:9090"
+    networks:
+      - default
     environment:
       M365_LISTEN: 0.0.0.0:9090
       M365_DATA_DIR: /data
@@ -36,6 +38,10 @@ services:
       M365_LOG_LEVEL: ${M365_LOG_LEVEL:-warn}
       M365_ACCOUNT_DEFAULT_CONCURRENCY: ${M365_ACCOUNT_DEFAULT_CONCURRENCY:-8}
       M365_PUBLIC_IDENTITY_POLICY: ${M365_PUBLIC_IDENTITY_POLICY:-false}
+      # 信任反向代理传递的 X-Forwarded-For / X-Forwarded-Proto 头：
+      # 反向代理跑在另一个容器/主机（bridge 网络，非本机回环）时，
+      # 必须开启，应用才能拿到真实用户 IP（登录限流、用量统计、会话绑定）。
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       M365_PROXY_MODE: ${M365_PROXY_MODE:-}
       M365_BROWSER_CLIENT_ID: ${M365_BROWSER_CLIENT_ID:-}
       M365_BROWSER_AUTHORITY: ${M365_BROWSER_AUTHORITY:-}

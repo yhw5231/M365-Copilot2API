@@ -386,9 +386,11 @@ func secureAdminCookie(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	// Only trust X-Forwarded-Proto from a loopback reverse proxy.
+	// Trust X-Forwarded-Proto from a loopback reverse proxy, or from any
+	// peer when TRUST_PROXY_HEADERS is enabled (container/bridge deployment).
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return net.ParseIP(host).IsLoopback() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	trusted := trustProxyHeaders() || net.ParseIP(host).IsLoopback()
+	return trusted && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (s *Server) validAdminSession(r *http.Request) bool {

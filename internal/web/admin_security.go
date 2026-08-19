@@ -64,10 +64,30 @@ func saveAdminPassword(password string) error {
 	p := adminPasswordPath()
 	return writeFileAtomic(p, []byte(password+"\n"), 0600)
 }
+// trustProxyHeaders reports whether the process is configured to trust
+// X-Forwarded-* headers from any direct peer. This is required when the
+// reverse proxy runs in another container/host (e.g. docker compose bridge
+// network), where the direct peer is not loopback. Enabled with
+// TRUST_PROXY_HEADERS=true (the M365_TRUST_PROXY_HEADERS alias is also
+// accepted, following the M365_* convention).
+func trustProxyHeaders() bool {
+	v := os.Getenv("TRUST_PROXY_HEADERS")
+	if v == "" {
+		v = os.Getenv("M365_TRUST_PROXY_HEADERS")
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 func clientIP(r *http.Request) string {
-	// Trust proxy headers only when the direct peer is loopback (normal local reverse-proxy deployment).
+	// Trust proxy headers when the direct peer is loopback (normal local
+	// reverse-proxy deployment) or when TRUST_PROXY_HEADERS is enabled
+	// (proxy running in another container / on another host).
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if net.ParseIP(host).IsLoopback() {
+	if trustProxyHeaders() || net.ParseIP(host).IsLoopback() {
 		// A trusted reverse proxy appends the client address to XFF. Use the
 		// right-most valid address rather than the attacker-controlled first one.
 		parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")

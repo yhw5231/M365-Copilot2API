@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -171,7 +170,9 @@ type ResolveResult struct {
 }
 
 func clientIPFingerprint(r *http.Request) string {
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	// Use the real client IP (proxy-aware, see clientIP) so that users behind
+	// a reverse proxy are not all fingerprinted as the proxy address.
+	host := clientIP(r)
 	ua := r.Header.Get("User-Agent")
 	data := host + "|" + ua
 	h := sha256.Sum256([]byte(data))
