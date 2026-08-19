@@ -651,7 +651,7 @@ if (response.output_text) {
               <button class="btn primary" onclick="proxyAdd()"><i data-lucide="plus" style="width:14px;height:14px"></i> Add</button>
               <button class="btn" onclick="proxyTest()">Test connectivity</button>
             </div>
-            <p class="form-hint" style="margin-top:8px">Supported formats: <code>http://</code>, <code>https://</code>, and <code>socks5://</code>; usernames and passwords are supported</p>
+            <p class="form-hint" style="margin-top:8px">Supported formats: <code>http://</code> · <code>https://</code> · <code>socks5://</code>; usernames and passwords are supported</p>
           </div>
         </div>
         <div class="card">
@@ -683,7 +683,6 @@ if (response.output_text) {
         <div class="card">
           <div class="card-head"><span class="card-title">Model routes</span><span style="font-size:11px;color:var(--muted)">Models route by mapping name; the mapping's tone is sent to the upstream (ChatHub).</span><button class="btn btn-sm" onclick="addModelRouteRow()"><i data-lucide="plus" style="width:13px;height:13px"></i> Add model</button></div>
           <div style="overflow-x:auto"><table class="table"><thead><tr><th>Model</th><th>Display name</th><th>Upstream mapping</th><th>Default reasoning level</th><th>Enabled</th><th>Actions</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table></div>
-          <datalist id="upstreamMappingOptions"></datalist>
         </div>
       </section>
     </div>
@@ -766,7 +765,7 @@ const localeText={
   'Usage': {'zh-CN':'用量','zh-TW':'用量','ja':'使用量','ko':'사용량','es':'Uso','fr':'Utilisation','de':'Nutzung','pt-BR':'Uso','ru':'Использование','ar':'الاستخدام'},
   'Management': {'zh-CN':'管理','zh-TW':'管理','ja':'管理','ko':'관리','es':'Gestión','fr':'Gestion','de':'Verwaltung','pt-BR':'Gerenciamento','ru':'Управление','ar':'الإدارة'},
   'Accounts': {'zh-CN':'账号','zh-TW':'帳號','ja':'アカウント','ko':'계정','es':'Cuentas','fr':'Comptes','de':'Konten','pt-BR':'Contas','ru':'Аккаунты','ar':'الحسابات'},
-  'API Keys': {'zh-CN':'API Keys','zh-TW':'API Keys','ja':'API キー','ko':'API 키','es':'Claves API','fr':'Clés API','de':'API-Schlüssel','pt-BR':'Chaves API','ru':'API-ключи','ar':'مفاتيح API'},
+  'API Keys': {'zh-CN':'API 密钥','zh-TW':'API Keys','ja':'API キー','ko':'API 키','es':'Claves API','fr':'Clés API','de':'API-Schlüssel','pt-BR':'Chaves API','ru':'API-ключи','ar':'مفاتيح API'},
   'Conversations': {'zh-CN':'对话管理','zh-TW':'對話管理','ja':'会話管理','ko':'대화 관리','es':'Conversaciones','fr':'Conversations','de':'Unterhaltungen','pt-BR':'Conversas','ru':'Разговоры','ar':'المحادثات'},
   'System': {'zh-CN':'系统','zh-TW':'系統','ja':'システム','ko':'시스템','es':'Sistema','fr':'Système','de':'System','pt-BR':'Sistema','ru':'Система','ar':'النظام'},
   'Proxy Pool': {'zh-CN':'代理池','zh-TW':'代理池','ja':'プロキシプール','ko':'프록시 풀','es':'Grupo de proxies','fr':'Pool de proxys','de':'Proxy-Pool','pt-BR':'Pool de proxies','ru':'Пул прокси','ar':'مجموعة البروكسي'},
@@ -780,7 +779,7 @@ const localeText={
   'Hide guide': {'zh-CN':'隐藏入门引导','zh-TW':'隱藏入門引導','ja':'ガイドを非表示','ko':'가이드 숨기기','es':'Ocultar guía','fr':'Masquer le guide','de':'Leitfaden ausblenden','pt-BR':'Ocultar guia','ru':'Скрыть руководство','ar':'إخفاء الدليل'},
   'Add an account': {'zh-CN':'添加账号','zh-TW':'新增帳號','ja':'アカウントを追加','ko':'계정 추가','es':'Añadir cuenta','fr':'Ajouter un compte','de':'Konto hinzufügen','pt-BR':'Adicionar conta','ru':'Добавить аккаунт','ar':'إضافة حساب'},
   'Authorize a Microsoft account and add it to the available pool': {'zh-CN':'授权 Microsoft 账号，加入可用账号池','zh-TW':'授權 Microsoft 帳號，加入可用帳號池','ja':'Microsoft アカウントを承認して利用可能プールに追加','ko':'Microsoft 계정을 인증하고 사용 가능한 풀에 추가','es':'Autorice una cuenta Microsoft y agréguela al grupo disponible','fr':'Autorisez un compte Microsoft et ajoutez-le au pool disponible','de':'Microsoft-Konto autorisieren und zum verfügbaren Pool hinzufügen','pt-BR':'Autorize uma conta Microsoft e adicione-a ao pool disponível','ru':'Авторизуйте учетную запись Microsoft и добавьте её в доступный пул','ar':'أذِن لحساب Microsoft وأضفه إلى المجموعة المتاحة'},
-  'Create an API key': {'zh-CN':'创建 API Key','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
+  'Create an API key': {'zh-CN':'创建 API 密钥','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
   'Create an access key for this application or service': {'zh-CN':'为你的本应用或服务创建访问密钥','zh-TW':'為你的本應用程式或服務建立存取金鑰','ja':'このアプリケーションまたはサービスのアクセスキーを作成','ko':'이 앱 또는 서비스의 액세스 키 생성','es':'Cree una clave de acceso para esta aplicación o servicio','fr':'Créez une clé d\'accès pour cette application ou ce service','de':'Erstellen Sie einen Zugriffsschlüssel für diese Anwendung oder diesen Dienst','pt-BR':'Crie uma chave de acesso para este aplicativo ou serviço','ru':'Создайте ключ доступа для этого приложения или сервиса','ar':'أنشئ مفتاح وصول لهذا التطبيق أو الخدمة'},
   'Send a request': {'zh-CN':'发送请求','zh-TW':'傳送要求','ja':'リクエストを送信','ko':'요청 보내기','es':'Enviar solicitud','fr':'Envoyer une requête','de':'Anfrage senden','pt-BR':'Enviar solicitação','ru':'Отправить запрос','ar':'إرسال طلب'},
   'Verify the route with the curl example below': {'zh-CN':'用下方 curl 示例验证路由','zh-TW':'用下方 curl 範例驗證路由','ja':'以下の curl 例でルートを確認','ko':'아래 curl 예제로 경로 확인','es':'Verifique la ruta con el ejemplo curl de abajo','fr':'Vérifiez la route avec l\'exemple curl ci-dessous','de':'Route mit dem curl-Beispiel unten prüfen','pt-BR':'Verifique a rota com o exemplo curl abaixo','ru':'Проверьте маршрут с помощью примера curl ниже','ar':'تحقق من المسار بمثال curl أدناه'},
@@ -790,7 +789,7 @@ const localeText={
   'Gateway': {'zh-CN':'网关','zh-TW':'閘道','ja':'ゲートウェイ','ko':'게이트웨이','es':'Puerta de enlace','fr':'Passerelle','de':'Gateway','pt-BR':'Gateway','ru':'Шлюз','ar':'البوابة'},
   'Online': {'zh-CN':'在线','zh-TW':'線上','ja':'オンライン','ko':'온라인','es':'En línea','fr':'En ligne','de':'Online','pt-BR':'Online','ru':'В сети','ar':'متصل'},
   'Available accounts': {'zh-CN':'可用账号','zh-TW':'可用帳號','ja':'利用可能なアカウント','ko':'사용 가능한 계정','es':'Cuentas disponibles','fr':'Comptes disponibles','de':'Verfügbare Konten','pt-BR':'Contas disponíveis','ru':'Доступные аккаунты','ar':'الحسابات المتاحة'},
-  'API Key': {'zh-CN':'API Key','zh-TW':'API Key','ja':'API キー','ko':'API 키','es':'Clave API','fr':'Clé API','de':'API-Schlüssel','pt-BR':'Chave API','ru':'API-ключ','ar':'مفتاح API'},
+  'API Key': {'zh-CN':'API 密钥','zh-TW':'API Key','ja':'API キー','ko':'API 키','es':'Clave API','fr':'Clé API','de':'API-Schlüssel','pt-BR':'Chave API','ru':'API-ключ','ar':'مفتاح API'},
   'Last 24 hours': {'zh-CN':'近 24 小时消耗','zh-TW':'近 24 小時消耗','ja':'過去24時間の消費','ko':'최근 24시간 사용','es':'Últimas 24 horas','fr':'Dernières 24 heures','de':'Letzte 24 Stunden','pt-BR':'Últimas 24 horas','ru':'Последние 24 часа','ar':'آخر 24 ساعة'},
   'All-time usage': {'zh-CN':'历史使用情况','zh-TW':'歷史使用情況','ja':'全期間の使用量','ko':'전체 사용량','es':'Uso histórico','fr':'Utilisation totale','de':'Gesamtnutzung','pt-BR':'Uso histórico','ru':'Использование за всё время','ar':'الاستخدام الكلي'},
   'Request count': {'zh-CN':'请求计数','zh-TW':'要求計數','ja':'リクエスト数','ko':'요청 수','es':'Número de solicitudes','fr':'Nombre de requêtes','de':'Anzahl der Anfragen','pt-BR':'Número de solicitações','ru':'Количество запросов','ar':'عدد الطلبات'},
@@ -811,7 +810,7 @@ const localeText={
   'Time': {'zh-CN':'时间','zh-TW':'時間','ja':'時刻','ko':'시간','es':'Hora','fr':'Heure','de':'Zeit','pt-BR':'Horário','ru':'Время','ar':'الوقت'},
   'Model': {'zh-CN':'模型','zh-TW':'模型','ja':'モデル','ko':'모델','es':'Modelo','fr':'Modèle','de':'Modell','pt-BR':'Modelo','ru':'Модель','ar':'النموذج'},
   'Endpoint': {'zh-CN':'端点','zh-TW':'端點','ja':'エンドポイント','ko':'엔드포인트','es':'Punto final','fr':'Point d\'entrée','de':'Endpunkt','pt-BR':'Endpoint','ru':'Конечная точка','ar':'نقطة النهاية'},
-  'Tokens': {'zh-CN':'Tokens','zh-TW':'Tokens','ja':'トークン','ko':'토큰','es':'Tokens','fr':'Tokens','de':'Tokens','pt-BR':'Tokens','ru':'Токены','ar':'الرموز'},
+  'Tokens': {'zh-CN':'Token','zh-TW':'Tokens','ja':'トークン','ko':'토큰','es':'Tokens','fr':'Tokens','de':'Tokens','pt-BR':'Tokens','ru':'Токены','ar':'الرموز'},
   'Status': {'zh-CN':'状态','zh-TW':'狀態','ja':'ステータス','ko':'상태','es':'Estado','fr':'Statut','de':'Status','pt-BR':'Status','ru':'Статус','ar':'الحالة'},
   'Calls': {'zh-CN':'调用次数','zh-TW':'呼叫次數','ja':'呼び出し回数','ko':'호출 횟수','es':'Llamadas','fr':'Appels','de':'Aufrufe','pt-BR':'Chamadas','ru':'Вызовы','ar':'الاستدعاءات'},
   'Scheduling': {'zh-CN':'调度','zh-TW':'調度','ja':'スケジュール','ko':'스케줄링','es':'Programación','fr':'Planification','de':'Planung','pt-BR':'Agendamento','ru':'Планирование','ar':'الجدولة'},
@@ -831,7 +830,7 @@ const localeText={
   'Token usage by model': {'zh-CN':'按模型统计的 Token 用量','zh-TW':'按模型統計的 Token 用量','ja':'モデル別トークン使用量','ko':'모델별 토큰 사용량','es':'Uso de tokens por modelo','fr':'Utilisation de tokens par modèle','de':'Token-Nutzung nach Modell','pt-BR':'Uso de tokens por modelo','ru':'Использование токенов по моделям','ar':'استخدام الرموز حسب النموذج'},
   'Endpoint distribution': {'zh-CN':'端点分布','zh-TW':'端點分佈','ja':'エンドポイント分布','ko':'엔드포인트 분포','es':'Distribución de puntos finales','fr':'Répartition des points d\'entrée','de':'Endpunktverteilung','pt-BR':'Distribuição de endpoints','ru':'Распределение конечных точек','ar':'توزيع نقاط النهاية'},
   'Requests by endpoint': {'zh-CN':'按接口统计的请求量','zh-TW':'按介面統計的要求量','ja':'エンドポイント別リクエスト数','ko':'엔드포인트별 요청 수','es':'Solicitudes por punto final','fr':'Requêtes par point d\'entrée','de':'Anfragen nach Endpunkt','pt-BR':'Solicitações por endpoint','ru':'Запросы по конечным точкам','ar':'الطلبات حسب نقطة النهاية'},
-  'API key usage': {'zh-CN':'API Key 用量','zh-TW':'API Key 用量','ja':'API キー使用量','ko':'API 키 사용량','es':'Uso de claves API','fr':'Utilisation des clés API','de':'API-Schlüssel-Nutzung','pt-BR':'Uso de chaves API','ru':'Использование API-ключей','ar':'استخدام مفاتيح API'},
+  'API key usage': {'zh-CN':'API 密钥用量','zh-TW':'API Key 用量','ja':'API キー使用量','ko':'API 키 사용량','es':'Uso de claves API','fr':'Utilisation des clés API','de':'API-Schlüssel-Nutzung','pt-BR':'Uso de chaves API','ru':'Использование API-ключей','ar':'استخدام مفاتيح API'},
   'Requests by API key': {'zh-CN':'按密钥统计的请求量','zh-TW':'按金鑰統計的要求量','ja':'API キー別リクエスト数','ko':'API 키별 요청 수','es':'Solicitudes por clave API','fr':'Requêtes par clé API','de':'Anfragen nach API-Schlüssel','pt-BR':'Solicitações por chave API','ru':'Запросы по API-ключам','ar':'الطلبات حسب مفتاح API'},
   'Request details': {'zh-CN':'请求明细','zh-TW':'要求明細','ja':'リクエスト詳細','ko':'요청 상세','es':'Detalles de solicitud','fr':'Détails de la requête','de':'Anfragedetails','pt-BR':'Detalhes da solicitação','ru':'Детали запроса','ar':'تفاصيل الطلب'},
   'Recent records': {'zh-CN':'最近记录','zh-TW':'最近記錄','ja':'最近の記録','ko':'최근 기록','es':'Registros recientes','fr':'Enregistrements récents','de':'Letzte Einträge','pt-BR':'Registros recentes','ru':'Последние записи','ar':'السجلات الأخيرة'},
@@ -883,7 +882,7 @@ const localeText={
   'Updated': {'zh-CN':'更新时间','zh-TW':'更新時間','ja':'更新日時','ko':'업데이트 시간','es':'Actualizado','fr':'Mis à jour','de':'Aktualisiert','pt-BR':'Atualizado','ru':'Обновлено','ar':'تم التحديث'},
   'Actions': {'zh-CN':'操作','zh-TW':'操作','ja':'操作','ko':'작업','es':'Acciones','fr':'Actions','de':'Aktionen','pt-BR':'Ações','ru':'Действия','ar':'الإجراءات'},
   'Manage access keys': {'zh-CN':'管理访问密钥','zh-TW':'管理存取金鑰','ja':'アクセスキーの管理','ko':'액세스 키 관리','es':'Gestionar claves de acceso','fr':'Gérer les clés d\'accès','de':'Zugriffsschlüssel verwalten','pt-BR':'Gerenciar chaves de acesso','ru':'Управление ключами доступа','ar':'إدارة مفاتيح الوصول'},
-  'Create key': {'zh-CN':'创建 Key','zh-TW':'建立 Key','ja':'キーを作成','ko':'키 생성','es':'Crear clave','fr':'Créer une clé','de':'Schlüssel erstellen','pt-BR':'Criar chave','ru':'Создать ключ','ar':'إنشاء مفتاح'},
+  'Create key': {'zh-CN':'创建密钥','zh-TW':'建立 Key','ja':'キーを作成','ko':'키 생성','es':'Crear clave','fr':'Créer une clé','de':'Schlüssel erstellen','pt-BR':'Criar chave','ru':'Создать ключ','ar':'إنشاء مفتاح'},
   'Key list': {'zh-CN':'密钥列表','zh-TW':'金鑰列表','ja':'キー一覧','ko':'키 목록','es':'Lista de claves','fr':'Liste des clés','de':'Schlüsselliste','pt-BR':'Lista de chaves','ru':'Список ключей','ar':'قائمة المفاتيح'},
   'Keys can be viewed and copied again at any time': {'zh-CN':'密钥可随时重复查看与复制','zh-TW':'金鑰可隨時重複檢視與複製','ja':'キーはいつでも再度表示・コピーできます','ko':'키는 언제든지 다시 확인하고 복사할 수 있습니다','es':'La clave puede verse y copiarse de nuevo en cualquier momento','fr':'La clé peut être réaffichée et copiée à tout moment','de':'Der Schlüssel kann jederzeit erneut angezeigt und kopiert werden','pt-BR':'A chave pode ser vista e copiada novamente a qualquer momento','ru':'Ключ можно снова просмотреть и скопировать в любое время','ar':'يمكن عرض المفتاح ونسخه مرة أخرى في أي وقت'},
   'Name': {'zh-CN':'名称','zh-TW':'名稱','ja':'名前','ko':'이름','es':'Nombre','fr':'Nom','de':'Name','pt-BR':'Nome','ru':'Имя','ar':'الاسم'},
@@ -906,8 +905,8 @@ const localeText={
   'Proxy URLs (one per line; bulk paste supported)': {'zh-CN':'代理地址（一行一个，支持批量粘贴）','zh-TW':'代理位址（一行一個，支援批量貼上）','ja':'プロキシ URL（1 行 1 件、一括貼り付け対応）','ko':'프록시 URL (한 줄에 하나, 일괄 붙여넣기 지원)','es':'URLs de proxy (una por línea; se admite pegado masivo)','fr':'URLs de proxy (une par ligne ; collage en masse pris en charge)','de':'Proxy-URLs (eine pro Zeile; Masseneinfügen unterstützt)','pt-BR':'URLs de proxy (uma por linha; colagem em massa suportada)','ru':'URL прокси (по одному в строке; поддерживается массовая вставка)','ar':'عناوين البروكسي (واحد لكل سطر؛ دعم اللصق الجماعي)'},
   'Add': {'zh-CN':'添加','zh-TW':'新增','ja':'追加','ko':'추가','es':'Añadir','fr':'Ajouter','de':'Hinzufügen','pt-BR':'Adicionar','ru':'Добавить','ar':'إضافة'},
   'Test connectivity': {'zh-CN':'测试连通性','zh-TW':'測試連通性','ja':'接続をテスト','ko':'연결 테스트','es':'Probar conectividad','fr':'Tester la connexion','de':'Konnektivität testen','pt-BR':'Testar conectividade','ru':'Проверить связь','ar':'اختبار الاتصال'},
-  'Supported formats: ': {'zh-CN':'已支持的格式：','zh-TW':'已支援的格式：','ja':'対応フォーマット: ','ko':'지원 형식: ','es':'Formatos admitidos: ','fr':'Formats pris en charge : ','de':'Unterstützte Formate: ','pt-BR':'Formatos suportados: ','ru':'Поддерживаемые форматы: ','ar':'الصيغ المدعومة: '},
-  ', and ': {'zh-CN':'、','zh-TW':'、','ja':'、','ko':', ','es':', y ','fr':', et ','de':', und ','pt-BR':', e ','ru':', и ','ar':'، و'},
+  'Supported formats:': {'zh-CN':'支持格式：','zh-TW':'已支援的格式：','ja':'対応フォーマット: ','ko':'지원 형식: ','es':'Formatos admitidos: ','fr':'Formats pris en charge : ','de':'Unterstützte Formate: ','pt-BR':'Formatos suportados: ','ru':'Поддерживаемые форматы: ','ar':'الصيغ المدعومة: '},
+  ', and': {'zh-CN':'、','zh-TW':'、','ja':'、','ko':', ','es':', y ','fr':', et ','de':', und ','pt-BR':', e ','ru':', и ','ar':'، و'},
   '; usernames and passwords are supported': {'zh-CN':'，可带用户名密码','zh-TW':'，可帶使用者名稱密碼','ja':'；ユーザー名とパスワードに対応','ko':'; 사용자 이름 및 비밀번호 지원','es':'; se admiten nombres de usuario y contraseñas','fr':'; noms d\'utilisateur et mots de passe pris en charge','de':'; Benutzernamen und Passwörter werden unterstützt','pt-BR':'; nomes de usuário e senhas são suportados','ru':'; поддерживаются имена пользователей и пароли','ar':'؛ يُدعم أسماء المستخدمين وكلمات المرور'},
   'Proxy list': {'zh-CN':'代理列表','zh-TW':'代理列表','ja':'プロキシ一覧','ko':'프록시 목록','es':'Lista de proxies','fr':'Liste des proxys','de':'Proxy-Liste','pt-BR':'Lista de proxies','ru':'Список прокси','ar':'قائمة البروكسي'},
   'URL': {'zh-CN':'地址','zh-TW':'位址','ja':'URL','ko':'URL','es':'URL','fr':'URL','de':'URL','pt-BR':'URL','ru':'URL','ar':'العنوان'},
@@ -936,13 +935,13 @@ const localeText={
   'Save model routing': {'zh-CN':'保存模型路由','zh-TW':'儲存模型路由','ja':'モデルルーティングを保存','ko':'모델 라우팅 저장','es':'Guardar enrutamiento','fr':'Enregistrer le routage','de':'Routing speichern','pt-BR':'Salvar roteamento','ru':'Сохранить маршрутизацию','ar':'حفظ التوجيه'},
   'Model routing saved': {'zh-CN':'模型路由已保存','zh-TW':'模型路由已儲存','ja':'モデルルーティングを保存しました','ko':'모델 라우팅이 저장되었습니다','es':'Enrutamiento guardado','fr':'Routage enregistré','de':'Routing gespeichert','pt-BR':'Roteamento salvo','ru':'Маршрутизация сохранена','ar':'تم حفظ التوجيه'},
   'No models available': {'zh-CN':'没有可用模型','zh-TW':'沒有可用模型','ja':'利用可能なモデルがありません','ko':'사용 가능한 모델이 없습니다','es':'No hay modelos disponibles','fr':'Aucun modèle disponible','de':'Keine Modelle verfügbar','pt-BR':'Nenhum modelo disponível','ru':'Нет доступных моделей','ar':'لا توجد نماذج متاحة'},
-  'Create API key': {'zh-CN':'创建 API Key','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
+  'Create API key': {'zh-CN':'创建 API 密钥','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
   'You can view or copy this key again from the key list. Store it securely.': {'zh-CN':'完整密钥可在密钥列表中随时查看或复制，请妥善保存','zh-TW':'完整金鑰可在金鑰清單中隨時檢視或複製，請妥善保存','ja':'完全なキーはキー一覧からいつでも表示・コピーできます。安全に保管してください。','ko':'전체 키는 키 목록에서 언제든지 확인하거나 복사할 수 있습니다. 안전하게 보관하세요.','es':'Puede volver a ver o copiar esta clave desde la lista de claves. Guárdela de forma segura.','fr':'Vous pouvez réafficher ou copier cette clé depuis la liste des clés. Conservez-la en lieu sûr.','de':'Sie können diesen Schlüssel jederzeit aus der Schlüsselliste erneut anzeigen oder kopieren. Bewahren Sie ihn sicher auf.','pt-BR':'Você pode ver ou copiar esta chave novamente na lista de chaves. Guarde-a com segurança.','ru':'Вы можете снова просмотреть или скопировать этот ключ из списка ключей. Храните его безопасно.','ar':'يمكنك عرض هذا المفتاح أو نسخه مرة أخرى من قائمة المفاتيح. احفظه بأمان.'},
   'Full key is unavailable for keys created before this feature': {'zh-CN':'该密钥创建于本功能之前，无明文备份，无法重新显示','zh-TW':'該金鑰建立於此功能之前，無明文備份，無法重新顯示','ja':'このキーは本機能より前に作成されたため、平文のバックアップがなく再表示できません','ko':'이 키는 이 기능 이전에 생성되어 평문 백업이 없어 다시 표시할 수 없습니다','es':'La clave completa no está disponible para claves creadas antes de esta función','fr':'La clé complète n\'est pas disponible pour les clés créées avant cette fonctionnalité','de':'Der vollständige Schlüssel steht für Schlüssel, die vor dieser Funktion erstellt wurden, nicht zur Verfügung','pt-BR':'A chave completa não está disponível para chaves criadas antes deste recurso','ru':'Полный ключ недоступен для ключей, созданных до появления этой функции','ar':'المفتاح الكامل غير متاح للمفاتيح التي أُنشئت قبل هذه الميزة'},
   'Cancel': {'zh-CN':'取消','zh-TW':'取消','ja':'キャンセル','ko':'취소','es':'Cancelar','fr':'Annuler','de':'Abbrechen','pt-BR':'Cancelar','ru':'Отмена','ar':'إلغاء'},
   'Create': {'zh-CN':'创建','zh-TW':'建立','ja':'作成','ko':'생성','es':'Crear','fr':'Créer','de':'Erstellen','pt-BR':'Criar','ru':'Создать','ar':'إنشاء'},
   'Copy and save this key now': {'zh-CN':'请立即复制保存此密钥','zh-TW':'請立即複製儲存此金鑰','ja':'今すぐこのキーをコピーして保存','ko':'지금 이 키를 복사하여 저장하세요','es':'Copie y guarde esta clave ahora','fr':'Copiez et enregistrez cette clé maintenant','de':'Kopieren und speichern Sie diesen Schlüssel jetzt','pt-BR':'Copie e salve esta chave agora','ru':'Скопируйте и сохраните этот ключ сейчас','ar':'انسخ واحفظ هذا المفتاح الآن'},
-  'Edit API key': {'zh-CN':'编辑 API Key','zh-TW':'編輯 API Key','ja':'API キーを編集','ko':'API 키 편집','es':'Editar clave API','fr':'Modifier la clé API','de':'API-Schlüssel bearbeiten','pt-BR':'Editar chave API','ru':'Редактировать API-ключ','ar':'تحرير مفتاح API'},
+  'Edit API key': {'zh-CN':'编辑 API 密钥','zh-TW':'編輯 API Key','ja':'API キーを編集','ko':'API 키 편집','es':'Editar clave API','fr':'Modifier la clé API','de':'API-Schlüssel bearbeiten','pt-BR':'Editar chave API','ru':'Редактировать API-ключ','ar':'تحرير مفتاح API'},
   'Change the key name': {'zh-CN':'修改密钥名称','zh-TW':'修改金鑰名稱','ja':'キー名を変更','ko':'키 이름 변경','es':'Cambiar el nombre de la clave','fr':'Modifier le nom de la clé','de':'Schlüsselnamen ändern','pt-BR':'Alterar o nome da chave','ru':'Изменить имя ключа','ar':'تغيير اسم المفتاح'},
   'Save': {'zh-CN':'保存','zh-TW':'儲存','ja':'保存','ko':'저장','es':'Guardar','fr':'Enregistrer','de':'Speichern','pt-BR':'Salvar','ru':'Сохранить','ar':'حفظ'},
   'Use API key': {'zh-CN':'使用 API 密钥','zh-TW':'使用 API 金鑰','ja':'API キーを使用','ko':'API 키 사용','es':'Usar clave API','fr':'Utiliser la clé API','de':'API-Schlüssel verwenden','pt-BR':'Usar chave API','ru':'Использовать API-ключ','ar':'استخدام مفتاح API'},
@@ -996,6 +995,84 @@ const localeText={
   'The new password must be at least 6 characters': {'zh-CN':'新密码至少需要 6 个字符','zh-TW':'新密碼至少需要 6 個字元','ja':'新しいパスワードは6文字以上必要です','ko':'새 비밀번호는 6자 이상이어야 합니다','es':'La nueva contraseña debe tener al menos 6 caracteres','fr':'Le nouveau mot de passe doit comporter au moins 6 caractères','de':'Das neue Passwort muss mindestens 6 Zeichen lang sein','pt-BR':'A nova senha deve ter pelo menos 6 caracteres','ru':'Новый пароль должен содержать не менее 6 символов','ar':'يجب أن تتكون كلمة المرور الجديدة من 6 أحرف على الأقل'},
   'Password changed. Please log in again.': {'zh-CN':'密码已修改，请重新登录。','zh-TW':'密碼已修改，請重新登入。','ja':'パスワードを変更しました。もう一度ログインしてください。','ko':'비밀번호가 변경되었습니다. 다시 로그인하세요.','es':'Contraseña cambiada. Inicie sesión de nuevo.','fr':'Mot de passe modifié. Veuillez vous reconnecter.','de':'Passwort geändert. Bitte melden Sie sich erneut an.','pt-BR':'Senha alterada. Faça login novamente.','ru':'Пароль изменён. Войдите снова.','ar':'تم تغيير كلمة المرور. يرجى تسجيل الدخول مرة أخرى.'},
   'Changing the password signs out all administrator sessions. You will be redirected to the login page.': {'zh-CN':'修改密码会退出所有管理员会话，随后将跳转到登录页面。','zh-TW':'修改密碼會登出所有管理員工作階段，接著將跳轉到登入頁面。','ja':'パスワードを変更するとすべての管理者セッションが終了し、ログインページに移動します。','ko':'비밀번호를 변경하면 모든 관리자 세션이 로그아웃되고 로그인 페이지로 이동합니다.','es':'Cambiar la contraseña cierra todas las sesiones de administrador y le redirige a la página de inicio de sesión.','fr':'La modification du mot de passe déconnecte toutes les sessions administrateur et vous redirige vers la page de connexion.','de':'Beim Ändern des Passworts werden alle Administratorsitzungen abgemeldet und Sie werden zur Anmeldeseite weitergeleitet.','pt-BR':'Alterar a senha encerra todas as sessões de administrador e redireciona para a página de login.','ru':'После смены пароля все сеансы администратора будут завершены, и вы перейдёте на страницу входа.','ar':'يؤدي تغيير كلمة المرور إلى تسجيل خروج جميع جلسات المسؤول وإعادة توجيهك إلى صفحة تسجيل الدخول.'},
+  /* ---- Simplified-Chinese-only additions for strings missing from the pack ---- */
+  'Add a Microsoft account': {'zh-CN':'添加 Microsoft 账号'},
+  'Sign in via browser OAuth and add the account to the pool': {'zh-CN':'通过浏览器 OAuth 登录并将账号加入账号池'},
+  'Generate a key to authenticate API requests': {'zh-CN':'生成密钥用于 API 请求鉴权'},
+  'Generate a key for API access': {'zh-CN':'生成用于 API 访问的密钥'},
+  'Add account': {'zh-CN':'添加账号'},
+  'Sign in via Microsoft OAuth': {'zh-CN':'通过 Microsoft OAuth 登录'},
+  'tokens': {'zh-CN':'Token'},
+  'ms': {'zh-CN':'毫秒'},
+  'When enabled, the most recent': {'zh-CN':'启用后，最近'},
+  'requests keep the full downstream request, upstream (ChatHub) request, upstream response and downstream response, with a live status (in-progress / success / error). Older records are removed automatically.': {'zh-CN':'条请求将保留完整的下游请求、上游（ChatHub）请求、上游响应和下游响应，并实时标记状态（请求中 / 成功 / 错误）。更早的记录会自动清除。'},
+  'and': {'zh-CN':'和'},
+  'Stream': {'zh-CN':'流式'},
+  'stream': {'zh-CN':'流式'},
+  'Non-stream': {'zh-CN':'非流式'},
+  'Records kept': {'zh-CN':'保留条数'},
+  'Paste the full callback URL, e.g. http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123': {'zh-CN':'粘贴完整回调地址，例如 http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123'},
+  'Paste the full callback URL from the address bar…': {'zh-CN':'从地址栏粘贴完整回调地址…'},
+  'http://user:pass@host:port\nsocks5://127.0.0.1:1080\nhttps://proxy.example.com:443': {'zh-CN':'每行一个代理，例如：\nhttp://user:pass@host:port\nsocks5://127.0.0.1:1080\nhttps://proxy.example.com:443'},
+  'Toggle password visibility': {'zh-CN':'切换密码可见性'},
+  'Proxy pool': {'zh-CN':'代理池'},
+  'Model test': {'zh-CN':'模型测试'},
+  'Proxy mode': {'zh-CN':'代理模式'},
+  'Mode': {'zh-CN':'模式'},
+  'Strict (mandatory)': {'zh-CN':'严格（强制代理）'},
+  'Loose (fallback direct)': {'zh-CN':'宽松（可回退直连）'},
+  'Direct (no proxy)': {'zh-CN':'直连（不使用代理）'},
+  'Direct: never use the proxy pool, all requests connect directly. Loose: prefer the pool but fall back to a direct connection when no healthy proxy is available. Strict: once a pool is configured, requests must use a healthy proxy node or fail.': {'zh-CN':'直连：不使用代理池，所有请求直接连接。宽松：优先使用代理池，无健康代理时回退为直连。严格：配置代理池后，请求必须使用健康代理节点，否则请求失败。'},
+  'cleanup — m365-copilot2api': {'zh-CN':'清理 — m365-copilot2api'},
+  'proxy check — m365-copilot2api': {'zh-CN':'代理检测 — m365-copilot2api'},
+  'model-id': {'zh-CN':'模型ID'},
+  'English': {'zh-CN':'英语'},
+  '日本語': {'zh-CN':'日语'},
+  '한국어': {'zh-CN':'韩语'},
+  'Español': {'zh-CN':'西班牙语'},
+  'Français': {'zh-CN':'法语'},
+  'Deutsch': {'zh-CN':'德语'},
+  'Português (Brasil)': {'zh-CN':'葡萄牙语（巴西）'},
+  'Русский': {'zh-CN':'俄语'},
+  'العربية': {'zh-CN':'阿拉伯语'},
+  'Copied': {'zh-CN':'已复制'},
+  'Copy failed': {'zh-CN':'复制失败'},
+  'Proxy bound': {'zh-CN':'代理已绑定'},
+  'Proxy unbound': {'zh-CN':'代理已解绑'},
+  'Request failed': {'zh-CN':'请求失败'},
+  'No models to save': {'zh-CN':'没有可保存的模型'},
+  'Duplicate model ids are not allowed': {'zh-CN':'不允许重复的模型 ID'},
+  'Invalid mapping name: only letters, digits, dots, underscores, spaces and hyphens, max 128 characters': {'zh-CN':'无效的映射名称：仅允许字母、数字、点、下划线、空格和连字符，最多 128 个字符'},
+  'New upstream mapping name (this name is also sent to the upstream as the tone):': {'zh-CN':'新的上游映射名称（该名称也会作为音色发送给上游）：'},
+  '+ New mapping…': {'zh-CN':'+ 新建映射…'},
+  '— Select mapping —': {'zh-CN':'— 选择映射 —'},
+  'No requests match the filters': {'zh-CN':'没有符合筛选条件的请求'},
+  'Tracing disabled or no requests yet': {'zh-CN':'跟踪未启用，暂无请求记录'},
+  'Bind proxy for this account (socks5://, http://, https://). Leave empty to unbind:': {'zh-CN':'为此账号绑定代理（socks5://、http://、https://），留空则解除绑定：'},
+  'this model': {'zh-CN':'该模型'},
+  'Endpoint:': {'zh-CN':'端点：'},
+  'Method:': {'zh-CN':'方法：'},
+  'Status:': {'zh-CN':'状态：'},
+  'Account:': {'zh-CN':'账号：'},
+  'Key:': {'zh-CN':'密钥：'},
+  'Error:': {'zh-CN':'错误：'},
+  'Upstream:': {'zh-CN':'上游：'},
+  'Downstream request': {'zh-CN':'下游请求'},
+  'Upstream request': {'zh-CN':'上游请求'},
+  'Upstream response': {'zh-CN':'上游响应'},
+  'Downstream response': {'zh-CN':'下游响应'},
+  'View': {'zh-CN':'查看'},
+  'Edit': {'zh-CN':'编辑'},
+  'Use key': {'zh-CN':'使用密钥'},
+  'Disable': {'zh-CN':'禁用'},
+  'Bind': {'zh-CN':'绑定'},
+  'Proxy': {'zh-CN':'代理'},
+  'none': {'zh-CN':'无'},
+  'minimal': {'zh-CN':'极简'},
+  'low': {'zh-CN':'低'},
+  'medium': {'zh-CN':'中'},
+  'high': {'zh-CN':'高'},
+  'xhigh': {'zh-CN':'极高'},
 }; Object.assign(localeText,passwordLocaleText);
 function preferredLocale(){
   try{
@@ -1022,7 +1099,25 @@ function translateDynamic(value,locale){
     m=value.match(/^in(\d+)\/out(\d+)\/cache(\d+)$/);if(m)return '入'+m[1]+'/出'+m[2]+'/缓'+m[3];
     m=value.match(/^Page (\d+) \/ (\d+) · (\d+) total$/);if(m)return '第 '+m[1]+' / '+m[2]+' 页 · 共 '+m[3]+' 条';
     m=value.match(/^Added (\d+) proxies$/);if(m)return '已添加 '+m[1]+' 个代理';
+    m=value.match(/^Connection healthy: (\d+(?:\.\d+)?) ms$/);if(m)return '连通正常：'+m[1]+' 毫秒';
     m=value.match(/^Connection healthy: (.+)$/);if(m)return '连通正常：'+m[1];
+    m=value.match(/^(\d+) ms$/);if(m)return m[1]+' 毫秒';
+    m=value.match(/^([\d.]+) t\/s$/);if(m)return m[1]+' token/s';
+    m=value.match(/^(\d+) req$/);if(m)return m[1]+' 次请求';
+    m=value.match(/^(.+) · (\d+) tokens$/);if(m)return m[1]+' · '+m[2]+' Token';
+    m=value.match(/^Proxy mode set to (.+)$/);if(m)return '代理模式已设为 '+m[1]+'。';
+    m=value.match(/^Remove "(.+)" from the routing table\?$/);if(m)return '确定从路由表中删除 "'+m[1]+'"？';
+    m=value.match(/^> Round (\d+): list is empty\.$/);if(m)return '> 第 '+m[1]+' 轮：列表为空。';
+    m=value.match(/^> Round (\d+): found (\d+) conversations \(paged loading; fetch the next batch after deletion\)$/);if(m)return '> 第 '+m[1]+' 轮：发现 '+m[2]+' 个对话（分页加载，删除后可获取下一批）';
+    m=value.match(/^> \[(\d+)\/(\d+)\] Deleting "(.+)" (.+)$/);if(m)return '> ['+m[1]+'/'+m[2]+'] 正在删除 "'+m[3]+'" '+m[4];
+    m=value.match(/^> \[(\d+)\/(\d+)\] Deleting "(.+)"$/);if(m)return '> ['+m[1]+'/'+m[2]+'] 正在删除 "'+m[3]+'"';
+    m=value.match(/^> ✓ Deleted "(.+)"$/);if(m)return '> ✓ 已删除 "'+m[1]+'"';
+    m=value.match(/^> ✗ Delete failed: (.+)$/);if(m)return '> ✗ 删除失败：'+m[1];
+    m=value.match(/^> ✓ (.+) — (\d+) ms$/);if(m)return '> ✓ '+m[1]+' — '+m[2]+' 毫秒';
+    m=value.match(/^> Finished: (\d+) succeeded, (\d+) failed, (\d+) rounds total\.$/);if(m)return '> 完成：成功 '+m[1]+' 个，失败 '+m[2]+' 个，共 '+m[3]+' 轮。';
+    m=value.match(/^Finished: (\d+)\/(\d+) proxies available\.$/);if(m)return '完成：'+m[1]+'/'+m[2]+' 个代理可用。';
+    m=value.match(/^Check failed: (.+)$/);if(m)return '检测失败：'+m[1];
+    m=value.match(/^✓ (.+) — (\d+) ms$/);if(m)return '✓ '+m[1]+' — '+m[2]+' 毫秒';
     m=value.match(/^Finished: (\d+) succeeded, (\d+) failed, (\d+) rounds total\.$/);if(m)return '完成：成功 '+m[1]+' 个，失败 '+m[2]+' 个，共 '+m[3]+' 轮。';
   }else{
     let m=value.match(/^已调用(\d+)次$/);if(m)return 'Called '+m[1]+' times';
@@ -1037,7 +1132,24 @@ function translateDynamic(value,locale){
     m=value.match(/^入(\d+)\/出(\d+)\/缓(\d+)$/);if(m)return 'in'+m[1]+'/out'+m[2]+'/cache'+m[3];
     m=value.match(/^第 (\d+) \/ (\d+) 页 · 共 (\d+) 条$/);if(m)return 'Page '+m[1]+' / '+m[2]+' · '+m[3]+' total';
     m=value.match(/^已添加 (\d+) 个代理$/);if(m)return 'Added '+m[1]+' proxies';
+    m=value.match(/^连通正常：(\d+(?:\.\d+)?) 毫秒$/);if(m)return 'Connection healthy: '+m[1]+' ms';
     m=value.match(/^连通正常：(.+)$/);if(m)return 'Connection healthy: '+m[1];
+    m=value.match(/^(\d+) 毫秒$/);if(m)return m[1]+' ms';
+    m=value.match(/^([\d.]+) token\/s$/);if(m)return m[1]+' t/s';
+    m=value.match(/^(.+) · (\d+) Token$/);if(m)return m[1]+' · '+m[2]+' tokens';
+    m=value.match(/^代理模式已设为 (.+)。$/);if(m)return 'Proxy mode set to '+m[1];
+    m=value.match(/^确定从路由表中删除 "(.+)"？$/);if(m)return 'Remove "'+m[1]+'" from the routing table?';
+    m=value.match(/^> 第 (\d+) 轮：列表为空。$/);if(m)return '> Round '+m[1]+': list is empty.';
+    m=value.match(/^> 第 (\d+) 轮：发现 (\d+) 个对话（分页加载，删除后可获取下一批）$/);if(m)return '> Round '+m[1]+': found '+m[2]+' conversations (paged loading; fetch the next batch after deletion)';
+    m=value.match(/^> \[(\d+)\/(\d+)\] 正在删除 "(.+)" (.+)$/);if(m)return '> ['+m[1]+'/'+m[2]+'] Deleting "'+m[3]+'" '+m[4];
+    m=value.match(/^> \[(\d+)\/(\d+)\] 正在删除 "(.+)"$/);if(m)return '> ['+m[1]+'/'+m[2]+'] Deleting "'+m[3]+'"';
+    m=value.match(/^> ✓ 已删除 "(.+)"$/);if(m)return '> ✓ Deleted "'+m[1]+'"';
+    m=value.match(/^> ✗ 删除失败：(.+)$/);if(m)return '> ✗ Delete failed: '+m[1];
+    m=value.match(/^> ✓ (.+) — (\d+) 毫秒$/);if(m)return '> ✓ '+m[1]+' — '+m[2]+' ms';
+    m=value.match(/^> 完成：成功 (\d+) 个，失败 (\d+) 个，共 (\d+) 轮。$/);if(m)return '> Finished: '+m[1]+' succeeded, '+m[2]+' failed, '+m[3]+' rounds total.';
+    m=value.match(/^完成：(\d+)\/(\d+) 个代理可用。$/);if(m)return 'Finished: '+m[1]+'/'+m[2]+' proxies available.';
+    m=value.match(/^检测失败：(.+)$/);if(m)return 'Check failed: '+m[1];
+    m=value.match(/^✓ (.+) — (\d+) 毫秒$/);if(m)return '✓ '+m[1]+' — '+m[2]+' ms';
     m=value.match(/^完成：成功 (\d+) 个，失败 (\d+) 个，共 (\d+) 轮。$/);if(m)return 'Finished: '+m[1]+' succeeded, '+m[2]+' failed, '+m[3]+' rounds total.';
   }
   return value;
@@ -1991,6 +2103,37 @@ function toggleAdminPassword(btn){
 
 let routeMappings=[],routeLevels=[],routeCodexModels=[];
 function escAttr(s){return esc(String(s==null?'':s)).replace(/"/g,'&quot;');}
+// The upstream-mapping picker is a real <select> fed from the full upstream
+// list the server returns. A text input + <datalist> is unusable here: the
+// input is pre-filled with the row's current mapping, so browsers filter the
+// suggestion list down to that single entry and the dropdown never shows the
+// whole upstream set. The select keeps the row's current value visible even
+// when it is not (yet) part of the persisted mapping list.
+function upstreamMapSelect(current){
+  const cur=current||'';
+  let html='<select class="form-input" style="min-width:150px" data-f="upstreamMapping" onfocus="this.dataset.prev=this.value" onchange="createNewMapping(this)">';
+  if(!routeMappings.some(m=>m.name===cur)){
+    html+='<option value="'+escAttr(cur)+'" selected>'+(cur?esc(cur):'— Select mapping —')+'</option>';
+  }
+  html+=routeMappings.map(m=>'<option value="'+escAttr(m.name)+'"'+(cur===m.name?' selected':'')+'>'+esc(m.name)+'</option>').join('');
+  html+='<option value="__new__">+ New mapping…</option>';
+  html+='</select>';
+  return html;
+}
+// The select above carries a "+ New mapping…" entry so new upstream targets
+// (which the old free-text input allowed by typing) keep working: choosing it
+// prompts for the mapping name, validates the same charset the server enforces
+// and adds it to the row's picker and the saved mapping set.
+function createNewMapping(sel){
+  if(sel.value!=='__new__')return;
+  const name=(prompt('New upstream mapping name (this name is also sent to the upstream as the tone):')||'').trim();
+  if(!name){sel.value=sel.dataset.prev||(sel.options[0]?sel.options[0].value:'');return;}
+  if(!/^[A-Za-z0-9._ -]{1,128}$/.test(name)){showNotice('Invalid mapping name: only letters, digits, dots, underscores, spaces and hyphens, max 128 characters','error');sel.value='';return;}
+  if(routeMappings.some(m=>m.name.toLowerCase()===name.toLowerCase())){sel.value=name;return;}
+  routeMappings.push({name,tone:name,enabled:true});
+  sel.insertAdjacentHTML('beforeend','<option value="'+escAttr(name)+'" selected>'+esc(name)+'</option>');
+  sel.value=name;
+}
 async function loadSettings(){
   try{
     const d=await api('/api/admin/settings');
@@ -2005,14 +2148,13 @@ async function loadSettings(){
 }
 function renderModelRoutes(rows){
   const levels=routeLevels.length?routeLevels:['none','minimal','low','medium','high','xhigh'];
-  $('upstreamMappingOptions').innerHTML=routeMappings.map(m=>`<option value="${escAttr(m.name)}">`).join('');
   if(!rows.length){$('modelRouteRows').innerHTML='<tr><td colspan="6" class="empty">No models available</td></tr>';return;}
   $('modelRouteRows').innerHTML=rows.map(row=>{
     const levelSel=levels.map(l=>`<option value="${escAttr(l)}"${l===row.defaultReasoningLevel?' selected':''}>${esc(l)}</option>`).join('');
     return `<tr>
       <td><code>${esc(row.model)}</code></td>
       <td><input class="form-input" style="min-width:130px" data-f="displayName" value="${escAttr(row.displayName)}"></td>
-      <td><input class="form-input" style="min-width:150px" list="upstreamMappingOptions" data-f="upstreamMapping" placeholder="Mapping name" value="${escAttr(row.upstreamMapping||'')}"></td>
+      <td>${upstreamMapSelect(row.upstreamMapping)}</td>
       <td><select class="form-input" style="min-width:120px" data-f="defaultReasoningLevel">${levelSel}</select></td>
       <td><label style="display:inline-flex;align-items:center;min-height:36px"><input type="checkbox" data-f="enabled"${row.enabled?' checked':''}></label></td>
       <td><button class="btn btn-sm danger" onclick="removeModelRouteRow(this)"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button></td>
@@ -2028,7 +2170,7 @@ function addModelRouteRow(){
   const tr=document.createElement('tr');
   tr.innerHTML=`<td><input class="form-input" style="min-width:120px" data-f="model" placeholder="model-id"></td>
     <td><input class="form-input" style="min-width:130px" data-f="displayName" value=""></td>
-    <td><input class="form-input" style="min-width:150px" list="upstreamMappingOptions" data-f="upstreamMapping" placeholder="Mapping name"></td>
+    <td>${upstreamMapSelect('')}</td>
     <td><select class="form-input" style="min-width:120px" data-f="defaultReasoningLevel">${levelSel}</select></td>
     <td><label style="display:inline-flex;align-items:center;min-height:36px"><input type="checkbox" data-f="enabled" checked></label></td>
     <td><button class="btn btn-sm danger" onclick="removeModelRouteRow(this)"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button></td>`;
