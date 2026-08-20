@@ -12,16 +12,18 @@ import (
 )
 
 type UsageRecord struct {
-	Time           time.Time `json:"time"`
-	APIKeyPrefix   string    `json:"api_key_prefix"`
-	AccountEmail   string    `json:"account_email,omitempty"`
-	Model          string    `json:"model"`
-	ReasoningLevel string    `json:"reasoning_level,omitempty"`
-	Endpoint       string    `json:"endpoint"`
-	Stream         bool      `json:"stream"`
-	InputTokens    int64     `json:"input_tokens"`
-	OutputTokens   int64     `json:"output_tokens"`
-	CacheTokens    int64     `json:"cache_tokens"`
+	Time             time.Time  `json:"time"`
+	APIKeyPrefix     string     `json:"api_key_prefix"`
+	AccountEmail     string     `json:"account_email,omitempty"`
+	Model            string     `json:"model"`
+	ReasoningLevel   string     `json:"reasoning_level,omitempty"`
+	Endpoint         string     `json:"endpoint"`
+	Stream           bool       `json:"stream"`
+	InputTokens      int64      `json:"input_tokens"`
+	OutputTokens     int64      `json:"output_tokens"`
+	CacheTokens      int64      `json:"cache_tokens"`
+	EstimatedCostUSD float64    `json:"estimated_cost_usd"`
+	Price            modelPrice `json:"price"`
 	// TTFTMs is the time-to-first-token (first visible text delta) in ms.
 	TTFTMs int64 `json:"ttft_ms,omitempty"`
 	// SpeedTPs is the output throughput in tokens per second.
@@ -80,6 +82,10 @@ func (s *usageLog) trim() {
 }
 
 func (s *usageLog) record(rec UsageRecord) {
+	// Calculate the local reference cost when the record is created so every
+	// endpoint uses the same model, new-input, cached-input, and output pricing.
+	rec.EstimatedCostUSD = estimateUsageCost(rec.Model, rec.InputTokens, rec.OutputTokens, rec.CacheTokens)
+	rec.Price = priceForModel(rec.Model)
 	s.mu.Lock()
 	s.records = append(s.records, rec)
 	s.trim()

@@ -38,6 +38,7 @@ type traceRecord struct {
 	TTFTMs         int64     `json:"ttftMs,omitempty"`
 	InputTokens    int64     `json:"inputTokens,omitempty"`
 	OutputTokens   int64     `json:"outputTokens,omitempty"`
+	CachedTokens   int64     `json:"cachedTokens,omitempty"`
 	SpeedTPs       float64   `json:"speedTps,omitempty"`
 	AccountEmail   string    `json:"accountEmail,omitempty"`
 	APIKeyPrefix   string    `json:"apiKeyPrefix,omitempty"`

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/tiktoken-go/tokenizer"
 )
 
 type CacheStats struct {
@@ -162,6 +164,26 @@ func (s *CacheStats) flush() error {
 	return writeFileAtomic(s.path, b, 0600)
 }
 
+var (
+	tokenCodecOnce sync.Once
+	tokenCodec     tokenizer.Codec
+)
+
 func EstimateTokens(text string) int64 {
-	return int64(len(text) / 4)
+	if text == "" {
+		return 0
+	}
+	tokenCodecOnce.Do(func() {
+		// cl100k_base is a substantially more accurate general-purpose estimate
+		// than byte-length division, especially for Chinese and mixed-language text.
+		tokenCodec, _ = tokenizer.Get(tokenizer.Cl100kBase)
+	})
+	if tokenCodec != nil {
+		if count, err := tokenCodec.Count(text); err == nil {
+			return int64(count)
+		}
+	}
+	// Keep a conservative fallback if tokenizer initialization ever fails.
+	runes := []rune(text)
+	return int64((len(runes) + 3) / 4)
 }

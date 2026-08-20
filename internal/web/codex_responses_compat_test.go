@@ -113,3 +113,38 @@ func TestResponsesStreamEmitsFailedForInnerRequestError(t *testing.T) {
 		t.Fatalf("unexpected completion event in %s", body)
 	}
 }
+
+func TestSplitResponsesInputTokensForPreviousResponse(t *testing.T) {
+	newInput, cachedInput := splitResponsesInputTokens(1250, 1000)
+	if newInput != 250 || cachedInput != 1000 {
+		t.Fatalf("splitResponsesInputTokens() = new %d, cached %d; want new 250, cached 1000", newInput, cachedInput)
+	}
+
+	cost := estimateUsageCost("gpt-5.2", int64(newInput), 50, int64(cachedInput))
+	want := float64(250)/1_000_000*1.75 +
+		float64(1000)/1_000_000*0.175 +
+		float64(50)/1_000_000*14.00
+	if cost != want {
+		t.Fatalf("incremental Responses cost = %.12f, want %.12f", cost, want)
+	}
+}
+
+func TestSplitResponsesInputTokensClampsInvalidCachedEstimate(t *testing.T) {
+	tests := []struct {
+		name                string
+		total, cached       int
+		wantNew, wantCached int
+	}{
+		{name: "cached exceeds total", total: 100, cached: 200, wantNew: 0, wantCached: 100},
+		{name: "negative cached", total: 100, cached: -10, wantNew: 100, wantCached: 0},
+		{name: "negative total", total: -10, cached: 5, wantNew: 0, wantCached: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotNew, gotCached := splitResponsesInputTokens(tc.total, tc.cached)
+			if gotNew != tc.wantNew || gotCached != tc.wantCached {
+				t.Fatalf("splitResponsesInputTokens(%d, %d) = (%d, %d), want (%d, %d)", tc.total, tc.cached, gotNew, gotCached, tc.wantNew, tc.wantCached)
+			}
+		})
+	}
+}

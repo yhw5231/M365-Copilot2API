@@ -47,6 +47,14 @@ func (s *Server) markAccountResult(accountID string, err error) {
 	}
 	if err != nil {
 		s.accountPool.MarkFailure(accountID, err, rateLimitCooldown)
+		// A rate-limited account must immediately release its runtime proxy-pool
+		// binding so another available account can use that proxy node. This does
+		// not alter any manually configured persistent proxy URL.
+		if IsRateLimited(err) {
+			if pool := outbound.CurrentPool(); pool != nil {
+				pool.Unbind(accountID)
+			}
+		}
 		return
 	}
 	s.accountPool.MarkSuccess(accountID)
@@ -1080,32 +1088,60 @@ func servePKCECompletionPage(w http.ResponseWriter, state string) {
 }
 
 func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
+	explicitAccount := accountID != ""
 	if accountID == "" {
-		acc, ok := s.tokens.Next()
-		if !ok {
-			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+		rule := "available-first"
+		if s.settings != nil {
+			rule = s.settings.get().AccountRoutingRule
 		}
-		accountID = acc.ID
-		for i := 0; !s.accountAvailable(accountID) && i < maxAccountProbe; i++ {
-			acc, ok = s.tokens.Next()
-			if !ok {
-				break
+
+		if rule == "round-robin" {
+			for i := 0; i < maxAccountProbe; i++ {
+				acc, ok := s.tokens.Next()
+				if !ok {
+					return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+				}
+				if s.accountAvailable(acc.ID) {
+					accountID = acc.ID
+					break
+				}
 			}
-			accountID = acc.ID
+		} else {
+			// Available-first preserves configured account order and keeps using
+			// the earliest healthy account until its concurrency slots are full.
+			for _, acc := range s.tokens.List() {
+				if s.accountAvailable(acc.ID) {
+					accountID = acc.ID
+					break
+				}
+			}
 		}
-		if !s.tokens.ScheduleEnabled(accountID) {
-			return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
-		}
-		if !s.accountPool.Available(accountID) {
+
+		if accountID == "" {
+			if len(s.tokens.List()) == 0 {
+				return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+			}
 			until := s.accountPool.EarliestRecovery()
 			retry := int(time.Until(until).Seconds())
-			if retry < 5 {
-				retry = 5
+			if retry < 1 {
+				retry = 1
 			}
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "no account is currently available; all enabled accounts are cooling down or at their concurrency limit"}
+		}
+	}
+
+	// Explicit account routing remains authoritative, including for accounts
+	// excluded from automatic scheduling. Automatic selection applies the
+	// scheduling, health, and concurrency gates above.
+	if !explicitAccount {
+		if !s.tokens.ScheduleEnabled(accountID) {
+			return auth.AccountToken{}, fmt.Errorf("account is disabled for scheduling")
+		}
+		if !s.accountPool.Available(accountID) {
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 5, Body: "account is cooling down; try another account"}
 		}
 		if !s.accountConcurrency.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "all accounts are at their concurrency limit; try again shortly"}
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "account is at its concurrency limit; try another account"}
 		}
 	}
 	return s.tokens.EnsureValid(accountID)
@@ -1394,22 +1430,47 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
+	start := time.Now()
+	status := http.StatusOK
+	errMessage := ""
+	accountEmail := ""
+	defer func() {
+		if s.usage == nil {
+			return
+		}
+		s.usage.record(UsageRecord{
+			Time:         time.Now(),
+			APIKeyPrefix: "admin:model-test",
+			AccountEmail: accountEmail,
+			Model:        b.Model,
+			Endpoint:     "/api/admin/models/test",
+			Stream:       false,
+			DurationMs:   time.Since(start).Milliseconds(),
+			Status:       status,
+			Error:        errMessage,
+		})
+	}()
+
 	acc, err := s.resolveAccount("")
 	if err != nil {
+		status = upstreamStatus(err)
+		errMessage = truncatedError(err)
 		writeUpstreamError(w, err)
 		return
 	}
+	accountEmail = acc.Email
 	if acc.OID == "" || acc.TID == "" {
 		if o, t := extractOIDTID(acc.AccessToken); o != "" {
 			acc.OID, acc.TID = o, t
 		}
 	}
 	if acc.OID == "" || acc.TID == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "account_error", "account missing oid/tid")
+		status = http.StatusBadRequest
+		errMessage = "account missing oid/tid"
+		writeOpenAIError(w, status, "account_error", errMessage)
 		return
 	}
 	tone, _ := reasoningTone(b.Model, "")
-	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
 	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{
@@ -1418,7 +1479,9 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	})
 	ms := time.Since(start).Milliseconds()
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadGateway, "m365_error", upstreamError(err))
+		status = http.StatusBadGateway
+		errMessage = truncatedError(err)
+		writeOpenAIError(w, status, "m365_error", upstreamError(err))
 		return
 	}
 	jsonOut(w, map[string]any{"ok": true, "model": b.Model, "reply": sanitizePublicAssistantTextForModel(res.Text, b.Model), "latency_ms": ms})
@@ -2278,6 +2341,15 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		pt := EstimateTokens(prompt)
 		ct := EstimateTokens(res.Text)
+		if tr := traceFromRequest(r); tr != nil {
+			s.trace.update(tr.ID, func(rec *traceRecord) {
+				rec.InputTokens = int64(pt)
+				rec.OutputTokens = int64(ct)
+				if convReused {
+					rec.CachedTokens = int64(pt)
+				}
+			})
+		}
 		log.Printf("[usage] stream id=%s pt=%d ct=%d res.Text=%d", id, pt, ct, len(res.Text))
 		if err == nil && ct == 0 {
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned empty completion; the requested model may be unavailable for this tenant", "code": "upstream_error"}})+"\n\n")
@@ -2659,6 +2731,7 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 			rec.ReasoningLevel = body.ReasoningEffort
 			rec.InputTokens = newTokens
 			rec.OutputTokens = outTokens
+			rec.CachedTokens = historyTokens
 			rec.TTFTMs = ttft
 			rec.SpeedTPs = speed
 			rec.DurationMs = durMs

@@ -31,10 +31,13 @@ type Pool struct {
 	// bound node is exclusive to its account while healthy; on failure the
 	// account moves to an unbound node first and finally to any healthy node.
 	bound map[string]*poolEntry
+	// lastUsed records the latest activity for each runtime account-to-proxy
+	// binding so idle bindings can be released for another account.
+	lastUsed map[string]time.Time
 }
 
 func NewPool(raw []string) (*Pool, error) {
-	p := &Pool{bound: map[string]*poolEntry{}}
+	p := &Pool{bound: map[string]*poolEntry{}, lastUsed: map[string]time.Time{}}
 	seen := map[string]bool{}
 	for _, v := range raw {
 		v = strings.TrimSpace(v)
@@ -88,6 +91,29 @@ var ErrNoProxyNode = errors.New("no healthy proxy node available for account")
 // healthy (FailoverTarget). Nodes in cooldown (recent failure) are never
 // selected; pickFor advances the round-robin cursor so concurrent callers
 // spread across unbound nodes.
+const proxyBindingIdleTimeout = 5 * time.Minute
+
+func (p *Pool) releaseIdleBindingsLocked(now time.Time) {
+	for account, lastUsed := range p.lastUsed {
+		if now.Sub(lastUsed) > proxyBindingIdleTimeout {
+			delete(p.bound, account)
+			delete(p.lastUsed, account)
+		}
+	}
+}
+
+// Unbind releases an account's runtime proxy-pool binding without modifying
+// any manually configured persistent proxy URL for that account.
+func (p *Pool) Unbind(account string) {
+	if p == nil || account == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.bound, account)
+	delete(p.lastUsed, account)
+}
+
 func (p *Pool) pickFor(account string) *poolEntry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -95,10 +121,12 @@ func (p *Pool) pickFor(account string) *poolEntry {
 		return nil
 	}
 	now := time.Now()
+	p.releaseIdleBindingsLocked(now)
 	if e := p.bound[account]; e != nil {
 		for _, en := range p.entries {
 			if en == e {
 				if en.healthy(now) {
+					p.lastUsed[account] = now
 					return e
 				}
 				break
@@ -106,11 +134,13 @@ func (p *Pool) pickFor(account string) *poolEntry {
 		}
 		// Bound node removed or unhealthy: release the binding and fall through.
 		delete(p.bound, account)
+		delete(p.lastUsed, account)
 	}
 	for i := 0; i < len(p.entries); i++ {
 		e := p.entries[(p.next+i)%len(p.entries)]
 		if e.healthy(now) && !p.boundTo(e) {
 			p.bound[account] = e
+			p.lastUsed[account] = now
 			p.next = (p.next + i + 1) % len(p.entries)
 			return e
 		}

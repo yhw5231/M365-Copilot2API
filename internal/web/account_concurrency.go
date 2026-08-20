@@ -14,7 +14,7 @@ import (
 // account may carry at the same time. Upstream throttles accounts that are
 // hammered concurrently, so the gateway queues excess requests per account
 // instead of racing them (upstream PR #25).
-const defaultAccountConcurrency = 8
+const defaultAccountConcurrency = 1
 
 type accountConcurrency struct {
 	mu       sync.Mutex
@@ -34,6 +34,21 @@ func newAccountConcurrency() *accountConcurrency {
 }
 
 // Available reports whether the account currently has a free concurrency slot.
+// SetLimit hot-updates the per-account concurrency limit and wakes blocked
+// callers so they can re-evaluate availability immediately.
+func (c *accountConcurrency) SetLimit(limit int) {
+	if c == nil || limit < 1 {
+		return
+	}
+	c.mu.Lock()
+	if c.limit != limit {
+		c.limit = limit
+		close(c.changed)
+		c.changed = make(chan struct{})
+	}
+	c.mu.Unlock()
+}
+
 func (c *accountConcurrency) Available(accountID string) bool {
 	if c == nil || accountID == "" {
 		return true

@@ -107,6 +107,13 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .table tr:hover td{background:rgba(0,113,227,0.03)}
 @media(prefers-color-scheme:dark){.table tr:hover td{background:rgba(10,132,255,0.04)}}
 .table tr:last-child td{border-bottom:0}
+/* Trace details must stay within the visible table and wrap long JSON/URLs. */
+.trace-detail-cell{max-width:0;white-space:normal!important;overflow:hidden}
+.trace-detail{width:100%;max-width:100%;min-width:0;font-size:12px;line-height:1.6;overflow-wrap:anywhere;word-break:break-word}
+.trace-detail-meta{white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+.trace-detail details{max-width:100%;min-width:0;overflow:hidden}
+.trace-detail summary{cursor:pointer;white-space:normal;overflow-wrap:anywhere}
+.trace-detail pre{box-sizing:border-box;width:100%;max-width:100%;margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
 .conv-row{cursor:pointer}
 .conv-link{display:block;max-width:360px;padding:0;border:0;background:transparent;color:var(--accent);font:inherit;font-weight:600;text-align:left;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
 .conv-meta{font-size:11px;color:var(--muted);margin-top:3px}
@@ -263,7 +270,11 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .pagination{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
 .usage-status{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;background:rgba(52,199,89,.12);color:var(--green)}
 .usage-status.err{background:rgba(255,59,48,.1);color:var(--red)}
-.token-stack{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.usage-table-wrap{width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.usage-table{min-width:1180px}
+.usage-table th,.usage-table td{padding-left:10px;padding-right:10px}
+.usage-table .usage-latency,.usage-table .usage-ttft,.usage-table .usage-speed,.usage-table .usage-cost{white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}
+.token-stack{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .token-stack b{color:var(--text);font-weight:600}
 
 /* Use Key modal tabs */
@@ -498,7 +509,7 @@ if (response.output_text) {
             </div>
           </div>
           <p style="font-size:11px;color:var(--muted);padding:8px 12px 0">When enabled, the most recent <b id="traceMaxLabel">50</b> requests keep the full downstream request, upstream (ChatHub) request, upstream response and downstream response, with a live status (in-progress / success / error). Older records are removed automatically.</p>
-          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Reasoning</th><th>Endpoint</th><th>Status</th><th>Latency</th><th>TTFT</th><th>t/s</th><th>Detail</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Reasoning</th><th>Endpoint</th><th>Status</th><th>Input tokens</th><th>Output tokens</th><th>Cached tokens</th><th>Latency</th><th>TTFT</th><th>t/s</th><th>Detail</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody></table>
           <div class="pagination"><span id="tracePageInfo"></span><button class="btn btn-sm" id="tracePrev" onclick="tracePage(-1)">Previous</button><button class="btn btn-sm" id="traceNext" onclick="tracePage(1)">Next</button></div>
         </div>
         <div class="card" style="margin-top:16px">
@@ -518,7 +529,7 @@ if (response.output_text) {
             <button class="btn btn-sm" onclick="applyUsageFilters()"><i data-lucide="filter" style="width:13px;height:13px"></i> Filter</button>
             <button class="btn btn-sm" onclick="resetUsageFilters()"><i data-lucide="x" style="width:13px;height:13px"></i> Reset</button>
           </div>
-          <table class="table"><thead><tr><th>Time</th><th>Account</th><th>Key</th><th>Model</th><th>Reasoning</th><th>Endpoint</th><th>Stream</th><th>Tokens</th><th>Latency</th><th>TTFT</th><th>Speed</th><th>Status</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody></table>
+          <div class="usage-table-wrap"><table class="table usage-table"><thead><tr><th>Time</th><th>Account</th><th>Key</th><th>Model</th><th>Reasoning</th><th>Endpoint</th><th>Stream</th><th>Tokens</th><th>Estimated cost</th><th>Latency</th><th>TTFT</th><th>Speed</th><th>Status</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="13" class="empty">Loading...</td></tr></tbody></table></div>
           <div class="pagination"><span id="ugPageInfo"></span><button class="btn btn-sm" id="ugPrev" onclick="ugPage(-1)">Previous</button><button class="btn btn-sm" id="ugNext" onclick="ugPage(1)">Next</button></div>
         </div>
       </section>
@@ -567,6 +578,27 @@ if (response.output_text) {
               <button class="btn primary" onclick="submitCallback()" style="min-width:96px">Confirm and add</button>
             </div>
             <div id="authStatus" style="margin-top:12px"></div>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-head">
+            <div><span class="card-title">Account scheduling</span><p style="font-size:12px;color:var(--muted);margin-top:2px">Configure the per-account concurrency limit and how new sessions select an available account. Existing sessions remain sticky until their account is rate-limited or unavailable.</p></div>
+            <button class="btn primary" type="button" onclick="saveAccountSchedulingSettings()">Save scheduling</button>
+          </div>
+          <div class="card-body" style="display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,2fr);gap:16px;align-items:start">
+            <div class="form-group" style="margin:0">
+              <label class="form-label" for="accountConcurrency">Account concurrency</label>
+              <input class="form-input" id="accountConcurrency" type="number" min="1" step="1" value="1" inputmode="numeric">
+              <p class="form-hint">Maximum simultaneous requests per account. The default is 1.</p>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label class="form-label" for="accountRoutingRule">Account routing rule</label>
+              <select class="form-input" id="accountRoutingRule">
+                <option value="available-first">Available first</option>
+                <option value="round-robin">Round robin</option>
+              </select>
+              <p class="form-hint"><b>Available first</b> keeps using the first healthy account until its concurrency capacity is full. <b>Round robin</b> advances to another healthy account for each new session.</p>
+            </div>
           </div>
         </div>
         <div class="card">
@@ -1342,7 +1374,48 @@ function renderAccounts(){
     return `<tr><td><div class="account-cell"><div class="avatar">${(x.displayName||x.email||'M')[0]}</div><div><b>${x.displayName||x.email}</b><div style="font-size:11px;color:var(--muted)">${x.email||''}</div></div></div></td><td style="font-size:12px;white-space:nowrap">${calls}</td><td>${status}</td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn${scheduleEnabled?'':' danger'}" onclick="toggleAccountSchedule('${x.id}',${!scheduleEnabled})">${scheduleEnabled?'Enabled':'Disabled'}</button></td><td>${proxyLabel} <button class="btn-sm btn" style="margin-top:2px" onclick="bindAccountProxy('${x.id}','${esc(x.boundProxy||'')}')">Bind</button></td><td><button class="btn-sm btn danger" onclick="deleteAccount('${x.id}')">Delete</button></td></tr>`;
   }).join(''):'<tr><td colspan="7" class="empty">No matching accounts</td></tr>';
 }
+function normalizeAccountRoutingRule(value){
+  const rule=String(value||'').trim().toLowerCase().replace(/_/g,'-');
+  if(rule==='round-robin'||rule==='roundrobin')return 'round-robin';
+  return 'available-first';
+}
+
+async function loadAccountSchedulingSettings(){
+  try{
+    const d=await api('/api/admin/settings');
+    const s=d.settings||d||{};
+    const concurrency=Number(s.accountConcurrency??s.accountDefaultConcurrency??s.defaultAccountConcurrency??1);
+    $('accountConcurrency').value=Number.isInteger(concurrency)&&concurrency>0?concurrency:1;
+    $('accountRoutingRule').value=normalizeAccountRoutingRule(s.accountRoutingRule??s.accountSelectionRule??s.routingRule);
+  }catch(e){
+    $('accountConcurrency').value='1';
+    $('accountRoutingRule').value='available-first';
+    showNotice('账号调度设置加载失败：'+e.message,'error');
+  }
+}
+
+async function saveAccountSchedulingSettings(){
+  try{
+    const concurrency=Number.parseInt($('accountConcurrency').value,10);
+    if(!Number.isInteger(concurrency)||concurrency<1){
+      showNotice('账号并发值必须是大于或等于 1 的整数','error');
+      $('accountConcurrency').focus();
+      return;
+    }
+    const accountRoutingRule=normalizeAccountRoutingRule($('accountRoutingRule').value);
+    $('accountConcurrency').value=String(concurrency);
+    $('accountRoutingRule').value=accountRoutingRule;
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({accountConcurrency:concurrency,accountRoutingRule})});
+    showNotice('账号调度设置已保存','success');
+  }catch(e){showNotice(e.message,'error');}
+}
+
+let accountSchedulingSettingsLoaded=false;
 async function loadAccounts(){
+  if(!accountSchedulingSettingsLoaded){
+    accountSchedulingSettingsLoaded=true;
+    await loadAccountSchedulingSettings();
+  }
   try{
     const d=await api('/api/accounts');
     _accountsCache=d.accounts||[];
@@ -1389,7 +1462,17 @@ async function startPKCE(){
     pkceTimer=setInterval(async()=>{
       if(Date.now()-start>600000){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>Authorization timed out. Start authorization again.</b></div>';return;}
       try{const s=await api('/api/auth/status?state='+d.state);
-        if(s.status==='authenticated'){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box success"><div class="highlight-box-title"><i data-lucide="check-circle" style="width:14px;height:14px"></i>Authorization successful</div><p>Account added to the account pool.</p></div>';showNotice('Authorization successful','success');$('callbackInput').value='';loadAccounts();}
+        if(s.status==='authenticated'){
+          clearInterval(pkceTimer);
+          $('authStatus').innerHTML='<div class="highlight-box success"><div class="highlight-box-title"><i data-lucide="check-circle" style="width:14px;height:14px"></i>Authorization successful</div><p>Account added to the account pool.</p></div>';
+          showNotice('Authorization successful','success');
+          $('callbackInput').value='';
+          $('callbackInput').dataset.state='';
+          $('authUrlInput').value='';
+          $('authUrlBox').style.display='none';
+          loadAccounts();
+          showPage('accounts');
+        }
         else if(s.status==='error'||s.status==='expired'){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>Authorization failed or expired</b>'+(s.error?'<p>'+esc(s.error)+'</p>':'')+'</div>';showNotice(s.error||'Authorization failed or expired','error');}
         // The loopback completion page closes its own tab after success, so only
         // surface the "closed" warning while the authorization is still pending.
@@ -1434,7 +1517,10 @@ if(!raw)return showNotice('Paste the callback URL','error');
       $('authStatus').innerHTML='<div class="highlight-box success"><div class="highlight-box-title"><i data-lucide="check-circle" style="width:14px;height:14px"></i>Authorization successful</div><p>Account added to the account pool.</p></div>';
       showNotice('Authorization successful','success');
       $('callbackInput').value='';
-      loadAccounts();showPage('dashboard');
+      $('callbackInput').dataset.state='';
+      $('authUrlInput').value='';
+      $('authUrlBox').style.display='none';
+      loadAccounts();showPage('accounts');
       return;
     }
     let pollState=state;
@@ -1452,7 +1538,10 @@ if(!raw)return showNotice('Paste the callback URL','error');
           $('authStatus').innerHTML='<div class="highlight-box success"><div class="highlight-box-title"><i data-lucide="check-circle" style="width:14px;height:14px"></i>Authorization successful</div><p>Account added to the account pool.</p></div>';
           showNotice('Authorization successful','success');
           $('callbackInput').value='';
-          loadAccounts();showPage('dashboard');
+          $('callbackInput').dataset.state='';
+          $('authUrlInput').value='';
+          $('authUrlBox').style.display='none';
+          loadAccounts();showPage('accounts');
           return;
         }
         if(s.status==='error'||s.status==='expired'){
@@ -1511,16 +1600,16 @@ let usageDays=7, ugPageNo=0, ugTotal=0;
 const UG_PAGE=15;
 
 function fmtTok(n){
-  n=n||0;
-  if(n>=1e6)return (n/1e6).toFixed(2)+'M';
-  if(n>=1e3)return (n/1e3).toFixed(1)+'K';
-  return String(n);
+  n=Number(n)||0;
+  if(Math.abs(n)>=1e6)return (n/1e6).toFixed(2)+'M';
+  if(Math.abs(n)>=1e3)return (n/1e3).toFixed(2)+'K';
+  return n.toFixed(2);
 }
 function fmtNum(n){
-  n=n||0;
-  if(n>=1e6)return (n/1e6).toFixed(2)+'M';
-  if(n>=1e3)return (n/1e3).toFixed(1)+'K';
-  return String(n);
+  n=Number(n)||0;
+  if(Math.abs(n)>=1e6)return (n/1e6).toFixed(2)+'M';
+  if(Math.abs(n)>=1e3)return (n/1e3).toFixed(2)+'K';
+  return n.toFixed(2);
 }
 
 function setUsageRange(days){
@@ -1630,19 +1719,20 @@ async function loadUsageLogs(){
       <td style="font-size:12px;color:var(--muted)">${esc(x.reasoning_level||'-')}</td>
       <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
       <td style="font-size:12px">${x.stream?'<span class="usage-status">stream</span>':'-'}</td>
-      <td><span class="token-stack"><b>${fmtTok((x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0))}</b> in${x.input_tokens||0}/out${x.output_tokens||0}/cache${x.cache_tokens||0}</span></td>
-      <td style="font-size:12px;color:var(--muted)">${(x.duration_ms||0)} ms</td>
-      <td style="font-size:12px;color:var(--muted)">${x.ttft_ms?x.ttft_ms+' ms':'-'}</td>
-      <td style="font-size:12px;color:var(--muted)">${x.speed_tps?Number(x.speed_tps).toFixed(1)+' t/s':'-'}</td>
+      <td><span class="token-stack"><b>${fmtTok((x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0))}</b> in ${fmtTok(x.input_tokens||0)} / out ${fmtTok(x.output_tokens||0)} / cache ${fmtTok(x.cache_tokens||0)}</span></td>
+      <td class="usage-cost" title="Local estimate only; input, cached input, and output are priced separately">$${Number(x.estimated_cost_usd||0).toFixed(6)}</td>
+      <td class="usage-latency">${(x.duration_ms||0)<1000?`${Number(x.duration_ms||0).toFixed(2)} ms`:`${(Number(x.duration_ms||0)/1000).toFixed(2)} s`}</td>
+      <td class="usage-ttft">${x.ttft_ms?Number(x.ttft_ms).toFixed(2)+' ms':'-'}</td>
+      <td class="usage-speed">${x.speed_tps?Number(x.speed_tps).toFixed(2)+' t/s':'-'}</td>
       <td>${x.status>=400||x.error?'<span class="usage-status err" title="'+esc(x.error||'')+'">Error</span>':'<span class="usage-status">Success</span>'}</td>
     </tr>`).join('');
-    $('ugLogRows').innerHTML=rows||'<tr><td colspan="12" class="empty">No requests match the filters</td></tr>';
+    $('ugLogRows').innerHTML=rows||'<tr><td colspan="13" class="empty">No requests match the filters</td></tr>';
     const totalPages=Math.max(1,Math.ceil(ugTotal/UG_PAGE));
     $('ugPageInfo').textContent=`Page ${ugPageNo+1} / ${totalPages} · ${ugTotal} total`;
     $('ugPrev').disabled=ugPageNo<=0;
     $('ugNext').disabled=ugPageNo>=totalPages-1;
   }catch(e){
-    $('ugLogRows').innerHTML=`<tr><td colspan="12" class="empty">${esc(e.message)}</td></tr>`;
+    $('ugLogRows').innerHTML=`<tr><td colspan="13" class="empty">${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1677,37 +1767,63 @@ async function saveTraceConfig(){
     loadTraceLogs();
   }catch(e){showNotice(e.message,'error');}
 }
-async function loadTraceLogs(){
+function traceRowHTML(x){
+  const stcls=x.status==='error'?' err':'';
+  const sttxt=x.status==='in_progress'?'In progress':(x.status==='error'?'Error':'Success');
+  return `<tr id="tr-${x.id}" data-trace-status="${esc(x.status||'')}">
+    <td style="font-size:12px;color:var(--muted)">${new Date(x.at).toLocaleTimeString()}</td>
+    <td style="font-size:12px">${esc(x.model||x.endpoint||'-')}</td>
+    <td style="font-size:12px;color:var(--muted)">${esc(x.reasoningLevel||'-')}</td>
+    <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
+    <td><span class="usage-status${stcls}">${sttxt}</span></td>
+    <td style="font-size:12px;color:var(--muted)">${Number(x.inputTokens||0).toLocaleString()}</td>
+    <td style="font-size:12px;color:var(--muted)">${Number(x.outputTokens||0).toLocaleString()}</td>
+    <td style="font-size:12px;color:var(--muted)">${Number(x.cachedTokens||0).toLocaleString()}</td>
+    <td style="font-size:12px;color:var(--muted)">${(x.durationMs||0)} ms</td>
+    <td style="font-size:12px;color:var(--muted)">${x.ttftMs?x.ttftMs+' ms':'-'}</td>
+    <td style="font-size:12px;color:var(--muted)">${x.speedTps?Number(x.speedTps).toFixed(2):'-'}</td>
+    <td><button class="btn btn-sm" onclick="toggleTraceDetail('${x.id}')">View</button></td>
+  </tr>`;
+}
+async function loadTraceLogs(force=false){
   try{
     const d=await api('/api/admin/trace/status?limit='+TRACE_PAGE+'&offset='+(tracePageNo*TRACE_PAGE));
     if($('traceEnabled'))$('traceEnabled').checked=!!d.enabled;
     if($('traceMax'))$('traceMax').value=d.max||50;
     if($('traceMaxLabel'))$('traceMaxLabel').textContent=d.max||50;
     traceTotal=d.total||0;
-    const rows=(d.records||[]).map(x=>{
-      const stcls=x.status==='error'?' err':'';
-      const sttxt=x.status==='in_progress'?'In progress':(x.status==='error'?'Error':'Success');
-      return `<tr id="tr-${x.id}">
-        <td style="font-size:12px;color:var(--muted)">${new Date(x.at).toLocaleTimeString()}</td>
-        <td style="font-size:12px">${esc(x.model||x.endpoint||'-')}</td>
-        <td style="font-size:12px;color:var(--muted)">${esc(x.reasoningLevel||'-')}</td>
-        <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
-        <td><span class="usage-status${stcls}">${sttxt}</span></td>
-        <td style="font-size:12px;color:var(--muted)">${(x.durationMs||0)} ms</td>
-        <td style="font-size:12px;color:var(--muted)">${x.ttftMs?x.ttftMs+' ms':'-'}</td>
-        <td style="font-size:12px;color:var(--muted)">${x.speedTps?Number(x.speedTps).toFixed(1):'-'}</td>
-        <td><button class="btn btn-sm" onclick="toggleTraceDetail('${x.id}')">View</button></td>
-      </tr>`;
-    }).join('');
-    $('traceLogRows').innerHTML=rows||'<tr><td colspan="9" class="empty">Tracing disabled or no requests yet</td></tr>';
-    for(const id of [...traceExpanded]){
-      if((d.records||[]).some(r=>r.id===id))await insertTraceDetailRow(id);
+    const records=d.records||[];
+    const tbody=$('traceLogRows');
+    if(force){
+      tbody.innerHTML='';
+      traceExpanded.clear();
+      for(const k in traceDetailCache)delete traceDetailCache[k];
     }
+    const empty=tbody.querySelector('.empty');
+    if(empty&&records.length)tbody.innerHTML='';
+    for(const x of [...records].reverse()){
+      const existing=document.getElementById('tr-'+x.id);
+      if(!existing){
+        tbody.insertAdjacentHTML('afterbegin',traceRowHTML(x));
+        continue;
+      }
+      if(existing.dataset.traceStatus==='in_progress'){
+        const detail=document.getElementById('trd-'+x.id);
+        existing.insertAdjacentHTML('beforebegin',traceRowHTML(x));
+        existing.remove();
+        if(detail)detail.remove();
+        if(x.status!=='in_progress')delete traceDetailCache[x.id];
+        if(traceExpanded.has(x.id))await insertTraceDetailRow(x.id);
+      }
+    }
+    if(!records.length&&!tbody.querySelector('tr'))tbody.innerHTML='<tr><td colspan="12" class="empty">Tracing disabled or no requests yet</td></tr>';
     const totalPages=Math.max(1,Math.ceil(traceTotal/TRACE_PAGE));
     $('tracePageInfo').textContent=`Page ${tracePageNo+1} / ${totalPages} · ${traceTotal} total`;
     $('tracePrev').disabled=tracePageNo<=0;
     $('traceNext').disabled=tracePageNo>=totalPages-1;
-  }catch(e){$('traceLogRows').innerHTML=`<tr><td colspan="9" class="empty">${esc(e.message)}</td></tr>`;}
+  }catch(e){
+    if(!$('traceLogRows').querySelector('tr:not(.empty)'))$('traceLogRows').innerHTML=`<tr><td colspan="12" class="empty">${esc(e.message)}</td></tr>`;
+  }
 }
 function tracePage(delta){
   tracePageNo=Math.max(0,tracePageNo+delta);
@@ -1741,8 +1857,8 @@ async function insertTraceDetailRow(id){
   const tr=document.createElement('tr');tr.id='trd-'+id;
   const open=(rec._open&&rec._open.length)?rec._open:[];
   const o=(i)=>open[i]!==false;
-  tr.innerHTML=`<td colspan="9"><div style="font-size:12px;line-height:1.6">
-      <div><b>Endpoint:</b> ${esc(rec.endpoint||'-')} · <b>Method:</b> ${esc(rec.method||'-')} · <b>Status:</b> ${rec.statusCode||'-'} · <b>Account:</b> ${esc(rec.accountEmail||'-')} · <b>Key:</b> ${esc(rec.apiKeyPrefix||'-')}</div>
+  tr.innerHTML=`<td colspan="9" class="trace-detail-cell"><div class="trace-detail">
+      <div class="trace-detail-meta"><b>Endpoint:</b> ${esc(rec.endpoint||'-')} · <b>Method:</b> ${esc(rec.method||'-')} · <b>Status:</b> ${rec.statusCode||'-'} · <b>Account:</b> ${esc(rec.accountEmail||'-')} · <b>Key:</b> ${esc(rec.apiKeyPrefix||'-')}</div>
       ${rec.error?`<div style="color:var(--red)"><b>Error:</b> ${esc(rec.error)}</div>`:''}
       ${rec.upstreamError?`<div style="color:var(--orange)"><b>Upstream:</b> ${esc(rec.upstreamError)}</div>`:''}
       <details${o(0)?' open':''}><summary>Downstream request</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
@@ -1751,6 +1867,14 @@ async function insertTraceDetailRow(id){
       <details${o(3)?' open':''}><summary>Downstream response</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
     </div></td>`;
   anchor.insertAdjacentElement('afterend',tr);
+  // Persist each section's explicit open/closed state so the 3-second trace
+  // refresh cannot reopen a section that the user has collapsed.
+  tr.querySelectorAll('details').forEach((detail,index)=>{
+    detail.addEventListener('toggle',()=>{
+      if(!Array.isArray(rec._open))rec._open=[];
+      rec._open[index]=detail.open;
+    });
+  });
   return true;
 }
 async function clearTraceLogs(){
@@ -2027,7 +2151,7 @@ async function loadModelTest(){
     const d=await api('/api/admin/models');
     const models=d.data||[];
     if(!models.length){$('modelTestRows').innerHTML='<tr><td colspan="4" class="empty">No models available</td></tr>';return;}
-    $('modelTestRows').innerHTML=models.map(m=>`<tr data-model="${esc(m.id)}"><td><b>${esc(m.id)}</b></td><td><span class="status"><i></i>Not tested</span></td><td style="font-size:12px;color:var(--muted)">-</td><td style="font-size:12px;color:var(--muted)">点击"测试全部"</td></tr>`).join('');
+    $('modelTestRows').innerHTML=models.map(m=>`<tr data-model="${esc(m.id)}"><td><b>${esc(m.id)}</b> <button class="btn btn-sm" type="button" onclick="modelTestOne('${esc(m.id)}',this.closest('tr'))">单个测试</button></td><td><span class="status"><i></i>Not tested</span></td><td style="font-size:12px;color:var(--muted)">-</td><td style="font-size:12px;color:var(--muted)">可单独测试或点击“测试全部”</td></tr>`).join('');
   }catch(e){$('modelTestRows').innerHTML=`<tr><td colspan="4" class="empty">${e.message}</td></tr>`;}
 }
 async function modelTestOne(id,row){

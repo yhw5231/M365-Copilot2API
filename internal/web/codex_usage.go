@@ -124,3 +124,20 @@ func localUsageMetadata(source string) map[string]any {
 		"usage_includes":             []string{"message_content", "message_framing", "tool_schemas", "tool_choice", "tool_calls", "completion_framing"},
 	}
 }
+
+// splitResponsesInputTokens separates the estimated total input into newly
+// submitted input and cached history restored through previous_response_id.
+// The cached count is clamped so malformed estimates can never produce a
+// negative new-input count.
+func splitResponsesInputTokens(totalInputTokens, cachedInputTokens int) (newInputTokens, cacheTokens int) {
+	if totalInputTokens < 0 {
+		totalInputTokens = 0
+	}
+	if cachedInputTokens < 0 {
+		cachedInputTokens = 0
+	}
+	if cachedInputTokens > totalInputTokens {
+		cachedInputTokens = totalInputTokens
+	}
+	return totalInputTokens - cachedInputTokens, cachedInputTokens
+}

@@ -187,6 +187,56 @@ M365_ADMIN_PASSWORD=your_strong_password
 
 镜像内以非 root 用户运行，端口映射默认只暴露在 `127.0.0.1`，数据目录挂载在 `./data`。
 
+### Nginx 反向代理（推荐）
+
+直接运行二进制默认只监听 `127.0.0.1`。对外提供服务时建议在网关前面加一层 TLS 终止的反向代理，**并显式配置流式相关指令**——否则 Nginx 的默认 `proxy_read_timeout 60s` 会在长响应生成期间掐断连接（表现为请求约 60 秒后失败、消息看似"被打断"），默认的 `proxy_buffering on` 也会吞掉 SSE 数据导致流式输出不及时。
+
+一个可直接使用的 Nginx `server`/`location` 配置示例（`server_name`、TLS 证书路径按实际情况调整）：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name api.example.com;
+
+    ssl_certificate     /etc/nginx/ssl/api.example.com.crt;
+    ssl_certificate_key /etc/nginx/ssl/api.example.com.key;
+
+    location ^~ / {
+        proxy_pass http://127.0.0.1:9090;
+
+        # 基础透传
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        # WebSocket（ChatHub 需要；SSE 也建议显式置空由 Nginx 管理）
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection '';
+
+        # === 流式与长响应关键配置 ===
+        proxy_buffering off;        # 关闭缓冲，SSE chunk 立即转发
+        proxy_cache off;            # 禁止缓存流式响应
+        proxy_read_timeout 300s;    # 上游读超时从默认 60s 提到 300s（按需调整）
+        proxy_send_timeout 300s;    # 与 read 对齐，避免写侧意外触发
+
+        # 可选：透传客户端真实地址供网关统计
+        proxy_set_header REMOTE-HOST $remote_addr;
+    }
+}
+```
+
+要点说明：
+
+- **`proxy_read_timeout`（默认 60s）是"60 秒后失败"最常见的原因**。它统计的是**两次连续读取之间的间隔**：流式响应下数据持续流动不会触发；非流式长请求（网关要等上游 ChatHub 全部返回后才一次性写回）在生成期间无字节流过，60 秒到期即被 Nginx 掐断。按需调大（如 300s），能同时覆盖流式与非流式长请求。
+- **`proxy_buffering off`** 与网关侧的 `X-Accel-Buffering: no` 配套：网关每发一个 SSE chunk 并 `Flush()`，Nginx 立即转发给客户端，而不是攒满缓冲区；缺失时表现为首字延迟或流式体感中断。
+- **`proxy_set_header Connection ''`** 让 Nginx 按 HTTP/1.1 标准自行管理连接头；不要透传客户端的 `$http_connection`（不同客户端取值不一致，可能干扰长连接与 WebSocket 升级）。
+- **WebSocket 支持**依赖 `proxy_http_version 1.1` + `Upgrade`/`Connection` 头转发（上面的示例已含）。网关与微软 ChatHub 之间的 WebSocket 连接不经过这里的 `location`（那是网关自己的出站连接），但控制台/客户端直连场景需要这些头。
+- 若部署在 Docker 中且 Nginx 也在容器里，把 `proxy_pass` 指向网关容器名与服务端口（如 `http://m365-copilot2api:9090`）即可。
+- 网关自身超时兜底是 `M365_CHAT_TIMEOUT_SECONDS`（默认 120s，你的部署为 180s），只影响网关自己等待上游的上下文上限，与 Nginx 读超时是两个独立计时器；流式路径上网关的 HTTP `WriteTimeout` 为 0（无限制），因此瓶颈在 Nginx/客户端一侧，请优先调大 `proxy_read_timeout` 与客户端超时。
+
 ### 初始化与第一次调用
 
 浏览器打开控制台（默认 `http://127.0.0.1:9090`）：
@@ -514,7 +564,7 @@ M365-Copilot2API/
 
 ## 安全说明
 
-- **默认仅监听内网**：直接运行二进制默认 `M365_LISTEN=127.0.0.1:9090`；对外提供服务务必通过 TLS 终泄反向代理（Nginx / Caddy），并为 SSE 与 WebSocket 开启长连接与 `proxy_buffering off`。
+- **默认仅监听内网**：直接运行二进制默认 `M365_LISTEN=127.0.0.1:9090`；对外提供服务务必通过 TLS 终止的反向代理（Nginx / Caddy，配置示例见上方「Nginx 反向代理」节），并为 SSE 与 WebSocket 开启长连接与 `proxy_buffering off`。
 - **强制改密**：未配置 `M365_ADMIN_PASSWORD` 时使用内置默认密码 `admin123`（`manage.py` 同样注入该默认值），首次登录后必须立即修改；遗留的 `admin123` 密码文件会被识别并强制改密。
 - **Token 加密落盘**：设置 `M365_TOKEN_ENC_KEY`（64 位十六进制）后，`accounts.json` 中的 accessToken / refreshToken 以 AES-256-GCM 密文存储；加载时若密钥缺失或不匹配会直接拒绝启动，绝不静默回退明文。
 - **密钥可回读**：API Key 明文与 SHA-256 哈希一并持久化到 `api-keys.json`（`0600`），控制台可随时重新显示并复制完整密钥；旧版明文只在缺少哈希时补写哈希、不再清零。请妥善保护控制台与数据目录权限。

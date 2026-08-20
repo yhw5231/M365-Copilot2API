@@ -257,6 +257,13 @@ type runtimeSettings struct {
 	// recent TraceMaxRecords full request/response captures (default 50).
 	TraceEnabled    bool `json:"traceEnabled,omitempty"`
 	TraceMaxRecords int  `json:"traceMaxRecords,omitempty"`
+	// AccountConcurrency is the maximum number of simultaneous requests allowed
+	// for each account. It defaults to 1 and can be updated at runtime.
+	AccountConcurrency int `json:"accountConcurrency"`
+	// AccountRoutingRule controls selection for new sessions. Supported values
+	// are "available-first" and "round-robin". Existing sessions remain sticky
+	// to their assigned account while that account is available.
+	AccountRoutingRule string `json:"accountRoutingRule"`
 }
 
 type settingsStore struct {
@@ -280,10 +287,12 @@ func defaultRuntimeSettings() runtimeSettings {
 		DebugLogPath: envPath("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: envPath("M365_CONFIG"),
 		TokenCachePath: envPath("M365_TOKEN_CACHE"), SessionCachePath: envPath("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
-		ModelMappings:    append([]modelMapping(nil), defaultModelMappings...),
-		UpstreamMappings: append([]upstreamMapping(nil), defaultUpstreamMappings...),
-		ToolPlanningMode: toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
-		TraceMaxRecords:  defaultTraceMaxRecords,
+		ModelMappings:      append([]modelMapping(nil), defaultModelMappings...),
+		UpstreamMappings:   append([]upstreamMapping(nil), defaultUpstreamMappings...),
+		ToolPlanningMode:   toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
+		TraceMaxRecords:    defaultTraceMaxRecords,
+		AccountConcurrency: envInt("M365_ACCOUNT_DEFAULT_CONCURRENCY", defaultAccountConcurrency),
+		AccountRoutingRule: "available-first",
 	}
 }
 func settingsPath() string {
@@ -303,6 +312,14 @@ var openSettingsStore = sync.OnceValue(func() *settingsStore {
 	// working route target.
 	if len(s.v.UpstreamMappings) == 0 {
 		s.v.UpstreamMappings = append([]upstreamMapping(nil), defaultUpstreamMappings...)
+	}
+	// Migrate settings files created before account scheduling was configurable.
+	// Missing JSON fields decode to zero values, so restore the documented defaults.
+	if s.v.AccountConcurrency < 1 {
+		s.v.AccountConcurrency = defaultAccountConcurrency
+	}
+	if s.v.AccountRoutingRule == "" {
+		s.v.AccountRoutingRule = "available-first"
 	}
 	if e := validateSettings(s.v); e != nil {
 		log.Printf("[settings] invalid persisted settings: %v", e)
@@ -352,6 +369,12 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.TraceMaxRecords < 0 || v.TraceMaxRecords > 2000 {
 		return fmt.Errorf("调试记录条数必须为 0-2000")
+	}
+	if v.AccountConcurrency < 1 || v.AccountConcurrency > 256 {
+		return fmt.Errorf("账号并发必须为 1-256")
+	}
+	if v.AccountRoutingRule != "available-first" && v.AccountRoutingRule != "round-robin" {
+		return fmt.Errorf("账号轮询规则必须为 available-first 或 round-robin")
 	}
 	if raw := strings.ToLower(strings.TrimSpace(v.ProxyMode)); raw != "" && raw != outbound.ProxyModeDirect && raw != outbound.ProxyModeLoose && raw != outbound.ProxyModeStrict {
 		return fmt.Errorf("代理模式必须为 direct、loose 或 strict")
@@ -480,6 +503,9 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		outbound.SetProxyMode(v.proxyMode())
+		if s.accountConcurrency != nil {
+			s.accountConcurrency.SetLimit(v.AccountConcurrency)
+		}
 		jsonOut(w, map[string]any{"ok": true, "settings": v})
 	default:
 		writeOpenAIError(w, 405, "invalid_request_error", "method not allowed")
