@@ -2742,6 +2742,21 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 // recordToolUsage records a successful usage entry for requests that return a
 // tool-call response short-circuit (routed tool turns) without a final answer.
 func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *oaiReq, res chathub.Result, startedAt time.Time) {
+	// Tool-call short-circuits do not pass through bindConversation, so calculate
+	// their request and cached-history tokens here instead of leaving them zero.
+	var inputTokens, cacheTokens int64
+	last := len(body.Messages) - 1
+	for i, msg := range body.Messages {
+		tokens := EstimateTokens(contentToString(msg.Content))
+		if i < last {
+			cacheTokens += tokens
+		} else {
+			inputTokens += tokens
+		}
+	}
+	outputTokens := EstimateTokens(res.Text)
+	durationMs := time.Since(startedAt).Milliseconds()
+
 	s.usage.record(UsageRecord{
 		Time:           time.Now(),
 		APIKeyPrefix:   apiKeyPrefix(r),
@@ -2750,8 +2765,10 @@ func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *o
 		ReasoningLevel: body.ReasoningEffort,
 		Endpoint:       "/v1/chat/completions",
 		Stream:         body.Stream,
-		OutputTokens:   EstimateTokens(res.Text),
-		DurationMs:     time.Since(startedAt).Milliseconds(),
+		InputTokens:    inputTokens,
+		OutputTokens:   outputTokens,
+		CacheTokens:    cacheTokens,
+		DurationMs:     durationMs,
 		Status:         200,
 	})
 	if tr := traceFromRequest(r); tr != nil {
@@ -2760,8 +2777,10 @@ func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *o
 			rec.Stream = body.Stream
 			rec.AccountEmail = acc.Email
 			rec.ReasoningLevel = body.ReasoningEffort
-			rec.OutputTokens = EstimateTokens(res.Text)
-			rec.DurationMs = time.Since(startedAt).Milliseconds()
+			rec.InputTokens = inputTokens
+			rec.OutputTokens = outputTokens
+			rec.CachedTokens = cacheTokens
+			rec.DurationMs = durationMs
 		})
 	}
 }

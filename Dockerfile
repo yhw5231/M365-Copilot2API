@@ -4,7 +4,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/m365-copilot2api ./cmd/server
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X m365-copilot2api/internal/web.Version=${VERSION#v} -X m365-copilot2api/internal/web.Commit=${COMMIT} -X m365-copilot2api/internal/web.BuildTime=${BUILD_TIME}" -o /out/m365-copilot2api ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache su-exec \

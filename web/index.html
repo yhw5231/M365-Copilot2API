@@ -35,7 +35,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .status-dot{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
 
 /* Content */
-.content{padding:28px;max-width:1200px;flex:1;margin:0 auto;width:100%}
+.content{box-sizing:border-box;padding:28px;max-width:none;flex:1;margin:0;width:100%;min-width:0}
 
 /* Stats */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
@@ -269,6 +269,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .chart-empty i{width:28px;height:28px;color:var(--muted);opacity:.5}
 .pagination{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
 .usage-status{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;background:rgba(52,199,89,.12);color:var(--green)}
+.usage-status.warn{background:rgba(255,159,10,.14);color:var(--orange)}
 .usage-status.err{background:rgba(255,59,48,.1);color:var(--red)}
 .usage-table-wrap{width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
 .usage-table{min-width:1180px}
@@ -333,7 +334,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
       <button data-page="modeltest" onclick="showPage('modeltest')"><i data-lucide="flask-conical" style="width:16px;height:16px;flex-shrink:0"></i><span>Model Test</span></button>
       <button data-page="settings" onclick="showPage('settings')"><i data-lucide="settings" style="width:16px;height:16px;flex-shrink:0"></i><span>Settings</span></button>
     </nav>
-    <div class="sidebar-foot">v0.4.0</div>
+    <div class="sidebar-foot" id="versionStatus" role="button" tabindex="0" title="点击检查更新" onclick="checkForUpdates(true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();checkForUpdates(true)}">正在读取版本...</div>
   </aside>
 
   <main class="main">
@@ -424,6 +425,11 @@ if (response.output_text) {
             <span class="usage-overview-value" id="ovCacheHits">0<small>tokens</small></span>
             <span class="usage-overview-sub" id="ovCacheRate">Hit rate 0%</span>
           </div>
+          <div class="usage-overview-item">
+            <div class="usage-overview-top"><i data-lucide="circle-dollar-sign"></i> Estimated cost</div>
+            <span class="usage-overview-value" id="ovEstimatedCost">$0.000000</span>
+            <span class="usage-overview-sub">Local estimate for all usage</span>
+          </div>
         </div>
         <div class="stats">
           <div class="stat"><span class="stat-label">Total sessions</span><span class="stat-value" id="stat-sessions">0</span><span class="stat-unit">total</span></div>
@@ -475,6 +481,7 @@ if (response.output_text) {
           <div class="stat"><span class="stat-label">Total tokens</span><span class="stat-value" id="ug-tok">0</span><span class="stat-sub" id="ug-tok-sub"></span></div>
           <div class="stat"><span class="stat-label">Cached tokens</span><span class="stat-value" id="ug-cache">0</span><span class="stat-unit">tokens</span></div>
           <div class="stat"><span class="stat-label">Average latency</span><span class="stat-value" id="ug-ms">0</span><span class="stat-unit">ms</span></div>
+          <div class="stat"><span class="stat-label">Estimated cost</span><span class="stat-value" id="ug-cost">$0.000000</span><span class="stat-sub">Local estimate</span></div>
         </div>
         <div class="chart-grid">
           <div class="chart">
@@ -529,7 +536,7 @@ if (response.output_text) {
             <button class="btn btn-sm" onclick="applyUsageFilters()"><i data-lucide="filter" style="width:13px;height:13px"></i> Filter</button>
             <button class="btn btn-sm" onclick="resetUsageFilters()"><i data-lucide="x" style="width:13px;height:13px"></i> Reset</button>
           </div>
-          <div class="usage-table-wrap"><table class="table usage-table"><thead><tr><th>Time</th><th>Account</th><th>Key</th><th>Model</th><th>Reasoning</th><th>Endpoint</th><th>Stream</th><th>Tokens</th><th>Estimated cost</th><th>Latency</th><th>TTFT</th><th>Speed</th><th>Status</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="13" class="empty">Loading...</td></tr></tbody></table></div>
+          <div class="usage-table-wrap"><table class="table usage-table"><thead><tr><th>Time</th><th>Request details</th><th>Tokens<br><small>↑ input / ↓ output</small></th><th>Estimated cost</th><th>Latency / TTFT</th><th>Speed</th><th>Status</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody></table></div>
           <div class="pagination"><span id="ugPageInfo"></span><button class="btn btn-sm" id="ugPrev" onclick="ugPage(-1)">Previous</button><button class="btn btn-sm" id="ugNext" onclick="ugPage(1)">Next</button></div>
         </div>
       </section>
@@ -845,6 +852,15 @@ const localeText={
   'Tokens': {'zh-CN':'Token','zh-TW':'Tokens','ja':'トークン','ko':'토큰','es':'Tokens','fr':'Tokens','de':'Tokens','pt-BR':'Tokens','ru':'Токены','ar':'الرموز'},
   'Status': {'zh-CN':'状态','zh-TW':'狀態','ja':'ステータス','ko':'상태','es':'Estado','fr':'Statut','de':'Status','pt-BR':'Status','ru':'Статус','ar':'الحالة'},
   'Calls': {'zh-CN':'调用次数','zh-TW':'呼叫次數','ja':'呼び出し回数','ko':'호출 횟수','es':'Llamadas','fr':'Appels','de':'Aufrufe','pt-BR':'Chamadas','ru':'Вызовы','ar':'الاستدعاءات'},
+  'Account scheduling': {'zh-CN':'账号调度','zh-TW':'帳號調度','ja':'アカウントスケジュール','ko':'계정 스케줄링','es':'Programación de cuentas','fr':'Planification des comptes','de':'Kontoplanung','pt-BR':'Agendamento de contas','ru':'Планирование аккаунтов','ar':'جدولة الحسابات'},
+  'Configure the per-account concurrency limit and how new sessions select an available account. Existing sessions remain sticky until their account is rate-limited or unavailable.': {'zh-CN':'配置每个账号的并发上限，以及新会话选择可用账号的方式。现有会话将继续使用原账号，直到该账号被限流或不可用。','zh-TW':'設定每個帳號的並行上限，以及新工作階段選擇可用帳號的方式。現有工作階段會繼續使用原帳號，直到該帳號被限流或無法使用。'},
+  'Save scheduling': {'zh-CN':'保存调度设置','zh-TW':'儲存調度設定'},
+  'Account concurrency': {'zh-CN':'账号并发数','zh-TW':'帳號並行數'},
+  'Maximum simultaneous requests per account. The default is 1.': {'zh-CN':'每个账号允许同时处理的最大请求数，默认为 1。','zh-TW':'每個帳號允許同時處理的最大請求數，預設為 1。'},
+  'Account routing rule': {'zh-CN':'账号路由规则','zh-TW':'帳號路由規則'},
+  'Available first': {'zh-CN':'可用优先','zh-TW':'可用優先'},
+  'Round robin': {'zh-CN':'轮询','zh-TW':'輪詢'},
+  'Available first keeps using the first healthy account until its concurrency capacity is full. Round robin advances to another healthy account for each new session.': {'zh-CN':'可用优先会持续使用第一个健康账号，直到其并发容量已满。轮询会为每个新会话切换到另一个健康账号。','zh-TW':'可用優先會持續使用第一個健康帳號，直到其並行容量已滿。輪詢會為每個新工作階段切換到另一個健康帳號。'},
   'Scheduling': {'zh-CN':'调度','zh-TW':'調度','ja':'スケジュール','ko':'스케줄링','es':'Programación','fr':'Planification','de':'Planung','pt-BR':'Agendamento','ru':'Планирование','ar':'الجدولة'},
   'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
   'Loading...': {'zh-CN':'加载中...','zh-TW':'載入中...','ja':'読み込み中...','ko':'로딩 중...','es':'Cargando...','fr':'Chargement...','de':'Wird geladen...','pt-BR':'Carregando...','ru':'Загрузка...','ar':'جارٍ التحميل...'},
@@ -1330,6 +1346,7 @@ async function loadStats(){
     $('ovCacheHits').textContent=fmtTok(s.cache_hits||0);
     $('ovCacheRate').textContent='Hit rate '+((s.hit_rate||0)).toFixed(1)+'%';
     const sum=(u.stats||{}).summary||{};
+    $('ovEstimatedCost').textContent='$'+Number(sum.estimated_cost_usd||0).toFixed(6);
     $('ov24hTok').textContent=fmtTok(sum.last24h_tokens||0);
     $('ov24hReq').textContent=(sum.last24h_requests||0)+' requests';
     $('ovTotalTok').textContent=fmtTok(sum.tokens||0);
@@ -1603,13 +1620,22 @@ function fmtTok(n){
   n=Number(n)||0;
   if(Math.abs(n)>=1e6)return (n/1e6).toFixed(2)+'M';
   if(Math.abs(n)>=1e3)return (n/1e3).toFixed(2)+'K';
-  return n.toFixed(2);
+  return Math.round(n).toString();
 }
 function fmtNum(n){
   n=Number(n)||0;
   if(Math.abs(n)>=1e6)return (n/1e6).toFixed(2)+'M';
   if(Math.abs(n)>=1e3)return (n/1e3).toFixed(2)+'K';
-  return n.toFixed(2);
+  return Math.round(n).toString();
+}
+function fmtDuration(ms){
+  const value=Number(ms);
+  if(!Number.isFinite(value)||value<=0)return '-';
+  if(value<1000)return Math.round(value)+' ms';
+  if(value<60000)return (value/1000).toFixed(2)+' s';
+  const minutes=Math.floor(value/60000);
+  const seconds=(value%60000)/1000;
+  return minutes+' min '+seconds.toFixed(seconds<10?1:0)+' s';
 }
 
 function setUsageRange(days){
@@ -1629,6 +1655,7 @@ async function loadUsage(){
     $('ug-tok-sub').textContent='Input '+(s.input||0)+' · Output '+(s.output||0);
     $('ug-cache').textContent=fmtTok(s.cache);
     $('ug-ms').textContent=(s.avg_ms||0).toLocaleString();
+    $('ug-cost').textContent='$'+Number(s.estimated_cost_usd||0).toFixed(6);
     renderTrend((d.stats||{}).trend||[]);
     renderBars('ugModels',(d.stats||{}).models||[],m=>m.name,'tokens');
     renderBars('ugEndpoints',(d.stats||{}).endpoints||[],m=>m.endpoint,'tokens');
@@ -1712,21 +1739,20 @@ async function loadUsageLogs(){
     const d=await api('/api/usage/logs?'+p.toString());
     ugTotal=d.total||0;
     const rows=(d.logs||[]).map(x=>`<tr>
-      <td style="font-size:12px;color:var(--muted)">${new Date(x.time).toLocaleString()}</td>
-      <td style="font-size:12px" title="${esc(x.account_email||'')}">${esc(x.account_email||'-')}</td>
-      <td><code style="font-size:11px" title="${esc(x.api_key_prefix||'')}">${esc(x.api_key_prefix||'-')}</code></td>
-      <td style="font-size:12px">${esc(x.model||'-')}</td>
-      <td style="font-size:12px;color:var(--muted)">${esc(x.reasoning_level||'-')}</td>
-      <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
-      <td style="font-size:12px">${x.stream?'<span class="usage-status">stream</span>':'-'}</td>
-      <td><span class="token-stack"><b>${fmtTok((x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0))}</b> in ${fmtTok(x.input_tokens||0)} / out ${fmtTok(x.output_tokens||0)} / cache ${fmtTok(x.cache_tokens||0)}</span></td>
+      <td style="font-size:12px;color:var(--muted);white-space:nowrap">${new Date(x.time).toLocaleString()}</td>
+      <td class="usage-request-detail">
+        <div><b>${esc(x.model||'-')}</b>${x.reasoning_level?' · '+esc(x.reasoning_level):''}</div>
+        <div class="usage-detail-line"><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span>${x.stream?' <span class="usage-status">stream</span>':''}</div>
+        <div class="usage-detail-line" title="${esc(x.account_email||'')}">${esc(x.account_email||'-')}</div>
+        <div class="usage-detail-line"><code title="${esc(x.api_key_prefix||'')}">${esc(x.api_key_prefix||'-')}</code></div>
+      </td>
+      <td><span class="token-stack"><span>↑ ${fmtTok(x.input_tokens||0)}</span><span>↓ ${fmtTok(x.output_tokens||0)}</span>${x.cache_tokens?`<span>Cache ${fmtTok(x.cache_tokens)}</span>`:''}</span></td>
       <td class="usage-cost" title="Local estimate only; input, cached input, and output are priced separately">$${Number(x.estimated_cost_usd||0).toFixed(6)}</td>
-      <td class="usage-latency">${(x.duration_ms||0)<1000?`${Number(x.duration_ms||0).toFixed(2)} ms`:`${(Number(x.duration_ms||0)/1000).toFixed(2)} s`}</td>
-      <td class="usage-ttft">${x.ttft_ms?Number(x.ttft_ms).toFixed(2)+' ms':'-'}</td>
+      <td class="usage-latency"><span class="token-stack"><span>${fmtDuration(x.duration_ms)}</span><span>${fmtDuration(x.ttft_ms)}</span></span></td>
       <td class="usage-speed">${x.speed_tps?Number(x.speed_tps).toFixed(2)+' t/s':'-'}</td>
       <td>${x.status>=400||x.error?'<span class="usage-status err" title="'+esc(x.error||'')+'">Error</span>':'<span class="usage-status">Success</span>'}</td>
     </tr>`).join('');
-    $('ugLogRows').innerHTML=rows||'<tr><td colspan="13" class="empty">No requests match the filters</td></tr>';
+    $('ugLogRows').innerHTML=rows||'<tr><td colspan="7" class="empty">No requests match the filters</td></tr>';
     const totalPages=Math.max(1,Math.ceil(ugTotal/UG_PAGE));
     $('ugPageInfo').textContent=`Page ${ugPageNo+1} / ${totalPages} · ${ugTotal} total`;
     $('ugPrev').disabled=ugPageNo<=0;
@@ -1768,7 +1794,7 @@ async function saveTraceConfig(){
   }catch(e){showNotice(e.message,'error');}
 }
 function traceRowHTML(x){
-  const stcls=x.status==='error'?' err':'';
+  const stcls=x.status==='in_progress'?' warn':(x.status==='error'?' err':'');
   const sttxt=x.status==='in_progress'?'In progress':(x.status==='error'?'Error':'Success');
   return `<tr id="tr-${x.id}" data-trace-status="${esc(x.status||'')}">
     <td style="font-size:12px;color:var(--muted)">${new Date(x.at).toLocaleTimeString()}</td>
@@ -2339,6 +2365,52 @@ async function saveModelRoutes(){
     loadSettings();
   }catch(e){showNotice(e.message,'error');}
 }
+async function loadVersion(){
+  const el=$('versionStatus');
+  if(!el)return;
+  try{
+    const data=await api('/api/version');
+    const version=String(data.version||'dev').replace(/^v/,'');
+    el.textContent=`v${version}`;
+    el.dataset.version=version;
+    el.title='当前版本 v'+version+'，点击检查更新';
+  }catch(e){
+    el.textContent='版本未知';
+    el.title='无法读取当前版本，点击重试';
+  }
+}
+
+async function checkForUpdates(showResult=false){
+  const el=$('versionStatus');
+  if(!el)return;
+  const currentText=el.textContent;
+  el.textContent='正在检查更新...';
+  try{
+    const data=await api('/api/update');
+    const current=String(data.current||el.dataset.version||'dev').replace(/^v/,'');
+    el.dataset.version=current;
+    if(data.updateAvailable){
+      el.textContent=`v${current} · 有新版本`;
+      el.style.color='var(--orange)';
+      el.title=data.message||`发现新版本 v${data.latest}`;
+      if(showResult){
+        showNotice(el.title,'success');
+        if(data.releaseURL&&confirm(`${el.title}\n\n是否打开下载页面？`))window.open(data.releaseURL,'_blank','noopener');
+      }
+    }else{
+      el.textContent=`v${current} · 已是最新`;
+      el.style.color='var(--green)';
+      el.title=data.message||'当前已是最新版本';
+      if(showResult)showNotice(el.title,'success');
+    }
+  }catch(e){
+    el.textContent=currentText;
+    el.style.color='';
+    el.title='版本检测失败，点击重试';
+    if(showResult)showNotice(`版本检测失败：${e.message}`,'error');
+  }
+}
+
 setInterval(()=>{if($('page-accounts').style.display!=='none')loadAccounts();},15000);
 
 // Init
@@ -2348,7 +2420,7 @@ window.addEventListener('hashchange',()=>{
 });
 fetch('/api/admin/session').then(r=>r.json()).then(d=>{
   if(d.authenticated&&d.must_change_password){location.replace('/login');return;}
-  if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage(savedPage());loadStats();loadOnboarding();}
+  if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage(savedPage());loadStats();loadOnboarding();loadVersion().then(()=>checkForUpdates(false));}
   else{$('login').style.display='grid';}
 }).catch(()=>{$('login').style.display='grid';});
 </script>

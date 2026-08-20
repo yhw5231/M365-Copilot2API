@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,12 +57,60 @@ type traceRecord struct {
 // exceeded.
 type traceStore struct {
 	mu     sync.RWMutex
+	path   string
 	byID   map[string]*traceRecord
 	active map[string]*traceRecord
 }
 
+func traceStorePath() string {
+	if p := envPath("M365_TRACE_FILE"); p != "" {
+		return p
+	}
+	return defaultDataPath("trace-records.json")
+}
+
 func openTraceStore() *traceStore {
-	return &traceStore{byID: map[string]*traceRecord{}, active: map[string]*traceRecord{}}
+	t := &traceStore{
+		path:   traceStorePath(),
+		byID:   map[string]*traceRecord{},
+		active: map[string]*traceRecord{},
+	}
+	if b, err := os.ReadFile(t.path); err == nil {
+		var records []traceRecord
+		if json.Unmarshal(b, &records) == nil {
+			for i := range records {
+				rec := records[i]
+				if rec.ID == "" {
+					continue
+				}
+				if rec.Status == "in_progress" {
+					rec.Status = "error"
+					if rec.Error == "" {
+						rec.Error = "server restarted before request completed"
+					}
+				}
+				t.byID[rec.ID] = &rec
+			}
+		}
+	}
+	t.trimLocked()
+	_ = t.persistLocked()
+	return t
+}
+
+// persistLocked atomically saves retained trace records to the server data
+// directory. The caller must hold t.mu when concurrent access is possible.
+func (t *traceStore) persistLocked() error {
+	records := make([]traceRecord, 0, len(t.byID))
+	for _, rec := range t.byID {
+		records = append(records, *rec)
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].At.Before(records[j].At) })
+	b, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(t.path, b, 0600)
 }
 
 func traceEnabled() bool {
@@ -92,8 +141,10 @@ func (t *traceStore) begin(rec *traceRecord) *traceRecord {
 	return rec
 }
 
-// update mutates an existing trace record under the store lock. It is a no-op
-// when the request was never traced (disabled or unknown id).
+// update mutates the same in-memory trace record throughout the request. It is
+// deliberately not persisted here: streaming deltas and multiple upstream WS
+// stages belong to one downstream request and must not create partial records
+// on disk. The completed record is persisted atomically by finish.
 func (t *traceStore) update(id string, fn func(*traceRecord)) {
 	if id == "" {
 		return
@@ -122,6 +173,7 @@ func (t *traceStore) finish(id string, fn func(*traceRecord)) {
 		}
 	}
 	t.trimLocked()
+	_ = t.persistLocked()
 	t.mu.Unlock()
 }
 
@@ -200,6 +252,7 @@ func (t *traceStore) clear() {
 	t.mu.Lock()
 	t.byID = map[string]*traceRecord{}
 	t.active = map[string]*traceRecord{}
+	_ = t.persistLocked()
 	t.mu.Unlock()
 }
 

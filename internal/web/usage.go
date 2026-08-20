@@ -139,6 +139,9 @@ func (s *usageLog) snapshot(days int) map[string]any {
 		requests, in, out, cache, durationMs int64
 		todayReq, todayTok                   int64
 		h24Req, h24Tok                       int64
+		estimatedCostUSD                     float64
+		todayEstimatedCostUSD                float64
+		h24EstimatedCostUSD                  float64
 	)
 	keyCounts := map[string]*usageCountStat{}
 	modelCounts := map[string]*usageCountStat{}
@@ -155,13 +158,16 @@ func (s *usageLog) snapshot(days int) map[string]any {
 		out += rec.OutputTokens
 		cache += rec.CacheTokens
 		durationMs += rec.DurationMs
+		estimatedCostUSD += rec.EstimatedCostUSD
 		if rec.Time.After(today) {
 			todayReq++
 			todayTok += reqTok
+			todayEstimatedCostUSD += rec.EstimatedCostUSD
 		}
 		if rec.Time.After(dayAgo) {
 			h24Req++
 			h24Tok += reqTok
+			h24EstimatedCostUSD += rec.EstimatedCostUSD
 		}
 		key := rec.APIKeyPrefix
 		ks, ok := keyCounts[key]
@@ -223,16 +229,19 @@ func (s *usageLog) snapshot(days int) map[string]any {
 
 	return map[string]any{
 		"summary": map[string]any{
-			"requests":         requests,
-			"tokens":           in + out + cache,
-			"input":            in,
-			"output":           out,
-			"cache":            cache,
-			"avg_ms":           avgMs,
-			"today_requests":   todayReq,
-			"today_tokens":     todayTok,
-			"last24h_requests": h24Req,
-			"last24h_tokens":   h24Tok,
+			"requests":                   requests,
+			"tokens":                     in + out + cache,
+			"input":                      in,
+			"output":                     out,
+			"cache":                      cache,
+			"avg_ms":                     avgMs,
+			"estimated_cost_usd":         estimatedCostUSD,
+			"today_requests":             todayReq,
+			"today_tokens":               todayTok,
+			"today_estimated_cost_usd":   todayEstimatedCostUSD,
+			"last24h_requests":           h24Req,
+			"last24h_tokens":             h24Tok,
+			"last24h_estimated_cost_usd": h24EstimatedCostUSD,
 		},
 		"models":    model,
 		"endpoints": ep,

@@ -39,3 +39,43 @@ func TestPriceForUnknownModelUsesEstimatedDefault(t *testing.T) {
 		t.Fatalf("default price must be marked as a USD estimate: %+v", got)
 	}
 }
+
+func TestPriceForGPT54Through56RequestModels(t *testing.T) {
+	models := []string{
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.4-reasoning",
+		"gpt-5.5",
+		"gpt-5.5-reasoning",
+		"gpt-5.6",
+		"gpt-5.6-reasoning",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+	}
+	want := modelPrice{
+		InputPerMillion:       2.50,
+		CachedInputPerMillion: 0.250,
+		OutputPerMillion:      15.00,
+		Currency:              "USD",
+		Estimated:             true,
+	}
+	for _, model := range models {
+		t.Run(model, func(t *testing.T) {
+			got := priceForModel(model)
+			if got != want {
+				t.Fatalf("priceForModel(%q) = %+v, want %+v", model, got, want)
+			}
+		})
+	}
+}
+
+func TestEstimateUsageCostUsesRequestedModelPrice(t *testing.T) {
+	const model = "gpt-5.6-sol"
+	got := estimateUsageCost(model, 1_000_000, 1_000_000, 1_000_000)
+	price := priceForModel(model)
+	want := price.InputPerMillion + price.OutputPerMillion + price.CachedInputPerMillion
+	if math.Abs(got-want) > 1e-12 {
+		t.Fatalf("estimateUsageCost(%q) = %v, want %v", model, got, want)
+	}
+}
