@@ -226,7 +226,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 
 /* Responsive */
 @media(max-width:900px){.stats{grid-template-columns:repeat(2,1fr)}.quick-grid{grid-template-columns:1fr}}
-@media(max-width:640px){.sidebar{width:48px;padding:16px 4px}.logo span,.nav-label,.nav button span,.sidebar-foot{display:none}.logo{padding-bottom:16px;justify-content:center}.nav button{padding:8px 0;justify-content:center}.topbar{padding:0 14px}.content{padding:16px}.stats{grid-template-columns:1fr}.topbar-right{display:none}}
+@media(max-width:640px){.sidebar{width:64px;padding:16px 4px}.logo span,.nav-label,.nav button span{display:none}.logo{padding-bottom:16px;justify-content:center}.nav button{padding:8px 0;justify-content:center}.sidebar-foot{display:block;padding:10px 2px 0;text-align:center;font-size:9px;line-height:1.3;overflow-wrap:anywhere}.topbar{padding:0 14px}.content{padding:16px}.stats{grid-template-columns:1fr}.topbar-right{display:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}}
 
 /* Usage overview card (dashboard) */
@@ -272,9 +272,16 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .usage-status.warn{background:rgba(255,159,10,.14);color:var(--orange)}
 .usage-status.err{background:rgba(255,59,48,.1);color:var(--red)}
 .usage-table-wrap{width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
-.usage-table{min-width:1180px}
-.usage-table th,.usage-table td{padding-left:10px;padding-right:10px}
-.usage-table .usage-latency,.usage-table .usage-ttft,.usage-table .usage-speed,.usage-table .usage-cost{white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}
+.usage-table{min-width:1215px;table-layout:fixed}
+.usage-table th,.usage-table td{padding-left:10px;padding-right:10px;vertical-align:middle}
+.usage-table th:nth-child(1),.usage-table td:nth-child(1){width:170px;text-align:left}
+.usage-table th:nth-child(2),.usage-table td:nth-child(2){width:300px;text-align:left}
+.usage-table th:nth-child(3),.usage-table td:nth-child(3){width:230px;text-align:left}
+.usage-table th:nth-child(4),.usage-table td:nth-child(4){width:145px;text-align:right}
+.usage-table th:nth-child(5),.usage-table td:nth-child(5){width:190px;text-align:right}
+.usage-table th:nth-child(6),.usage-table td:nth-child(6){width:90px;text-align:right}
+.usage-table th:nth-child(7),.usage-table td:nth-child(7){width:90px;text-align:center}
+.usage-table .usage-latency,.usage-table .usage-ttft,.usage-table .usage-speed,.usage-table .usage-cost{white-space:nowrap;font-variant-numeric:tabular-nums}
 .token-stack{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .token-stack b{color:var(--text);font-weight:600}
 
@@ -406,138 +413,138 @@ if (response.output_text) {
         </div>
         <div class="usage-overview">
           <div class="usage-overview-item">
-            <div class="usage-overview-top"><i data-lucide="flame"></i> Last 24 hours</div>
-            <span class="usage-overview-value" id="ov24hTok">0<small>tokens</small></span>
-            <span class="usage-overview-sub" id="ov24hReq">0 requests</span>
+            <div class="usage-overview-top"><i data-lucide="flame"></i> 近 24 小时</div>
+            <span class="usage-overview-value" id="ov24hTok">0<small>Token</small></span>
+            <span class="usage-overview-sub" id="ov24hReq">0 个请求</span>
           </div>
           <div class="usage-overview-item">
-            <div class="usage-overview-top"><i data-lucide="trending-up"></i> All-time usage</div>
-            <span class="usage-overview-value" id="ovTotalTok">0<small>tokens</small></span>
-            <span class="usage-overview-sub" id="ovTotalReq">0 requests</span>
+            <div class="usage-overview-top"><i data-lucide="trending-up"></i> 累计用量</div>
+            <span class="usage-overview-value" id="ovTotalTok">0<small>Token</small></span>
+            <span class="usage-overview-sub" id="ovTotalReq">0 个请求</span>
           </div>
           <div class="usage-overview-item">
-            <div class="usage-overview-top"><i data-lucide="activity"></i> Request count</div>
-            <span class="usage-overview-value" id="ovTodayTok">0<small>tokens</small></span>
-            <span class="usage-overview-sub" id="ovTodayReq">0 requests today</span>
+            <div class="usage-overview-top"><i data-lucide="activity"></i> 请求数</div>
+            <span class="usage-overview-value" id="ovTodayTok">0<small>Token</small></span>
+            <span class="usage-overview-sub" id="ovTodayReq">今日 0 个请求</span>
           </div>
           <div class="usage-overview-item">
-            <div class="usage-overview-top"><i data-lucide="piggy-bank"></i> Cache hits</div>
-            <span class="usage-overview-value" id="ovCacheHits">0<small>tokens</small></span>
-            <span class="usage-overview-sub" id="ovCacheRate">Hit rate 0%</span>
+            <div class="usage-overview-top"><i data-lucide="piggy-bank"></i> 缓存命中</div>
+            <span class="usage-overview-value" id="ovCacheHits">0<small>Token</small></span>
+            <span class="usage-overview-sub" id="ovCacheRate">命中率 0%</span>
           </div>
           <div class="usage-overview-item">
-            <div class="usage-overview-top"><i data-lucide="circle-dollar-sign"></i> Estimated cost</div>
+            <div class="usage-overview-top"><i data-lucide="circle-dollar-sign"></i> 预估费用</div>
             <span class="usage-overview-value" id="ovEstimatedCost">$0.000000</span>
-            <span class="usage-overview-sub">Local estimate for all usage</span>
+            <span class="usage-overview-sub">所有用量的本地估算</span>
           </div>
         </div>
         <div class="stats">
-          <div class="stat"><span class="stat-label">Total sessions</span><span class="stat-value" id="stat-sessions">0</span><span class="stat-unit">total</span></div>
-          <div class="stat"><span class="stat-label">Cache hits</span><span class="stat-value" id="stat-hits">0</span><span class="stat-unit">hits</span></div>
-          <div class="stat"><span class="stat-label">Hit rate</span><span class="stat-value" id="stat-rate">0</span><span class="stat-unit">%</span></div>
-          <div class="stat"><span class="stat-label">Tokens saved</span><span class="stat-value" id="stat-saved">0</span><span class="stat-unit" style="font-size:12px">saved</span></div>
+          <div class="stat"><span class="stat-label">会话总数</span><span class="stat-value" id="stat-sessions">0</span><span class="stat-unit">总计</span></div>
+          <div class="stat"><span class="stat-label">缓存命中</span><span class="stat-value" id="stat-hits">0</span><span class="stat-unit">次命中</span></div>
+          <div class="stat"><span class="stat-label">命中率</span><span class="stat-value" id="stat-rate">0</span><span class="stat-unit">%</span></div>
+          <div class="stat"><span class="stat-label">节省的 Token</span><span class="stat-value" id="stat-saved">0</span><span class="stat-unit" style="font-size:12px">已节省</span></div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-title">Quick actions</span></div>
+          <div class="card-head"><span class="card-title">快捷操作</span></div>
           <div class="card-body">
             <div class="quick-grid">
               <div class="quick-action" onclick="showPage('accounts');setTimeout(startPKCE,200)">
                 <div class="quick-action-icon blue"><i data-lucide="plus" style="width:18px;height:18px"></i></div>
-                <div class="quick-action-text"><h4>Add account</h4><p>Sign in via Microsoft OAuth</p></div>
+                <div class="quick-action-text"><h4>添加账户</h4><p>通过 Microsoft OAuth 登录</p></div>
               </div>
               <div class="quick-action" onclick="openKeyModal()">
                 <div class="quick-action-icon green"><i data-lucide="key" style="width:18px;height:18px"></i></div>
-                <div class="quick-action-text"><h4>Create API key</h4><p>Generate a key for API access</p></div>
+                <div class="quick-action-text"><h4>创建 API 密钥</h4><p>生成用于 API 访问的密钥</p></div>
               </div>
               <div class="quick-action" onclick="showPage('conversations')">
                 <div class="quick-action-icon purple"><i data-lucide="trash-2" style="width:18px;height:18px"></i></div>
-                <div class="quick-action-text"><h4>Clean conversations</h4><p>Delete conversations you no longer need</p></div>
+                <div class="quick-action-text"><h4>清理对话</h4><p>删除不再需要的对话</p></div>
               </div>
             </div>
           </div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-title">Recent requests</span><button class="btn btn-sm" onclick="showPage('usage')">View all</button></div>
-          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Endpoint</th><th>Tokens</th><th>Status</th></tr></thead><tbody id="dashRecentRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table>
+          <div class="card-head"><span class="card-title">最近请求</span><button class="btn btn-sm" onclick="showPage('usage')">查看全部</button></div>
+          <table class="table"><thead><tr><th>时间</th><th>模型</th><th>端点</th><th>Token</th><th>状态</th></tr></thead><tbody id="dashRecentRows"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody></table>
         </div>
       </section>
 
       <!-- Usage -->
       <section id="page-usage" style="display:none">
         <div class="page-head">
-          <div><h2 class="page-title">Usage</h2><p class="page-sub">Token usage statistics and request details</p></div>
+          <div><h2 class="page-title">用量统计</h2><p class="page-sub">Token 用量统计与请求明细</p></div>
           <div style="display:flex;align-items:center;gap:10px">
-            <button class="btn" onclick="ugRefresh()"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> <span>Refresh</span></button>
+            <button class="btn" onclick="ugRefresh()"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> <span>刷新</span></button>
             <div class="seg" id="usageRange">
               <button data-days="1" onclick="setUsageRange(1)">24h</button>
-              <button data-days="7" class="active" onclick="setUsageRange(7)">7 days</button>
-              <button data-days="30" onclick="setUsageRange(30)">30 days</button>
-              <button data-days="90" onclick="setUsageRange(90)">90 days</button>
+              <button data-days="7" class="active" onclick="setUsageRange(7)">7 天</button>
+              <button data-days="30" onclick="setUsageRange(30)">30 天</button>
+              <button data-days="90" onclick="setUsageRange(90)">90 天</button>
             </div>
           </div>
         </div>
         <div class="stats">
-          <div class="stat"><span class="stat-label">Total requests</span><span class="stat-value" id="ug-req">0</span><span class="stat-sub" id="ug-req-sub"></span></div>
-          <div class="stat"><span class="stat-label">Total tokens</span><span class="stat-value" id="ug-tok">0</span><span class="stat-sub" id="ug-tok-sub"></span></div>
-          <div class="stat"><span class="stat-label">Cached tokens</span><span class="stat-value" id="ug-cache">0</span><span class="stat-unit">tokens</span></div>
-          <div class="stat"><span class="stat-label">Average latency</span><span class="stat-value" id="ug-ms">0</span><span class="stat-unit">ms</span></div>
-          <div class="stat"><span class="stat-label">Estimated cost</span><span class="stat-value" id="ug-cost">$0.000000</span><span class="stat-sub">Local estimate</span></div>
+          <div class="stat"><span class="stat-label">请求总数</span><span class="stat-value" id="ug-req">0</span><span class="stat-sub" id="ug-req-sub"></span></div>
+          <div class="stat"><span class="stat-label">Token 总数</span><span class="stat-value" id="ug-tok">0</span><span class="stat-sub" id="ug-tok-sub"></span></div>
+          <div class="stat"><span class="stat-label">缓存 Token</span><span class="stat-value" id="ug-cache">0</span><span class="stat-unit">Token</span></div>
+          <div class="stat"><span class="stat-label">平均延迟</span><span class="stat-value" id="ug-ms">0</span><span class="stat-unit">ms</span></div>
+          <div class="stat"><span class="stat-label">预估费用</span><span class="stat-value" id="ug-cost">$0.000000</span><span class="stat-sub">本地估算</span></div>
         </div>
         <div class="chart-grid">
           <div class="chart">
-            <div class="chart-title">Token usage trend</div>
-            <div class="chart-sub">Daily token consumption</div>
+            <div class="chart-title">Token 用量趋势</div>
+            <div class="chart-sub">每日 Token 消耗</div>
             <div id="ugTrendWrap"><svg id="ugTrend" viewBox="0 0 560 110" preserveAspectRatio="none" style="height:110px"></svg></div>
           </div>
           <div class="chart">
-            <div class="chart-title">Model distribution</div>
-            <div class="chart-sub">Token usage by model</div>
+            <div class="chart-title">模型分布</div>
+            <div class="chart-sub">按模型统计 Token 用量</div>
             <div id="ugModels"></div>
           </div>
           <div class="chart">
-            <div class="chart-title">Endpoint distribution</div>
-            <div class="chart-sub">Requests by endpoint</div>
+            <div class="chart-title">端点分布</div>
+            <div class="chart-sub">按端点统计请求数</div>
             <div id="ugEndpoints"></div>
           </div>
           <div class="chart">
-            <div class="chart-title">API key usage</div>
-            <div class="chart-sub">Requests by API key</div>
+            <div class="chart-title">API 密钥用量</div>
+            <div class="chart-sub">按 API 密钥统计请求数</div>
             <div id="ugKeys"></div>
           </div>
         </div>
         <div class="card" id="traceCard">
           <div class="card-head">
-            <span class="card-title">Debug mode</span>
+            <span class="card-title">调试模式</span>
             <div style="display:flex;align-items:center;gap:8px">
-              <label class="checkbox-inline" style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="traceEnabled" onchange="saveTraceConfig()"> Enabled</label>
-              <input class="form-input" id="traceMax" type="number" min="1" max="2000" style="width:80px" title="Records kept" onchange="saveTraceConfig()">
-              <button class="btn btn-sm" onclick="loadTraceLogs()"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> Refresh</button>
-              <button class="btn btn-sm" onclick="clearTraceLogs()"><i data-lucide="trash-2" style="width:13px;height:13px"></i> Clear</button>
+              <label class="checkbox-inline" style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="traceEnabled" onchange="saveTraceConfig()"> 已启用</label>
+              <input class="form-input" id="traceMax" type="number" min="1" max="2000" style="width:80px" title="保留记录数" onchange="saveTraceConfig()">
+              <button class="btn btn-sm" onclick="loadTraceLogs()"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> 刷新</button>
+              <button class="btn btn-sm" onclick="clearTraceLogs()"><i data-lucide="trash-2" style="width:13px;height:13px"></i> 清空</button>
             </div>
           </div>
-          <p style="font-size:11px;color:var(--muted);padding:8px 12px 0">When enabled, the most recent <b id="traceMaxLabel">50</b> requests keep the full downstream request, upstream (ChatHub) request, upstream response and downstream response, with a live status (in-progress / success / error). Older records are removed automatically.</p>
-          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Reasoning</th><th>Endpoint</th><th>Status</th><th>Input tokens</th><th>Output tokens</th><th>Cached tokens</th><th>Latency</th><th>TTFT</th><th>t/s</th><th>Detail</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody></table>
-          <div class="pagination"><span id="tracePageInfo"></span><button class="btn btn-sm" id="tracePrev" onclick="tracePage(-1)">Previous</button><button class="btn btn-sm" id="traceNext" onclick="tracePage(1)">Next</button></div>
+          <p style="font-size:11px;color:var(--muted);padding:8px 12px 0">启用后，将保留最近 <b id="traceMaxLabel">50</b> 个请求的完整下游请求、上游 ChatHub 请求、上游响应和下游响应，并实时显示状态（处理中、成功或错误）。更早的记录会自动删除。</p>
+          <table class="table"><thead><tr><th>时间</th><th>模型</th><th>推理等级</th><th>端点</th><th>状态</th><th>输入 Token</th><th>输出 Token</th><th>缓存 Token</th><th>延迟</th><th>TTFT</th><th>t/s</th><th>详情</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="12" class="empty">加载中...</td></tr></tbody></table>
+          <div class="pagination"><span id="tracePageInfo"></span><button class="btn btn-sm" id="tracePrev" onclick="tracePage(-1)">上一页</button><button class="btn btn-sm" id="traceNext" onclick="tracePage(1)">下一页</button></div>
         </div>
         <div class="card" style="margin-top:16px">
-          <div class="card-head"><span class="card-title">Request details</span><span style="font-size:11px;color:var(--muted)" id="ugLogInfo"></span><button class="btn btn-sm" onclick="loadUsageLogs()"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> Refresh</button></div>
+          <div class="card-head"><span class="card-title">请求明细</span><span style="font-size:11px;color:var(--muted)" id="ugLogInfo"></span><button class="btn btn-sm" onclick="loadUsageLogs()"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> 刷新</button></div>
           <div class="filter-bar" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px;border-bottom:1px solid var(--line)">
-            <input class="form-input" id="ugFKey" placeholder="Key" style="width:110px">
-            <input class="form-input" id="ugFAccount" placeholder="Account" style="width:130px">
-            <input class="form-input" id="ugFModel" placeholder="Model" style="width:110px">
-            <input class="form-input" id="ugFEndpoint" placeholder="Endpoint" style="width:110px">
-            <input class="form-input" id="ugFMinTokens" type="number" placeholder="Min tokens" style="width:100px">
-            <input class="form-input" id="ugFMaxTokens" type="number" placeholder="Max tokens" style="width:100px">
-            <input class="form-input" id="ugFFrom" type="datetime-local" style="width:180px" title="From time">
-            <input class="form-input" id="ugFTo" type="datetime-local" style="width:180px" title="To time">
-            <select class="form-input" id="ugFStatus" style="width:100px"><option value="">Status</option><option value="success">Success</option><option value="error">Error</option></select>
-            <select class="form-input" id="ugFStream" style="width:110px"><option value="">Stream</option><option value="true">Stream</option><option value="false">Non-stream</option></select>
-            <input class="form-input" id="ugFQ" placeholder="Search…" style="flex:1;min-width:120px">
-            <button class="btn btn-sm" onclick="applyUsageFilters()"><i data-lucide="filter" style="width:13px;height:13px"></i> Filter</button>
-            <button class="btn btn-sm" onclick="resetUsageFilters()"><i data-lucide="x" style="width:13px;height:13px"></i> Reset</button>
+            <input class="form-input" id="ugFKey" placeholder="密钥" style="width:110px">
+            <input class="form-input" id="ugFAccount" placeholder="账户" style="width:130px">
+            <input class="form-input" id="ugFModel" placeholder="模型" style="width:110px">
+            <input class="form-input" id="ugFEndpoint" placeholder="端点" style="width:110px">
+            <input class="form-input" id="ugFMinTokens" type="number" placeholder="最小 Token" style="width:100px">
+            <input class="form-input" id="ugFMaxTokens" type="number" placeholder="最大 Token" style="width:100px">
+            <input class="form-input" id="ugFFrom" type="datetime-local" style="width:180px" title="开始时间">
+            <input class="form-input" id="ugFTo" type="datetime-local" style="width:180px" title="结束时间">
+            <select class="form-input" id="ugFStatus" style="width:100px"><option value="">状态</option><option value="success">成功</option><option value="error">错误</option></select>
+            <select class="form-input" id="ugFStream" style="width:110px"><option value="">流式</option><option value="true">流式</option><option value="false">非流式</option></select>
+            <input class="form-input" id="ugFQ" placeholder="搜索…" style="flex:1;min-width:120px">
+            <button class="btn btn-sm" onclick="applyUsageFilters()"><i data-lucide="filter" style="width:13px;height:13px"></i> 筛选</button>
+            <button class="btn btn-sm" onclick="resetUsageFilters()"><i data-lucide="x" style="width:13px;height:13px"></i> 重置</button>
           </div>
-          <div class="usage-table-wrap"><table class="table usage-table"><thead><tr><th>Time</th><th>Request details</th><th>Tokens<br><small>↑ input / ↓ output</small></th><th>Estimated cost</th><th>Latency / TTFT</th><th>Speed</th><th>Status</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody></table></div>
-          <div class="pagination"><span id="ugPageInfo"></span><button class="btn btn-sm" id="ugPrev" onclick="ugPage(-1)">Previous</button><button class="btn btn-sm" id="ugNext" onclick="ugPage(1)">Next</button></div>
+          <div class="usage-table-wrap"><table class="table usage-table"><thead><tr><th>时间</th><th>请求明细</th><th>Token<br><small>↑ 输入 / ↓ 输出</small></th><th>预估费用</th><th>延迟 / 首字延迟</th><th>速度</th><th>状态</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody></table></div>
+          <div class="pagination"><span id="ugPageInfo"></span><button class="btn btn-sm" id="ugPrev" onclick="ugPage(-1)">上一页</button><button class="btn btn-sm" id="ugNext" onclick="ugPage(1)">下一页</button></div>
         </div>
       </section>
 
@@ -547,7 +554,7 @@ if (response.output_text) {
           <div><h2 class="page-title">Account management</h2><p class="page-sub">Authorize and manage Microsoft accounts</p></div>
         </div>
         <div class="card" style="margin-bottom:16px">
-          <div class="card-head"><span class="card-title">Add account</span></div>
+          <div class="card-head"><span class="card-title">添加账户</span></div>
           <div class="card-body">
             <div class="onb-steps" style="margin-bottom:16px">
               <div class="onb-step">
@@ -621,7 +628,7 @@ if (response.output_text) {
               </div>
             </div>
           </div>
-          <table class="table"><thead><tr><th>Account</th><th>Calls</th><th>Status</th><th>Updated</th><th>Scheduling</th><th>Proxy</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>Account</th><th>Calls</th><th>状态</th><th>Updated</th><th>Scheduling</th><th>Proxy</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody></table>
         </div>
       </section>
 
@@ -633,7 +640,7 @@ if (response.output_text) {
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Key list</span><span style="font-size:11px;color:var(--muted)">Keys can be viewed and copied again at any time</span></div>
-          <table class="table"><thead><tr><th>Name</th><th>API Key</th><th>Created</th><th>Status</th><th>Last used</th><th style="text-align:right">Actions</th></tr></thead><tbody id="keyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>Name</th><th>API Key</th><th>Created</th><th>状态</th><th>Last used</th><th style="text-align:right">Actions</th></tr></thead><tbody id="keyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
 
@@ -655,7 +662,7 @@ if (response.output_text) {
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Conversation list</span></div>
-          <table class="table"><thead><tr><th>Name</th><th>Messages</th><th>Account</th><th>Last updated</th><th>Actions</th></tr></thead><tbody id="convRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>Name</th><th>Messages</th><th>Account</th><th>Last updated</th><th>Actions</th></tr></thead><tbody id="convRows"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody></table>
         </div>
       </section>
 
@@ -695,7 +702,7 @@ if (response.output_text) {
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Proxy list</span></div>
-          <table class="table"><thead><tr><th>URL</th><th>Status</th><th>Latency</th><th>Failures</th><th>Cooldown until</th><th>Actions</th></tr></thead><tbody id="proxyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>URL</th><th>状态</th><th>延迟</th><th>Failures</th><th>Cooldown until</th><th>Actions</th></tr></thead><tbody id="proxyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
 
@@ -706,7 +713,7 @@ if (response.output_text) {
           <button class="btn primary" onclick="modelTestAll()"><i data-lucide="play" style="width:14px;height:14px"></i> Test all</button>
         </div>
         <div class="card">
-          <table class="table"><thead><tr><th>Model</th><th>Status</th><th>Latency</th><th>Reply</th></tr></thead><tbody id="modelTestRows"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>模型</th><th>状态</th><th>延迟</th><th>Reply</th></tr></thead><tbody id="modelTestRows"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
 
@@ -721,7 +728,7 @@ if (response.output_text) {
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Model routes</span><span style="font-size:11px;color:var(--muted)">Models route by mapping name; the mapping's tone is sent to the upstream (ChatHub).</span><button class="btn btn-sm" onclick="addModelRouteRow()"><i data-lucide="plus" style="width:13px;height:13px"></i> Add model</button></div>
-          <div style="overflow-x:auto"><table class="table"><thead><tr><th>Model</th><th>Display name</th><th>Upstream mapping</th><th>Default reasoning level</th><th>Enabled</th><th>Actions</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table></div>
+          <div style="overflow-x:auto"><table class="table"><thead><tr><th>模型</th><th>Display name</th><th>Upstream mapping</th><th>Default reasoning level</th><th>Enabled</th><th>Actions</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table></div>
         </div>
       </section>
     </div>
@@ -731,7 +738,7 @@ if (response.output_text) {
 <!-- Key Modal -->
 <div class="modal-overlay" id="keyModal">
   <div class="modal">
-    <h3>Create API key</h3>
+    <h3>创建 API 密钥</h3>
 <p class="subtitle">You can view or copy this key again from the key list. Store it securely.</p>
     <form onsubmit="createKey(event)">
       <div class="form-group">
@@ -829,23 +836,23 @@ const localeText={
   'Online': {'zh-CN':'在线','zh-TW':'線上','ja':'オンライン','ko':'온라인','es':'En línea','fr':'En ligne','de':'Online','pt-BR':'Online','ru':'В сети','ar':'متصل'},
   'Available accounts': {'zh-CN':'可用账号','zh-TW':'可用帳號','ja':'利用可能なアカウント','ko':'사용 가능한 계정','es':'Cuentas disponibles','fr':'Comptes disponibles','de':'Verfügbare Konten','pt-BR':'Contas disponíveis','ru':'Доступные аккаунты','ar':'الحسابات المتاحة'},
   'API Key': {'zh-CN':'API 密钥','zh-TW':'API Key','ja':'API キー','ko':'API 키','es':'Clave API','fr':'Clé API','de':'API-Schlüssel','pt-BR':'Chave API','ru':'API-ключ','ar':'مفتاح API'},
-  'Last 24 hours': {'zh-CN':'近 24 小时消耗','zh-TW':'近 24 小時消耗','ja':'過去24時間の消費','ko':'최근 24시간 사용','es':'Últimas 24 horas','fr':'Dernières 24 heures','de':'Letzte 24 Stunden','pt-BR':'Últimas 24 horas','ru':'Последние 24 часа','ar':'آخر 24 ساعة'},
-  'All-time usage': {'zh-CN':'历史使用情况','zh-TW':'歷史使用情況','ja':'全期間の使用量','ko':'전체 사용량','es':'Uso histórico','fr':'Utilisation totale','de':'Gesamtnutzung','pt-BR':'Uso histórico','ru':'Использование за всё время','ar':'الاستخدام الكلي'},
-  'Request count': {'zh-CN':'请求计数','zh-TW':'要求計數','ja':'リクエスト数','ko':'요청 수','es':'Número de solicitudes','fr':'Nombre de requêtes','de':'Anzahl der Anfragen','pt-BR':'Número de solicitações','ru':'Количество запросов','ar':'عدد الطلبات'},
-  'Cache hits': {'zh-CN':'缓存命中','zh-TW':'快取命中','ja':'キャッシュヒット','ko':'캐시 적중','es':'Aciertos de caché','fr':'Hits de cache','de':'Cache-Treffer','pt-BR':'Acertos de cache','ru':'Попадания в кэш','ar':'إصابات ذاكرة التخزين المؤقت'},
-  'Total sessions': {'zh-CN':'总会话数','zh-TW':'總會話數','ja':'セッション総数','ko':'총 세션 수','es':'Sesiones totales','fr':'Sessions totales','de':'Gesamtsitzungen','pt-BR':'Sessões totais','ru':'Всего сессий','ar':'إجمالي الجلسات'},
+  '近 24 小时': {'zh-CN':'近 24 小时消耗','zh-TW':'近 24 小時消耗','ja':'過去24時間の消費','ko':'최근 24시간 사용','es':'Últimas 24 horas','fr':'Dernières 24 heures','de':'Letzte 24 Stunden','pt-BR':'Últimas 24 horas','ru':'Последние 24 часа','ar':'آخر 24 ساعة'},
+  '累计用量': {'zh-CN':'历史使用情况','zh-TW':'歷史使用情況','ja':'全期間の使用量','ko':'전체 사용량','es':'Uso histórico','fr':'Utilisation totale','de':'Gesamtnutzung','pt-BR':'Uso histórico','ru':'Использование за всё время','ar':'الاستخدام الكلي'},
+  '请求数': {'zh-CN':'请求计数','zh-TW':'要求計數','ja':'リクエスト数','ko':'요청 수','es':'Número de solicitudes','fr':'Nombre de requêtes','de':'Anzahl der Anfragen','pt-BR':'Número de solicitações','ru':'Количество запросов','ar':'عدد الطلبات'},
+  '缓存命中': {'zh-CN':'缓存命中','zh-TW':'快取命中','ja':'キャッシュヒット','ko':'캐시 적중','es':'Aciertos de caché','fr':'Hits de cache','de':'Cache-Treffer','pt-BR':'Acertos de cache','ru':'Попадания в кэш','ar':'إصابات ذاكرة التخزين المؤقت'},
+  '会话总数': {'zh-CN':'总会话数','zh-TW':'總會話數','ja':'セッション総数','ko':'총 세션 수','es':'Sesiones totales','fr':'Sessions totales','de':'Gesamtsitzungen','pt-BR':'Sessões totais','ru':'Всего сессий','ar':'إجمالي الجلسات'},
   'total': {'zh-CN':'个','zh-TW':'個','ja':'件','ko':'개','es':'total','fr':'total','de':'gesamt','pt-BR':'total','ru':'шт.','ar':'إجمالي'},
   'hits': {'zh-CN':'次','zh-TW':'次','ja':'回','ko':'회','es':'aciertos','fr':'hits','de':'Treffer','pt-BR':'acertos','ru':'раз','ar':'مرة'},
-  'Hit rate': {'zh-CN':'命中率','zh-TW':'命中率','ja':'ヒット率','ko':'적중률','es':'Tasa de aciertos','fr':'Taux de hits','de':'Trefferquote','pt-BR':'Taxa de acertos','ru':'Частота попаданий','ar':'معدل الإصابات'},
-  'Tokens saved': {'zh-CN':'节省 Token','zh-TW':'節省 Token','ja':'節約されたトークン','ko':'절약된 토큰','es':'Tokens ahorrados','fr':'Tokens économisés','de':'Gesparte Tokens','pt-BR':'Tokens economizados','ru':'Сэкономленные токены','ar':'الرموز الموفرة'},
+  '命中率': {'zh-CN':'命中率','zh-TW':'命中率','ja':'ヒット率','ko':'적중률','es':'Tasa de aciertos','fr':'Taux de hits','de':'Trefferquote','pt-BR':'Taxa de acertos','ru':'Частота попаданий','ar':'معدل الإصابات'},
+  '节省的 Token': {'zh-CN':'节省 Token','zh-TW':'節省 Token','ja':'節約されたトークン','ko':'절약된 토큰','es':'Tokens ahorrados','fr':'Tokens économisés','de':'Gesparte Tokens','pt-BR':'Tokens economizados','ru':'Сэкономленные токены','ar':'الرموز الموفرة'},
   'saved': {'zh-CN':'节省','zh-TW':'節省','ja':'節約','ko':'절약','es':'ahorrados','fr':'économisés','de':'gespart','pt-BR':'economizados','ru':'сэкономлено','ar':'تم التوفير'},
-  'Quick actions': {'zh-CN':'快捷操作','zh-TW':'快速操作','ja':'クイック操作','ko':'빠른 작업','es':'Acciones rápidas','fr':'Actions rapides','de':'Schnellaktionen','pt-BR':'Ações rápidas','ru':'Быстрые действия','ar':'إجراءات سريعة'},
+  '快捷操作': {'zh-CN':'快捷操作','zh-TW':'快速操作','ja':'クイック操作','ko':'빠른 작업','es':'Acciones rápidas','fr':'Actions rapides','de':'Schnellaktionen','pt-BR':'Ações rápidas','ru':'Быстрые действия','ar':'إجراءات سريعة'},
   'Authorize a Microsoft account': {'zh-CN':'一键授权 Microsoft 账号','zh-TW':'一鍵授權 Microsoft 帳號','ja':'Microsoft アカウントを承認','ko':'Microsoft 계정 인증','es':'Autorizar una cuenta Microsoft','fr':'Autoriser un compte Microsoft','de':'Microsoft-Konto autorisieren','pt-BR':'Autorizar conta Microsoft','ru':'Авторизовать аккаунт Microsoft','ar':'أذِن بحساب Microsoft'},
   'Generate a new access key': {'zh-CN':'生成新的访问密钥','zh-TW':'產生新的存取金鑰','ja':'新しいアクセスキーを生成','ko':'새 액세스 키 생성','es':'Generar nueva clave de acceso','fr':'Générer une nouvelle clé d\'accès','de':'Neuen Zugriffsschlüssel generieren','pt-BR':'Gerar nova chave de acesso','ru':'Сгенерировать новый ключ доступа','ar':'إنشاء مفتاح وصول جديد'},
-  'Clean conversations': {'zh-CN':'清理对话','zh-TW':'清理對話','ja':'会話をクリーンアップ','ko':'대화 정리','es':'Limpiar conversaciones','fr':'Nettoyer les conversations','de':'Unterhaltungen bereinigen','pt-BR':'Limpar conversas','ru':'Очистить разговоры','ar':'تنظيف المحادثات'},
-  'Delete conversations you no longer need': {'zh-CN':'删除不需要的对话','zh-TW':'刪除不需要的對話','ja':'不要になった会話を削除','ko':'더 이상 필요 없는 대화 삭제','es':'Eliminar conversaciones que ya no necesite','fr':'Supprimer les conversations dont vous n\'avez plus besoin','de':'Nicht mehr benötigte Unterhaltungen löschen','pt-BR':'Excluir conversas que não precisa mais','ru':'Удалить ненужные разговоры','ar':'حذف المحادثات التي لم تعد بحاجتها'},
-  'Recent requests': {'zh-CN':'最近请求','zh-TW':'最近要求','ja':'最近のリクエスト','ko':'최근 요청','es':'Solicitudes recientes','fr':'Requêtes récentes','de':'Letzte Anfragen','pt-BR':'Solicitações recentes','ru':'Недавние запросы','ar':'الطلبات الأخيرة'},
-  'View all': {'zh-CN':'查看全部','zh-TW':'查看全部','ja':'すべて表示','ko':'모두 보기','es':'Ver todo','fr':'Tout voir','de':'Alle anzeigen','pt-BR':'Ver tudo','ru':'Показать все','ar':'عرض الكل'},
+  '清理对话': {'zh-CN':'清理对话','zh-TW':'清理對話','ja':'会話をクリーンアップ','ko':'대화 정리','es':'Limpiar conversaciones','fr':'Nettoyer les conversations','de':'Unterhaltungen bereinigen','pt-BR':'Limpar conversas','ru':'Очистить разговоры','ar':'تنظيف المحادثات'},
+  '删除不再需要的对话': {'zh-CN':'删除不需要的对话','zh-TW':'刪除不需要的對話','ja':'不要になった会話を削除','ko':'더 이상 필요 없는 대화 삭제','es':'Eliminar conversaciones que ya no necesite','fr':'Supprimer les conversations dont vous n\'avez plus besoin','de':'Nicht mehr benötigte Unterhaltungen löschen','pt-BR':'Excluir conversas que não precisa mais','ru':'Удалить ненужные разговоры','ar':'حذف المحادثات التي لم تعد بحاجتها'},
+  '最近请求': {'zh-CN':'最近请求','zh-TW':'最近要求','ja':'最近のリクエスト','ko':'최근 요청','es':'Solicitudes recientes','fr':'Requêtes récentes','de':'Letzte Anfragen','pt-BR':'Solicitações recentes','ru':'Недавние запросы','ar':'الطلبات الأخيرة'},
+  '查看全部': {'zh-CN':'查看全部','zh-TW':'查看全部','ja':'すべて表示','ko':'모두 보기','es':'Ver todo','fr':'Tout voir','de':'Alle anzeigen','pt-BR':'Ver tudo','ru':'Показать все','ar':'عرض الكل'},
   'Time': {'zh-CN':'时间','zh-TW':'時間','ja':'時刻','ko':'시간','es':'Hora','fr':'Heure','de':'Zeit','pt-BR':'Horário','ru':'Время','ar':'الوقت'},
   'Model': {'zh-CN':'模型','zh-TW':'模型','ja':'モデル','ko':'모델','es':'Modelo','fr':'Modèle','de':'Modell','pt-BR':'Modelo','ru':'Модель','ar':'النموذج'},
   'Endpoint': {'zh-CN':'端点','zh-TW':'端點','ja':'エンドポイント','ko':'엔드포인트','es':'Punto final','fr':'Point d\'entrée','de':'Endpunkt','pt-BR':'Endpoint','ru':'Конечная точка','ar':'نقطة النهاية'},
@@ -868,19 +875,19 @@ const localeText={
   '7 days': {'zh-CN':'7天','zh-TW':'7天','ja':'7日','ko':'7일','es':'7 días','fr':'7 jours','de':'7 Tage','pt-BR':'7 dias','ru':'7 дней','ar':'7 أيام'},
   '30 days': {'zh-CN':'30天','zh-TW':'30天','ja':'30日','ko':'30일','es':'30 días','fr':'30 jours','de':'30 Tage','pt-BR':'30 dias','ru':'30 дней','ar':'30 يومًا'},
   '90 days': {'zh-CN':'90天','zh-TW':'90天','ja':'90日','ko':'90일','es':'90 días','fr':'90 jours','de':'90 Tage','pt-BR':'90 dias','ru':'90 дней','ar':'90 يومًا'},
-  'Total requests': {'zh-CN':'总请求数','zh-TW':'總要求數','ja':'リクエスト総数','ko':'총 요청 수','es':'Solicitudes totales','fr':'Requêtes totales','de':'Anfragen gesamt','pt-BR':'Solicitações totais','ru':'Всего запросов','ar':'إجمالي الطلبات'},
-  'Total tokens': {'zh-CN':'总 Token','zh-TW':'總 Token','ja':'トークン総数','ko':'총 토큰','es':'Tokens totales','fr':'Tokens totaux','de':'Tokens gesamt','pt-BR':'Tokens totais','ru':'Всего токенов','ar':'إجمالي الرموز'},
-  'Cached tokens': {'zh-CN':'缓存命中','zh-TW':'快取命中','ja':'キャッシュされたトークン','ko':'캐시된 토큰','es':'Tokens en caché','fr':'Tokens en cache','de':'Gecachte Tokens','pt-BR':'Tokens em cache','ru':'Токены из кэша','ar':'الرموز المخزنة مؤقتًا'},
-  'Average latency': {'zh-CN':'平均耗时','zh-TW':'平均耗時','ja':'平均レイテンシ','ko':'평균 지연 시간','es':'Latencia media','fr':'Latence moyenne','de':'Durchschnittliche Latenz','pt-BR':'Latência média','ru':'Средняя задержка','ar':'متوسط زمن الاستجابة'},
-  'Token usage trend': {'zh-CN':'Token 使用趋势','zh-TW':'Token 使用趨勢','ja':'トークン使用量の傾向','ko':'토큰 사용 추세','es':'Tendencia de uso de tokens','fr':'Tendance d\'utilisation des tokens','de':'Token-Nutzungstrend','pt-BR':'Tendência de uso de tokens','ru':'Тенденция использования токенов','ar':'اتجاه استخدام الرموز'},
-  'Daily token consumption': {'zh-CN':'按天汇总的 Token 消耗','zh-TW':'按天彙總的 Token 消耗','ja':'日別トークン消費量','ko':'일별 토큰 소비','es':'Consumo diario de tokens','fr':'Consommation quotidienne de tokens','de':'Täglicher Token-Verbrauch','pt-BR':'Consumo diário de tokens','ru':'Ежедневный расход токенов','ar':'الاستهلاك اليومي للرموز'},
-  'Model distribution': {'zh-CN':'模型分布','zh-TW':'模型分佈','ja':'モデル分布','ko':'모델 분포','es':'Distribución de modelos','fr':'Répartition des modèles','de':'Modellverteilung','pt-BR':'Distribuição de modelos','ru':'Распределение моделей','ar':'توزيع النماذج'},
-  'Token usage by model': {'zh-CN':'按模型统计的 Token 用量','zh-TW':'按模型統計的 Token 用量','ja':'モデル別トークン使用量','ko':'모델별 토큰 사용량','es':'Uso de tokens por modelo','fr':'Utilisation de tokens par modèle','de':'Token-Nutzung nach Modell','pt-BR':'Uso de tokens por modelo','ru':'Использование токенов по моделям','ar':'استخدام الرموز حسب النموذج'},
-  'Endpoint distribution': {'zh-CN':'端点分布','zh-TW':'端點分佈','ja':'エンドポイント分布','ko':'엔드포인트 분포','es':'Distribución de puntos finales','fr':'Répartition des points d\'entrée','de':'Endpunktverteilung','pt-BR':'Distribuição de endpoints','ru':'Распределение конечных точек','ar':'توزيع نقاط النهاية'},
-  'Requests by endpoint': {'zh-CN':'按接口统计的请求量','zh-TW':'按介面統計的要求量','ja':'エンドポイント別リクエスト数','ko':'엔드포인트별 요청 수','es':'Solicitudes por punto final','fr':'Requêtes par point d\'entrée','de':'Anfragen nach Endpunkt','pt-BR':'Solicitações por endpoint','ru':'Запросы по конечным точкам','ar':'الطلبات حسب نقطة النهاية'},
-  'API key usage': {'zh-CN':'API 密钥用量','zh-TW':'API Key 用量','ja':'API キー使用量','ko':'API 키 사용량','es':'Uso de claves API','fr':'Utilisation des clés API','de':'API-Schlüssel-Nutzung','pt-BR':'Uso de chaves API','ru':'Использование API-ключей','ar':'استخدام مفاتيح API'},
-  'Requests by API key': {'zh-CN':'按密钥统计的请求量','zh-TW':'按金鑰統計的要求量','ja':'API キー別リクエスト数','ko':'API 키별 요청 수','es':'Solicitudes por clave API','fr':'Requêtes par clé API','de':'Anfragen nach API-Schlüssel','pt-BR':'Solicitações por chave API','ru':'Запросы по API-ключам','ar':'الطلبات حسب مفتاح API'},
-  'Request details': {'zh-CN':'请求明细','zh-TW':'要求明細','ja':'リクエスト詳細','ko':'요청 상세','es':'Detalles de solicitud','fr':'Détails de la requête','de':'Anfragedetails','pt-BR':'Detalhes da solicitação','ru':'Детали запроса','ar':'تفاصيل الطلب'},
+  '请求总数': {'zh-CN':'总请求数','zh-TW':'總要求數','ja':'リクエスト総数','ko':'총 요청 수','es':'Solicitudes totales','fr':'Requêtes totales','de':'Anfragen gesamt','pt-BR':'Solicitações totais','ru':'Всего запросов','ar':'إجمالي الطلبات'},
+  'Token 总数': {'zh-CN':'总 Token','zh-TW':'總 Token','ja':'トークン総数','ko':'총 토큰','es':'Tokens totales','fr':'Tokens totaux','de':'Tokens gesamt','pt-BR':'Tokens totais','ru':'Всего токенов','ar':'إجمالي الرموز'},
+  '缓存 Token': {'zh-CN':'缓存命中','zh-TW':'快取命中','ja':'キャッシュされたトークン','ko':'캐시된 토큰','es':'Tokens en caché','fr':'Tokens en cache','de':'Gecachte Tokens','pt-BR':'Tokens em cache','ru':'Токены из кэша','ar':'الرموز المخزنة مؤقتًا'},
+  '平均延迟': {'zh-CN':'平均耗时','zh-TW':'平均耗時','ja':'平均レイテンシ','ko':'평균 지연 시간','es':'Latencia media','fr':'Latence moyenne','de':'Durchschnittliche Latenz','pt-BR':'Latência média','ru':'Средняя задержка','ar':'متوسط زمن الاستجابة'},
+  'Token 用量趋势': {'zh-CN':'Token 使用趋势','zh-TW':'Token 使用趨勢','ja':'トークン使用量の傾向','ko':'토큰 사용 추세','es':'Tendencia de uso de tokens','fr':'Tendance d\'utilisation des tokens','de':'Token-Nutzungstrend','pt-BR':'Tendência de uso de tokens','ru':'Тенденция использования токенов','ar':'اتجاه استخدام الرموز'},
+  '每日 Token 消耗': {'zh-CN':'按天汇总的 Token 消耗','zh-TW':'按天彙總的 Token 消耗','ja':'日別トークン消費量','ko':'일별 토큰 소비','es':'Consumo diario de tokens','fr':'Consommation quotidienne de tokens','de':'Täglicher Token-Verbrauch','pt-BR':'Consumo diário de tokens','ru':'Ежедневный расход токенов','ar':'الاستهلاك اليومي للرموز'},
+  '模型分布': {'zh-CN':'模型分布','zh-TW':'模型分佈','ja':'モデル分布','ko':'모델 분포','es':'Distribución de modelos','fr':'Répartition des modèles','de':'Modellverteilung','pt-BR':'Distribuição de modelos','ru':'Распределение моделей','ar':'توزيع النماذج'},
+  '按模型统计 Token 用量': {'zh-CN':'按模型统计的 Token 用量','zh-TW':'按模型統計的 Token 用量','ja':'モデル別トークン使用量','ko':'모델별 토큰 사용량','es':'Uso de tokens por modelo','fr':'Utilisation de tokens par modèle','de':'Token-Nutzung nach Modell','pt-BR':'Uso de tokens por modelo','ru':'Использование токенов по моделям','ar':'استخدام الرموز حسب النموذج'},
+  '端点分布': {'zh-CN':'端点分布','zh-TW':'端點分佈','ja':'エンドポイント分布','ko':'엔드포인트 분포','es':'Distribución de puntos finales','fr':'Répartition des points d\'entrée','de':'Endpunktverteilung','pt-BR':'Distribuição de endpoints','ru':'Распределение конечных точек','ar':'توزيع نقاط النهاية'},
+  '按端点统计请求数': {'zh-CN':'按接口统计的请求量','zh-TW':'按介面統計的要求量','ja':'エンドポイント別リクエスト数','ko':'엔드포인트별 요청 수','es':'Solicitudes por punto final','fr':'Requêtes par point d\'entrée','de':'Anfragen nach Endpunkt','pt-BR':'Solicitações por endpoint','ru':'Запросы по конечным точкам','ar':'الطلبات حسب نقطة النهاية'},
+  'API 密钥用量': {'zh-CN':'API 密钥用量','zh-TW':'API Key 用量','ja':'API キー使用量','ko':'API 키 사용량','es':'Uso de claves API','fr':'Utilisation des clés API','de':'API-Schlüssel-Nutzung','pt-BR':'Uso de chaves API','ru':'Использование API-ключей','ar':'استخدام مفاتيح API'},
+  '按 API 密钥统计请求数': {'zh-CN':'按密钥统计的请求量','zh-TW':'按金鑰統計的要求量','ja':'API キー別リクエスト数','ko':'API 키별 요청 수','es':'Solicitudes por clave API','fr':'Requêtes par clé API','de':'Anfragen nach API-Schlüssel','pt-BR':'Solicitações por chave API','ru':'Запросы по API-ключам','ar':'الطلبات حسب مفتاح API'},
+  '请求明细': {'zh-CN':'请求明细','zh-TW':'要求明細','ja':'リクエスト詳細','ko':'요청 상세','es':'Detalles de solicitud','fr':'Détails de la requête','de':'Anfragedetails','pt-BR':'Detalhes da solicitação','ru':'Детали запроса','ar':'تفاصيل الطلب'},
   'Recent records': {'zh-CN':'最近记录','zh-TW':'最近記錄','ja':'最近の記録','ko':'최근 기록','es':'Registros recientes','fr':'Enregistrements récents','de':'Letzte Einträge','pt-BR':'Registros recentes','ru':'Последние записи','ar':'السجلات الأخيرة'},
   'Key': {'zh-CN':'密钥','zh-TW':'金鑰','ja':'キー','ko':'키','es':'Clave','fr':'Clé','de':'Schlüssel','pt-BR':'Chave','ru':'Ключ','ar':'المفتاح'},
   'Latency': {'zh-CN':'耗时','zh-TW':'耗時','ja':'レイテンシ','ko':'지연 시간','es':'Latencia','fr':'Latence','de':'Latenz','pt-BR':'Latência','ru':'Задержка','ar':'زمن الاستجابة'},
@@ -983,7 +990,7 @@ const localeText={
   'Save model routing': {'zh-CN':'保存模型路由','zh-TW':'儲存模型路由','ja':'モデルルーティングを保存','ko':'모델 라우팅 저장','es':'Guardar enrutamiento','fr':'Enregistrer le routage','de':'Routing speichern','pt-BR':'Salvar roteamento','ru':'Сохранить маршрутизацию','ar':'حفظ التوجيه'},
   'Model routing saved': {'zh-CN':'模型路由已保存','zh-TW':'模型路由已儲存','ja':'モデルルーティングを保存しました','ko':'모델 라우팅이 저장되었습니다','es':'Enrutamiento guardado','fr':'Routage enregistré','de':'Routing gespeichert','pt-BR':'Roteamento salvo','ru':'Маршрутизация сохранена','ar':'تم حفظ التوجيه'},
   'No models available': {'zh-CN':'没有可用模型','zh-TW':'沒有可用模型','ja':'利用可能なモデルがありません','ko':'사용 가능한 모델이 없습니다','es':'No hay modelos disponibles','fr':'Aucun modèle disponible','de':'Keine Modelle verfügbar','pt-BR':'Nenhum modelo disponível','ru':'Нет доступных моделей','ar':'لا توجد نماذج متاحة'},
-  'Create API key': {'zh-CN':'创建 API 密钥','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
+  '创建 API 密钥': {'zh-CN':'创建 API 密钥','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
   'You can view or copy this key again from the key list. Store it securely.': {'zh-CN':'完整密钥可在密钥列表中随时查看或复制，请妥善保存','zh-TW':'完整金鑰可在金鑰清單中隨時檢視或複製，請妥善保存','ja':'完全なキーはキー一覧からいつでも表示・コピーできます。安全に保管してください。','ko':'전체 키는 키 목록에서 언제든지 확인하거나 복사할 수 있습니다. 안전하게 보관하세요.','es':'Puede volver a ver o copiar esta clave desde la lista de claves. Guárdela de forma segura.','fr':'Vous pouvez réafficher ou copier cette clé depuis la liste des clés. Conservez-la en lieu sûr.','de':'Sie können diesen Schlüssel jederzeit aus der Schlüsselliste erneut anzeigen oder kopieren. Bewahren Sie ihn sicher auf.','pt-BR':'Você pode ver ou copiar esta chave novamente na lista de chaves. Guarde-a com segurança.','ru':'Вы можете снова просмотреть или скопировать этот ключ из списка ключей. Храните его безопасно.','ar':'يمكنك عرض هذا المفتاح أو نسخه مرة أخرى من قائمة المفاتيح. احفظه بأمان.'},
   'Full key is unavailable for keys created before this feature': {'zh-CN':'该密钥创建于本功能之前，无明文备份，无法重新显示','zh-TW':'該金鑰建立於此功能之前，無明文備份，無法重新顯示','ja':'このキーは本機能より前に作成されたため、平文のバックアップがなく再表示できません','ko':'이 키는 이 기능 이전에 생성되어 평문 백업이 없어 다시 표시할 수 없습니다','es':'La clave completa no está disponible para claves creadas antes de esta función','fr':'La clé complète n\'est pas disponible pour les clés créées avant cette fonctionnalité','de':'Der vollständige Schlüssel steht für Schlüssel, die vor dieser Funktion erstellt wurden, nicht zur Verfügung','pt-BR':'A chave completa não está disponível para chaves criadas antes deste recurso','ru':'Полный ключ недоступен для ключей, созданных до появления этой функции','ar':'المفتاح الكامل غير متاح للمفاتيح التي أُنشئت قبل هذه الميزة'},
   'Cancel': {'zh-CN':'取消','zh-TW':'取消','ja':'キャンセル','ko':'취소','es':'Cancelar','fr':'Annuler','de':'Abbrechen','pt-BR':'Cancelar','ru':'Отмена','ar':'إلغاء'},
@@ -1020,13 +1027,13 @@ const localeText={
   'Reasoning': {'zh-CN':'推理等级','zh-TW':'推理等級','ja':'推論レベル','ko':'추론 수준','es':'Razonamiento','fr':'Raisonnement','de':'Argumentation','pt-BR':'Raciocínio','ru':'Рассуждения','ar':'الاستدلال'},
   'TTFT': {'zh-CN':'首字耗时','zh-TW':'首字耗時','ja':'初回トークン','ko':'첫 토큰 시간','es':'Primer token','fr':'Premier token','de':'Erster Token','pt-BR':'Primeiro token','ru':'TTFT','ar':'أول رمز'},
   'Speed': {'zh-CN':'速度','zh-TW':'速度','ja':'速度','ko':'속도','es':'Velocidad','fr':'Vitesse','de':'Geschwindigkeit','pt-BR':'Velocidade','ru':'Скорость','ar':'السرعة'},
-  'Min tokens': {'zh-CN':'最少 Token','zh-TW':'最少 Token','ja':'最小トークン','ko':'최소 토큰','es':'Tokens mínimos','fr':'Tokens min','de':'Min. Tokens','pt-BR':'Mín. tokens','ru':'Мин. токенов','ar':'الحد الأدنى من الرموز'},
-  'Max tokens': {'zh-CN':'最多 Token','zh-TW':'最多 Token','ja':'最大トークン','ko':'최대 토큰','es':'Tokens máximos','fr':'Tokens max','de':'Max. Tokens','pt-BR':'Máx. tokens','ru':'Макс. токенов','ar':'الحد الأقصى من الرموز'},
-  'From time': {'zh-CN':'起始时间','zh-TW':'起始時間','ja':'開始時刻','ko':'시작 시간','es':'Desde','fr':'De','de':'Von','pt-BR':'De','ru':'С','ar':'من'},
-  'To time': {'zh-CN':'截止时间','zh-TW':'截止時間','ja':'終了時刻','ko':'종료 시간','es':'Hasta','fr':'À','de':'Bis','pt-BR':'Até','ru':'До','ar':'إلى'},
+  '最小 Token': {'zh-CN':'最少 Token','zh-TW':'最少 Token','ja':'最小トークン','ko':'최소 토큰','es':'Tokens mínimos','fr':'Tokens min','de':'Min. Tokens','pt-BR':'Mín. tokens','ru':'Мин. токенов','ar':'الحد الأدنى من الرموز'},
+  '最大 Token': {'zh-CN':'最多 Token','zh-TW':'最多 Token','ja':'最大トークン','ko':'최대 토큰','es':'Tokens máximos','fr':'Tokens max','de':'Max. Tokens','pt-BR':'Máx. tokens','ru':'Макс. токенов','ar':'الحد الأقصى من الرموز'},
+  '开始时间': {'zh-CN':'起始时间','zh-TW':'起始時間','ja':'開始時刻','ko':'시작 시간','es':'Desde','fr':'De','de':'Von','pt-BR':'De','ru':'С','ar':'من'},
+  '结束时间': {'zh-CN':'截止时间','zh-TW':'截止時間','ja':'終了時刻','ko':'종료 시간','es':'Hasta','fr':'À','de':'Bis','pt-BR':'Até','ru':'До','ar':'إلى'},
   'Filter': {'zh-CN':'筛选','zh-TW':'篩選','ja':'絞り込み','ko':'필터','es':'Filtrar','fr':'Filtrer','de':'Filtern','pt-BR':'Filtrar','ru':'Фильтр','ar':'تصفية'},
   'Reset': {'zh-CN':'重置','zh-TW':'重設','ja':'リセット','ko':'재설정','es':'Restablecer','fr':'Réinitialiser','de':'Zurücksetzen','pt-BR':'Redefinir','ru':'Сброс','ar':'إعادة تعيين'},
-  'Debug mode': {'zh-CN':'调试模式','zh-TW':'偵錯模式','ja':'デバッグモード','ko':'디버그 모드','es':'Modo de depuración','fr':'Mode débogage','de':'Debug-Modus','pt-BR':'Modo de depuração','ru':'Режим отладки','ar':'وضع التصحيح'},
+  '调试模式': {'zh-CN':'调试模式','zh-TW':'偵錯模式','ja':'デバッグモード','ko':'디버그 모드','es':'Modo de depuración','fr':'Mode débogage','de':'Debug-Modus','pt-BR':'Modo de depuração','ru':'Режим отладки','ar':'وضع التصحيح'},
   'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
   'Clear': {'zh-CN':'清空','zh-TW':'清空','ja':'クリア','ko':'지우기','es':'Borrar','fr':'Effacer','de':'Löschen','pt-BR':'Limpar','ru':'Очистить','ar':'مسح'},
   'In progress': {'zh-CN':'请求中','zh-TW':'請求中','ja':'処理中','ko':'처리 중','es':'En curso','fr':'En cours','de':'In Bearbeitung','pt-BR':'Em andamento','ru':'В процессе','ar':'قيد التنفيذ'},
@@ -1047,9 +1054,9 @@ const localeText={
   'Add a Microsoft account': {'zh-CN':'添加 Microsoft 账号'},
   'Sign in via browser OAuth and add the account to the pool': {'zh-CN':'通过浏览器 OAuth 登录并将账号加入账号池'},
   'Generate a key to authenticate API requests': {'zh-CN':'生成密钥用于 API 请求鉴权'},
-  'Generate a key for API access': {'zh-CN':'生成用于 API 访问的密钥'},
-  'Add account': {'zh-CN':'添加账号'},
-  'Sign in via Microsoft OAuth': {'zh-CN':'通过 Microsoft OAuth 登录'},
+  '生成用于 API 访问的密钥': {'zh-CN':'生成用于 API 访问的密钥'},
+  '添加账户': {'zh-CN':'添加账号'},
+  '通过 Microsoft OAuth 登录': {'zh-CN':'通过 Microsoft OAuth 登录'},
   'tokens': {'zh-CN':'Token'},
   'ms': {'zh-CN':'毫秒'},
   'When enabled, the most recent': {'zh-CN':'启用后，最近'},
@@ -1094,7 +1101,7 @@ const localeText={
   'New upstream mapping name (this name is also sent to the upstream as the tone):': {'zh-CN':'新的上游映射名称（该名称也会作为音色发送给上游）：'},
   '+ New mapping…': {'zh-CN':'+ 新建映射…'},
   '— Select mapping —': {'zh-CN':'— 选择映射 —'},
-  'No requests match the filters': {'zh-CN':'没有符合筛选条件的请求'},
+  '没有符合筛选条件的请求': {'zh-CN':'没有符合筛选条件的请求'},
   'Tracing disabled or no requests yet': {'zh-CN':'跟踪未启用，暂无请求记录'},
   'Bind proxy for this account (socks5://, http://, https://). Leave empty to unbind:': {'zh-CN':'为此账号绑定代理（socks5://、http://、https://），留空则解除绑定：'},
   'this model': {'zh-CN':'该模型'},
@@ -1141,7 +1148,7 @@ function translateDynamic(value,locale){
     m=value.match(/^Limited after (\d+) calls$/);if(m)return locale==='zh-TW'?'呼叫'+m[1]+'次限流':'调用'+m[1]+'次限流';
     m=value.match(/^(\d+) requests today$/);if(m)return '今日 '+m[1]+' 次请求';
     m=value.match(/^(\d+) requests$/);if(m)return m[1]+' 次请求';
-    m=value.match(/^Hit rate (.+)$/);if(m)return '命中率 '+m[1];
+    m=value.match(/^命中率 (.+)$/);if(m)return '命中率 '+m[1];
     m=value.match(/^Today \+(\d+)$/);if(m)return '今日 +'+m[1];
     m=value.match(/^Input (\d+) · Output (\d+)$/);if(m)return '输入 '+m[1]+' · 输出 '+m[2];
     m=value.match(/^in(\d+)\/out(\d+)\/cache(\d+)$/);if(m)return '入'+m[1]+'/出'+m[2]+'/缓'+m[3];
@@ -1174,7 +1181,7 @@ function translateDynamic(value,locale){
     m=value.match(/^呼叫(\d+)次限流$/);if(m)return 'Limited after '+m[1]+' calls';
     m=value.match(/^今日 (\d+) 次请求$/);if(m)return m[1]+' requests today';
     m=value.match(/^(\d+) 次请求$/);if(m)return m[1]+' requests';
-    m=value.match(/^命中率 (.+)$/);if(m)return 'Hit rate '+m[1];
+    m=value.match(/^命中率 (.+)$/);if(m)return '命中率 '+m[1];
     m=value.match(/^今日 \+(\d+)$/);if(m)return 'Today +'+m[1];
     m=value.match(/^输入 (\d+) · 输出 (\d+)$/);if(m)return 'Input '+m[1]+' · Output '+m[2];
     m=value.match(/^入(\d+)\/出(\d+)\/缓(\d+)$/);if(m)return 'in'+m[1]+'/out'+m[2]+'/cache'+m[3];
@@ -1344,7 +1351,7 @@ async function loadStats(){
     $('stat-rate').textContent=(s.hit_rate||0).toFixed(1);
     $('stat-saved').textContent=(s.tokens_saved||0);
     $('ovCacheHits').textContent=fmtTok(s.cache_hits||0);
-    $('ovCacheRate').textContent='Hit rate '+((s.hit_rate||0)).toFixed(1)+'%';
+    $('ovCacheRate').textContent='命中率 '+((s.hit_rate||0)).toFixed(1)+'%';
     const sum=(u.stats||{}).summary||{};
     $('ovEstimatedCost').textContent='$'+Number(sum.estimated_cost_usd||0).toFixed(6);
     $('ov24hTok').textContent=fmtTok(sum.last24h_tokens||0);
@@ -1365,7 +1372,7 @@ async function loadRecentRequests(){
       <td style="font-size:12px">${x.model||'-'}</td>
       <td><span class="usage-status">${(x.endpoint||'-').replace('/v1/','')}</span></td>
       <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b></span></td>
-      <td>${x.error?'<span class="usage-status err">Error</span>':'<span class="usage-status">Success</span>'}</td>
+      <td>${x.error?'<span class="usage-status err">错误</span>':'<span class="usage-status">成功</span>'}</td>
     </tr>`).join('');
     $('dashRecentRows').innerHTML=rows||'<tr><td colspan="5" class="empty">No requests yet</td></tr>';
   }catch(e){$('dashRecentRows').innerHTML=`<tr><td colspan="5" class="empty">No requests yet</td></tr>`;}
@@ -1742,23 +1749,23 @@ async function loadUsageLogs(){
       <td style="font-size:12px;color:var(--muted);white-space:nowrap">${new Date(x.time).toLocaleString()}</td>
       <td class="usage-request-detail">
         <div><b>${esc(x.model||'-')}</b>${x.reasoning_level?' · '+esc(x.reasoning_level):''}</div>
-        <div class="usage-detail-line"><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span>${x.stream?' <span class="usage-status">stream</span>':''}</div>
+        <div class="usage-detail-line"><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span>${x.stream?' <span class="usage-status">流式</span>':''}</div>
         <div class="usage-detail-line" title="${esc(x.account_email||'')}">${esc(x.account_email||'-')}</div>
         <div class="usage-detail-line"><code title="${esc(x.api_key_prefix||'')}">${esc(x.api_key_prefix||'-')}</code></div>
       </td>
-      <td><span class="token-stack"><span>↑ ${fmtTok(x.input_tokens||0)}</span><span>↓ ${fmtTok(x.output_tokens||0)}</span>${x.cache_tokens?`<span>Cache ${fmtTok(x.cache_tokens)}</span>`:''}</span></td>
-      <td class="usage-cost" title="Local estimate only; input, cached input, and output are priced separately">$${Number(x.estimated_cost_usd||0).toFixed(6)}</td>
+      <td><span class="token-stack"><span>↑ ${fmtTok(x.input_tokens||0)}</span><span>↓ ${fmtTok(x.output_tokens||0)}</span>${x.cache_tokens?`<span>缓存 ${fmtTok(x.cache_tokens)}</span>`:''}</span></td>
+      <td class="usage-cost" title="仅为本地估算，输入、缓存输入和输出分别计价">$${Number(x.estimated_cost_usd||0).toFixed(6)}</td>
       <td class="usage-latency"><span class="token-stack"><span>${fmtDuration(x.duration_ms)}</span><span>${fmtDuration(x.ttft_ms)}</span></span></td>
       <td class="usage-speed">${x.speed_tps?Number(x.speed_tps).toFixed(2)+' t/s':'-'}</td>
-      <td>${x.status>=400||x.error?'<span class="usage-status err" title="'+esc(x.error||'')+'">Error</span>':'<span class="usage-status">Success</span>'}</td>
+      <td>${x.status>=400||x.error?'<span class="usage-status err" title="'+esc(x.error||'')+'">错误</span>':'<span class="usage-status">成功</span>'}</td>
     </tr>`).join('');
-    $('ugLogRows').innerHTML=rows||'<tr><td colspan="7" class="empty">No requests match the filters</td></tr>';
+    $('ugLogRows').innerHTML=rows||'<tr><td colspan="7" class="empty">没有符合筛选条件的请求</td></tr>';
     const totalPages=Math.max(1,Math.ceil(ugTotal/UG_PAGE));
-    $('ugPageInfo').textContent=`Page ${ugPageNo+1} / ${totalPages} · ${ugTotal} total`;
+    $('ugPageInfo').textContent=`第 ${ugPageNo+1} / ${totalPages} 页 · 共 ${ugTotal} 条`;
     $('ugPrev').disabled=ugPageNo<=0;
     $('ugNext').disabled=ugPageNo>=totalPages-1;
   }catch(e){
-    $('ugLogRows').innerHTML=`<tr><td colspan="13" class="empty">${esc(e.message)}</td></tr>`;
+    $('ugLogRows').innerHTML=`<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1795,7 +1802,7 @@ async function saveTraceConfig(){
 }
 function traceRowHTML(x){
   const stcls=x.status==='in_progress'?' warn':(x.status==='error'?' err':'');
-  const sttxt=x.status==='in_progress'?'In progress':(x.status==='error'?'Error':'Success');
+  const sttxt=x.status==='in_progress'?'处理中':(x.status==='error'?'错误':'成功');
   return `<tr id="tr-${x.id}" data-trace-status="${esc(x.status||'')}">
     <td style="font-size:12px;color:var(--muted)">${new Date(x.at).toLocaleTimeString()}</td>
     <td style="font-size:12px">${esc(x.model||x.endpoint||'-')}</td>
@@ -1808,7 +1815,7 @@ function traceRowHTML(x){
     <td style="font-size:12px;color:var(--muted)">${(x.durationMs||0)} ms</td>
     <td style="font-size:12px;color:var(--muted)">${x.ttftMs?x.ttftMs+' ms':'-'}</td>
     <td style="font-size:12px;color:var(--muted)">${x.speedTps?Number(x.speedTps).toFixed(2):'-'}</td>
-    <td><button class="btn btn-sm" onclick="toggleTraceDetail('${x.id}')">View</button></td>
+    <td><button class="btn btn-sm" onclick="toggleTraceDetail('${x.id}')">查看</button></td>
   </tr>`;
 }
 async function loadTraceLogs(force=false){
@@ -1884,13 +1891,13 @@ async function insertTraceDetailRow(id){
   const open=(rec._open&&rec._open.length)?rec._open:[];
   const o=(i)=>open[i]!==false;
   tr.innerHTML=`<td colspan="9" class="trace-detail-cell"><div class="trace-detail">
-      <div class="trace-detail-meta"><b>Endpoint:</b> ${esc(rec.endpoint||'-')} · <b>Method:</b> ${esc(rec.method||'-')} · <b>Status:</b> ${rec.statusCode||'-'} · <b>Account:</b> ${esc(rec.accountEmail||'-')} · <b>Key:</b> ${esc(rec.apiKeyPrefix||'-')}</div>
-      ${rec.error?`<div style="color:var(--red)"><b>Error:</b> ${esc(rec.error)}</div>`:''}
-      ${rec.upstreamError?`<div style="color:var(--orange)"><b>Upstream:</b> ${esc(rec.upstreamError)}</div>`:''}
-      <details${o(0)?' open':''}><summary>Downstream request</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
-      <details${o(1)?' open':''}><summary>Upstream request</summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
-      <details${o(2)?' open':''}><summary>Upstream response</summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
-      <details${o(3)?' open':''}><summary>Downstream response</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+      <div class="trace-detail-meta"><b>端点：</b> ${esc(rec.endpoint||'-')} · <b>方法：</b> ${esc(rec.method||'-')} · <b>状态：</b> ${rec.statusCode||'-'} · <b>账户：</b> ${esc(rec.accountEmail||'-')} · <b>密钥：</b> ${esc(rec.apiKeyPrefix||'-')}</div>
+      ${rec.error?`<div style="color:var(--red)"><b>错误：</b> ${esc(rec.error)}</div>`:''}
+      ${rec.upstreamError?`<div style="color:var(--orange)"><b>上游错误：</b> ${esc(rec.upstreamError)}</div>`:''}
+      <details${o(0)?' open':''}><summary>下游请求</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
+      <details${o(1)?' open':''}><summary>上游请求</summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
+      <details${o(2)?' open':''}><summary>上游响应</summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
+      <details${o(3)?' open':''}><summary>下游响应</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
     </div></td>`;
   anchor.insertAdjacentElement('afterend',tr);
   // Persist each section's explicit open/closed state so the 3-second trace
@@ -2042,7 +2049,7 @@ $('convRows').innerHTML=c.length?c.map(x=>{
         <td>${Number(x.messageCount||0)}</td>
         <td>${esc(x.accountEmail||x.accountId||'-')}</td>
         <td style="font-size:12px;color:var(--muted)">${updated?new Date(updated).toLocaleString():'-'}</td>
-        <td><div style="display:flex;gap:6px"><button class="btn-sm btn" data-conv-action="view">View</button><button class="btn-sm btn danger" data-conv-action="delete">Delete</button></div></td>
+        <td><div style="display:flex;gap:6px"><button class="btn-sm btn" data-conv-action="view">查看</button><button class="btn-sm btn danger" data-conv-action="delete">Delete</button></div></td>
       </tr>`;
     }).join(''):'<tr><td colspan="5" class="empty">No conversations</td></tr>';
     $('convRows').querySelectorAll('.conv-row').forEach(row=>{
