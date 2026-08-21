@@ -55,8 +55,15 @@ func TestResponsesInstructionsAndCustomExecPolicyAreSystemMessages(t *testing.T)
 	if len(o.Messages) != 3 {
 		t.Fatalf("messages=%#v", o.Messages)
 	}
-	if o.Messages[0].Role != "system" || o.Messages[0].Content != customExecWorkspaceInstruction {
+	if o.Messages[0].Role != "system" {
 		t.Fatalf("missing custom exec policy: %#v", o.Messages[0])
+	}
+	expectedInst := unifiedWorkspaceInstruction(r.Tools)
+	if expectedInst == "" {
+		expectedInst = customExecWorkspaceInstruction
+	}
+	if o.Messages[0].Content != expectedInst {
+		t.Fatalf("custom exec policy mismatch:\ngot:  %q\nwant: %q", o.Messages[0].Content, expectedInst)
 	}
 	if o.Messages[1].Role != "system" || o.Messages[1].Content != r.Instructions {
 		t.Fatalf("instructions not preserved: %#v", o.Messages[1])

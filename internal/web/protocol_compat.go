@@ -24,7 +24,7 @@ type responsesRequest struct {
 	NewConversation    bool             `json:"new_conversation,omitempty"`
 }
 
-const customExecWorkspaceInstruction = `You are operating through the caller's local OpenCode execution bridge. Never use, request, or mention Microsoft 365/Copilot native tools. The only permitted execution tool is the caller-provided custom exec tool. The executor already starts in the caller-selected project workspace. Use relative paths only; never guess, cd to, or write under /root, /workspace, /tmp, or any other absolute project path. Inspect pwd and ls before changes. Do not create files outside the current working directory. Never claim a file was created, modified, or verified until custom exec returns a successful result. After every execution, use custom exec to verify the result.`
+const customExecWorkspaceInstruction = `You are operating through the caller's local OpenCode execution bridge. Never use, request, or mention Microsoft 365/Copilot native tools. The only permitted execution tool is the caller-provided custom exec tool. Modify only files within the scope explicitly specified by the caller. Every file or directory path used for reading, writing, editing, deleting, or verification must be explicitly provided by the caller; never infer, guess, discover, or substitute a path. A caller-provided path may be either an absolute project path or a path relative to the caller-selected project workspace. Do not assume paths such as /root, /workspace, /tmp, or /mnt/data. Never claim a file was created, modified, or verified until custom exec returns a successful result. After every execution, use custom exec to verify the result.`
 
 func (r responsesRequest) openAI() (oaiReq, error) {
 	o := oaiReq{Model: r.Model, AccountID: r.AccountID, Stream: r.Stream, ToolChoice: r.ToolChoice, User: r.User}
@@ -126,7 +126,11 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 		o.Tools = append(o.Tools, chathub.Tool{Type: typ, Function: b})
 	}
 	if hasCustomExec {
-		o.Messages = append([]oaiMsg{{Role: "system", Content: customExecWorkspaceInstruction}}, o.Messages...)
+		wsInst := customExecWorkspaceInstruction // fallback if unified builder returns ""
+		if inst := unifiedWorkspaceInstruction(r.Tools); inst != "" {
+			wsInst = inst
+		}
+		o.Messages = append([]oaiMsg{{Role: "system", Content: wsInst}}, o.Messages...)
 	}
 	return o, nil
 }
