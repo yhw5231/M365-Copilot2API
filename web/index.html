@@ -1827,13 +1827,11 @@ async function loadTraceLogs(force=false){
     traceTotal=d.total||0;
     const records=d.records||[];
     const tbody=$('traceLogRows');
-    if(force){
-      tbody.innerHTML='';
-      traceExpanded.clear();
-      for(const k in traceDetailCache)delete traceDetailCache[k];
-    }
-    const empty=tbody.querySelector('.empty');
-    if(empty&&records.length)tbody.innerHTML='';
+    // Each response is a complete page. Clear rows from the previous page so
+    // pagination always renders exactly the current batch of up to 10 records.
+    tbody.innerHTML='';
+    traceExpanded.clear();
+    for(const k in traceDetailCache)delete traceDetailCache[k];
     for(const x of [...records].reverse()){
       const existing=document.getElementById('tr-'+x.id);
       if(!existing){
