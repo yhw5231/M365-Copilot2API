@@ -224,3 +224,32 @@ func TestConversationSessionStoreDoesNotShareBindingCache(t *testing.T) {
 		t.Fatalf("conversation and binding stores share %q", conversationStore.path)
 	}
 }
+
+func TestExplicitDownstreamSessionMapsToSeparateUpstreamSession(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	body := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "hello"}}}
+
+	reqA := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqA.Header.Set("X-M365-Session-Id", "downstream-a")
+	sr.Bind("upstream-session-a", "conversation-a", "account-a", body, "", reqA)
+
+	reqB := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqB.Header.Set("X-M365-Session-Id", "downstream-b")
+	sr.Bind("upstream-session-b", "conversation-b", "account-a", body, "", reqB)
+
+	resolvedA := sr.Resolve(reqA, body)
+	resolvedB := sr.Resolve(reqB, body)
+	if resolvedA.IsNew || resolvedB.IsNew {
+		t.Fatal("explicit downstream sessions should resolve to their persisted bindings")
+	}
+	if resolvedA.SessionID == "downstream-a" || resolvedB.SessionID == "downstream-b" {
+		t.Fatal("downstream session IDs must not be used as upstream session IDs")
+	}
+	if resolvedA.SessionID == resolvedB.SessionID {
+		t.Fatal("different downstream sessions must map to different upstream sessions")
+	}
+	if resolvedA.ConversationID != "conversation-a" || resolvedB.ConversationID != "conversation-b" {
+		t.Fatalf("explicit sessions crossed conversations: A=%q B=%q", resolvedA.ConversationID, resolvedB.ConversationID)
+	}
+}

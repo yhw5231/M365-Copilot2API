@@ -383,9 +383,10 @@ func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
+		startedAt := requestStartedAtFrom(r)
 		rec := &traceRecord{
 			ID:            requestIDFrom(r),
-			At:            time.Now(),
+			At:            startedAt,
 			Endpoint:      r.URL.Path,
 			Method:        r.Method,
 			Status:        "in_progress",

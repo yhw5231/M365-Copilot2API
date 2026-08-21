@@ -24,6 +24,7 @@ type sessionBinding struct {
 	CreatedAt      time.Time `json:"createdAt"`
 	LastUsedAt     time.Time `json:"lastUsedAt"`
 	APIKey         string    `json:"apiKey,omitempty"`
+	ExplicitID     string    `json:"explicitId,omitempty"` // stable downstream session ID; kept separate from the upstream SessionID
 	IPFingerprint  string    `json:"ipFingerprint,omitempty"`
 	UserField      string    `json:"userField,omitempty"`
 	ContextFinger  string    `json:"contextFinger,omitempty"`
@@ -112,6 +113,9 @@ func (sr *sessionResolver) flush() error {
 
 func (sr *sessionResolver) reindexLocked(s sessionBinding) {
 	sr.sessions[s.SessionID] = s
+	if s.ExplicitID != "" {
+		sr.byExplicit[s.ExplicitID] = s.SessionID
+	}
 	if s.UserField != "" {
 		sr.byUserField[s.UserField] = s.SessionID
 	}
@@ -147,6 +151,9 @@ func (sr *sessionResolver) evictLocked() {
 
 func (sr *sessionResolver) dropLocked(id string, s sessionBinding) {
 	delete(sr.sessions, id)
+	if s.ExplicitID != "" && sr.byExplicit[s.ExplicitID] == id {
+		delete(sr.byExplicit, s.ExplicitID)
+	}
 	if sr.byUserField[s.UserField] == id {
 		delete(sr.byUserField, s.UserField)
 	}
@@ -423,10 +430,20 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 	if strings.TrimSpace(assistantText) != "" {
 		history = append(history, oaiMsg{Role: "assistant", Content: assistantText})
 	}
-	explicitID := r.Header.Get("X-M365-Session-Id")
+	explicitID := strings.TrimSpace(r.Header.Get("X-M365-Session-Id"))
 	key := extractAPIKey(r)
-	if explicitID != "" && sessionID == "" {
-		sessionID = explicitID
+	// The caller-provided session ID is the stable downstream identity. Keep it
+	// separate from the upstream session ID returned by ChatHub so two callers
+	// can never collapse onto the same cloud conversation accidentally.
+	if explicitID != "" {
+		if mappedID, ok := sr.byExplicit[explicitID]; ok {
+			sessionID = mappedID
+		} else {
+			sessionID = uuid.NewString()
+			sr.byExplicit[explicitID] = sessionID
+		}
+	} else if sessionID == "" {
+		sessionID = uuid.NewString()
 	}
 	// 同一云端对话只保留一条记录：内容键命中后增量轮次更新已存在会话，
 	// 而不是每次 Bind 都新建一条，避免 sessions.json 膨胀。
@@ -435,6 +452,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 			sess.ConversationID = conversationID
 			sess.AccountID = accountID
 			sess.APIKey = key
+			sess.ExplicitID = explicitID
 			sess.LastUsedAt = now
 			sess.UserField = body.User
 			sess.IPFingerprint = clientIPFingerprint(r)
@@ -472,6 +490,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 		CreatedAt:      now,
 		LastUsedAt:     now,
 		APIKey:         key,
+		ExplicitID:     explicitID,
 		IPFingerprint:  clientIPFingerprint(r),
 		UserField:      body.User,
 		ContextFinger:  contextFingerprint(history),
@@ -530,8 +549,7 @@ func (sr *sessionResolver) DeleteSession(sessionID string) bool {
 	if !ok {
 		return false
 	}
-	delete(sr.sessions, sessionID)
-	delete(sr.byExplicit, sessionID)
+	sr.dropLocked(sessionID, s)
 	if s.UserField != "" {
 		delete(sr.byUserField, s.UserField)
 	}
@@ -556,17 +574,7 @@ func (sr *sessionResolver) UnbindByConversation(conversationID string) int {
 		if s.ConversationID != conversationID {
 			continue
 		}
-		delete(sr.sessions, sid)
-		delete(sr.byExplicit, sid)
-		if s.UserField != "" {
-			delete(sr.byUserField, s.UserField)
-		}
-		if s.IPFingerprint != "" {
-			delete(sr.byIPFinger, s.IPFingerprint)
-		}
-		if s.ContextFinger != "" {
-			delete(sr.byContext, s.ContextFinger)
-		}
+		sr.dropLocked(sid, s)
 		removed++
 	}
 	if removed > 0 {

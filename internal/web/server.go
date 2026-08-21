@@ -51,6 +51,12 @@ func (s *Server) markAccountResult(accountID string, err error) {
 		// binding so another available account can use that proxy node. This does
 		// not alter any manually configured persistent proxy URL.
 		if IsRateLimited(err) {
+			// Treat available accounts as a queue: once throttled, this account
+			// moves behind the others and can re-enter after the queue cycles and
+			// its cooldown expires.
+			if s.tokens != nil {
+				s.tokens.MoveToBack(accountID)
+			}
 			if pool := outbound.CurrentPool(); pool != nil {
 				pool.Unbind(accountID)
 			}
@@ -99,6 +105,7 @@ type Server struct {
 	tokens              *auth.Store
 	accountPool         *accountHealth
 	accountConcurrency  *accountConcurrency
+	sessionConcurrency  *sessionConcurrency
 	pkce                map[string]pendingPKCE
 	pkceStarts          map[string][]time.Time
 	chat                *chathub.Client
@@ -171,6 +178,7 @@ func New() (*Server, error) {
 		tokens:             store,
 		accountPool:        newAccountHealth(),
 		accountConcurrency: newAccountConcurrency(),
+		sessionConcurrency: newSessionConcurrency(),
 		pkce:               map[string]pendingPKCE{},
 		chat: func() *chathub.Client {
 			c := chathub.NewClient()
@@ -1346,8 +1354,8 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 						BindAccount:    next.ID,
 					})
 					if err2 == nil {
-						s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
-						s.accountPool.MarkSuccess(next.ID)
+						s.markAccountResult(acc.ID, err)
+						s.markAccountResult(next.ID, nil)
 						acc = next
 						res = res2
 						err = nil
@@ -1356,7 +1364,7 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+			s.markAccountResult(acc.ID, err)
 			writeUpstreamError(w, err)
 			return
 		}
@@ -1618,7 +1626,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if requestID == "" {
 		requestID = uuid.NewString()
 	}
-	startedAt := time.Now()
+	startedAt := requestStartedAtFrom(r)
 	log.Printf("[req-trace] id=%s stage=http_start stream=%t", requestID, r.URL.Query().Get("stream") == "true")
 	defer func() {
 		log.Printf("[req-trace] id=%s stage=http_return total_ms=%d", requestID, time.Since(startedAt).Milliseconds())
@@ -1678,6 +1686,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	normalizeLegacyTools(&body)
 	body.ConversationID = firstNonEmpty(body.ConversationID, body.ConversationIDC)
 	body.SessionID = firstNonEmpty(body.SessionID, body.SessionIDC)
+
+	// Serialize requests that explicitly target the same logical session. Hold
+	// the lock through the complete request so a later turn cannot resolve or
+	// update the session while the preceding turn is still in flight.
+	sessionLockID := firstNonEmpty(r.Header.Get(sessionHeaderName), body.SessionKey, body.SessionID, body.ConversationID)
+	releaseSession, err := s.sessionConcurrency.Acquire(r.Context(), sessionLockID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusRequestTimeout, "request_cancelled", err.Error())
+		return
+	}
+	defer releaseSession()
+
 	log.Printf("[req-trace] id=%s stage=body_parsed messages=%d tools=%d choice=%s raw_bytes=%d", requestID, len(body.Messages), len(body.Tools), normalizedToolChoiceMode(body.ToolChoice), len(raw))
 	if err := validateToolConversation(body.Messages); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "tool_protocol_error", err.Error())
@@ -1725,8 +1745,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[user-session] hit user=%s conversation=%s session=%s", body.User, us.ConversationID, us.SessionID)
 		}
 	}
-	// 内容键会话复用：命中后云端对话已存全量历史，只需把客户端新增的
-	// 消息拼成增量 prompt 发送（对齐 DeepSeek 上下文缓存语义）。
+	// Existing conversations normally remain bound to their upstream account and
+	// may send only the messages added since the stored history. In round-robin
+	// mode every request, including one matched to an existing local session,
+	// must instead select the next account and start a fresh upstream conversation.
+	// The fresh conversation receives the complete message history so no context
+	// is lost when switching accounts.
 	answerPrompt := prompt
 	resolvedConversationID := ""
 	if body.ConversationID == "" && len(body.Messages) > 0 {
@@ -1747,6 +1771,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	if s.settings != nil && s.settings.get().AccountRoutingRule == "round-robin" {
+		if body.ConversationID != "" || body.SessionID != "" || body.AccountID != "" {
+			log.Printf("[account-route] round-robin restarting existing conversation with full context old_account=%q old_conversation=%q", body.AccountID, body.ConversationID)
+		}
+		body.AccountID = ""
+		body.ConversationID = ""
+		body.SessionID = ""
+		resolvedConversationID = ""
+		answerPrompt, body.Attachments = flattenPromptMessages(body.Messages, nil)
+	}
+
 	accountID := body.AccountID
 	acc, err := s.resolveAccount(accountID)
 	if err != nil {

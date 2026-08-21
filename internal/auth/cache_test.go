@@ -65,3 +65,39 @@ func TestScheduleEnabledPersists(t *testing.T) {
 		t.Fatal("scheduling state was not persisted")
 	}
 }
+
+func TestMoveToBackRotatesSchedulingQueue(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "tokens.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"oid-1", "oid-2", "oid-3"} {
+		_, err := store.Upsert(TokenSet{
+			AccessToken: "access-" + id,
+			Email:       id + "@example.com",
+			HomeOID:     id,
+			ExpiresAt:   time.Now().Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("upsert account %d: %v", i, err)
+		}
+	}
+
+	if !store.MoveToBack("oid-1") {
+		t.Fatal("MoveToBack did not find oid-1")
+	}
+	got := store.List()
+	want := []string{"oid-2", "oid-3", "oid-1"}
+	if len(got) != len(want) {
+		t.Fatalf("queue length=%d want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].ID != want[i] {
+			t.Fatalf("queue[%d]=%s want %s", i, got[i].ID, want[i])
+		}
+	}
+
+	if store.MoveToBack("missing") {
+		t.Fatal("MoveToBack unexpectedly found a missing account")
+	}
+}

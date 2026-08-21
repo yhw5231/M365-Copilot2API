@@ -391,6 +391,31 @@ func (s *Store) Next() (AccountToken, bool) {
 	return acc, true
 }
 
+// MoveToBack moves an account to the end of the scheduling queue. It is used
+// when an account is rate-limited so available-first routing continues with the
+// next account and only retries the limited account after the queue cycles.
+func (s *Store) MoveToBack(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, acc := range s.data.Accounts {
+		if acc.ID != id && acc.OID != id && acc.Email != id {
+			continue
+		}
+		if i == len(s.data.Accounts)-1 {
+			return true
+		}
+		moved := acc
+		copy(s.data.Accounts[i:], s.data.Accounts[i+1:])
+		s.data.Accounts[len(s.data.Accounts)-1] = moved
+		if len(s.data.Accounts) > 0 {
+			s.nextIdx %= len(s.data.Accounts)
+		}
+		return true
+	}
+	return false
+}
+
 func (s *Store) EnsureValid(id string) (AccountToken, error) {
 	acc, ok := s.Get(id)
 	if !ok {

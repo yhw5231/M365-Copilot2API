@@ -27,6 +27,7 @@ type debugRecord struct {
 	TokenSource  string    `json:"tokenSource"`
 	CacheHit     *bool     `json:"cacheHit"`
 	CacheSource  string    `json:"cacheSource"`
+	AccountEmail string    `json:"accountEmail,omitempty"`
 	Client       any       `json:"client"`
 	Upstream     any       `json:"upstream"`
 	Gateway      any       `json:"gateway"`
@@ -240,10 +241,14 @@ func (s *Server) debugMiddleware(next http.Handler) http.Handler {
 		// limit only when writing the debug record.
 		r.Body = io.NopCloser(bytes.NewReader(in))
 		cw := &captureWriter{ResponseWriter: w}
-		start := time.Now()
+		startedAt := requestStartedAtFrom(r)
 		next.ServeHTTP(cw, r)
 		out := cw.body.Bytes()
-		rec := debugRecord{ID: "dbg_" + uuid.NewString(), At: start, Level: debugLevel(cw.status), Path: r.URL.Path, Method: r.Method, Status: cw.status, DurationMS: time.Since(start).Milliseconds(), TokenSource: "unavailable_from_chathub", CacheSource: "not_reported_by_upstream", Client: redactBody(in), Gateway: redactBody(out), Upstream: map[string]any{"captured": false, "reason": "ChatHub transport tracing not yet attached to request context"}}
+		accountEmail := ""
+		if tr := traceFromRequest(r); tr != nil {
+			accountEmail = tr.AccountEmail
+		}
+		rec := debugRecord{ID: "dbg_" + uuid.NewString(), At: startedAt, Level: debugLevel(cw.status), Path: r.URL.Path, Method: r.Method, Status: cw.status, DurationMS: time.Since(startedAt).Milliseconds(), TokenSource: "unavailable_from_chathub", CacheSource: "not_reported_by_upstream", AccountEmail: accountEmail, Client: redactBody(in), Gateway: redactBody(out), Upstream: map[string]any{"captured": false, "reason": "ChatHub transport tracing not yet attached to request context"}}
 		s.debug.add(rec)
 	})
 }

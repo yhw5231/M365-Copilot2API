@@ -184,3 +184,70 @@ func TestAccountConcurrencyUsesDocumentedDefault(t *testing.T) {
 		t.Fatalf("limit = %d, want %d", limiter.limit, defaultAccountConcurrency)
 	}
 }
+
+func TestAccountConcurrencyCountsDistinctUpstreamSessions(t *testing.T) {
+	c := &accountConcurrency{
+		limit:    2,
+		inflight: map[string]int{},
+		sessions: map[string]map[string]int{},
+		changed:  make(chan struct{}),
+	}
+
+	releaseA1, err := c.Acquire(context.Background(), "account-a", "upstream-session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseA1()
+
+	releaseA2, err := c.Acquire(context.Background(), "account-a", "upstream-session-a")
+	if err != nil {
+		t.Fatalf("second request for the same upstream session should share its account slot: %v", err)
+	}
+	defer releaseA2()
+
+	if got := c.inflight["account-a"]; got != 1 {
+		t.Fatalf("same upstream session counted as %d concurrent sessions, want 1", got)
+	}
+
+	releaseB, err := c.Acquire(context.Background(), "account-a", "upstream-session-b")
+	if err != nil {
+		t.Fatalf("second distinct upstream session should fit within limit: %v", err)
+	}
+	defer releaseB()
+
+	if got := c.inflight["account-a"]; got != 2 {
+		t.Fatalf("two distinct upstream sessions counted as %d, want 2", got)
+	}
+	if c.Available("account-a") {
+		t.Fatal("account should be unavailable when its distinct upstream-session limit is reached")
+	}
+}
+
+func TestAccountConcurrencyBlocksNewSessionButAllowsActiveSession(t *testing.T) {
+	c := &accountConcurrency{
+		limit:    1,
+		inflight: map[string]int{},
+		sessions: map[string]map[string]int{},
+		changed:  make(chan struct{}),
+	}
+
+	releaseA, err := c.Acquire(context.Background(), "account-a", "upstream-session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseA()
+
+	ctxSame, cancelSame := context.WithTimeout(context.Background(), time.Second)
+	defer cancelSame()
+	releaseSame, err := c.Acquire(ctxSame, "account-a", "upstream-session-a")
+	if err != nil {
+		t.Fatalf("active upstream session should not consume another account slot: %v", err)
+	}
+	releaseSame()
+
+	ctxNew, cancelNew := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelNew()
+	if _, err := c.Acquire(ctxNew, "account-a", "upstream-session-b"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("new upstream session Acquire() error = %v, want deadline exceeded", err)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"m365-copilot2api/internal/chathub"
 )
@@ -20,6 +21,7 @@ type accountConcurrency struct {
 	mu       sync.Mutex
 	limit    int
 	inflight map[string]int
+	sessions map[string]map[string]int // accountID -> upstream session ID -> active request references
 	changed  chan struct{}
 }
 
@@ -30,7 +32,12 @@ func newAccountConcurrency() *accountConcurrency {
 			limit = parsed
 		}
 	}
-	return &accountConcurrency{limit: limit, inflight: map[string]int{}, changed: make(chan struct{})}
+	return &accountConcurrency{
+		limit:    limit,
+		inflight: map[string]int{},
+		sessions: map[string]map[string]int{},
+		changed:  make(chan struct{}),
+	}
 }
 
 // Available reports whether the account currently has a free concurrency slot.
@@ -58,25 +65,87 @@ func (c *accountConcurrency) Available(accountID string) bool {
 	return c.inflight[accountID] < c.limit
 }
 
-// Acquire blocks until the account has a free slot (or ctx is done) and
-// returns a release function that must be called exactly once.
-func (c *accountConcurrency) Acquire(ctx context.Context, accountID string) (func(), error) {
+// Acquire blocks until the account has a free upstream-session slot (or ctx
+// is done). Calls without a session ID retain request-based behavior for
+// operations that have not created an upstream session yet.
+func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sessionIDs ...string) (func(), error) {
 	if c == nil || accountID == "" {
 		return func() {}, nil
 	}
+	sessionID := ""
+	if len(sessionIDs) > 0 {
+		sessionID = strings.TrimSpace(sessionIDs[0])
+	}
+	// Requests without an established upstream session retain the original
+	// request-based accounting semantics. They must not all share the empty
+	// session key, because each such request may create a distinct session.
+	if sessionID == "" {
+		for {
+			c.mu.Lock()
+			if c.inflight[accountID] < c.limit {
+				c.inflight[accountID]++
+				c.mu.Unlock()
+				var once sync.Once
+				return func() {
+					once.Do(func() {
+						c.mu.Lock()
+						if c.inflight[accountID] <= 1 {
+							delete(c.inflight, accountID)
+						} else {
+							c.inflight[accountID]--
+						}
+						close(c.changed)
+						c.changed = make(chan struct{})
+						c.mu.Unlock()
+					})
+				}, nil
+			}
+			changed := c.changed
+			c.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-changed:
+			}
+		}
+	}
 	for {
 		c.mu.Lock()
-		if c.inflight[accountID] < c.limit {
-			c.inflight[accountID]++
+		if c.sessions == nil {
+			c.sessions = map[string]map[string]int{}
+		}
+		accountSessions := c.sessions[accountID]
+		if accountSessions == nil {
+			accountSessions = map[string]int{}
+			c.sessions[accountID] = accountSessions
+		}
+		refs := accountSessions[sessionID]
+		canAcquire := refs > 0 || c.inflight[accountID] < c.limit
+		if canAcquire {
+			if refs == 0 {
+				c.inflight[accountID]++
+			}
+			accountSessions[sessionID] = refs + 1
 			c.mu.Unlock()
 			var once sync.Once
 			return func() {
 				once.Do(func() {
 					c.mu.Lock()
-					if c.inflight[accountID] <= 1 {
-						delete(c.inflight, accountID)
-					} else {
-						c.inflight[accountID]--
+					accountSessions := c.sessions[accountID]
+					if accountSessions != nil {
+						if accountSessions[sessionID] <= 1 {
+							delete(accountSessions, sessionID)
+							if c.inflight[accountID] <= 1 {
+								delete(c.inflight, accountID)
+							} else {
+								c.inflight[accountID]--
+							}
+						} else {
+							accountSessions[sessionID]--
+						}
+						if len(accountSessions) == 0 {
+							delete(c.sessions, accountID)
+						}
 					}
 					close(c.changed)
 					c.changed = make(chan struct{})
@@ -129,8 +198,10 @@ func (s *Server) accountClient(accountID string) *chathub.Client {
 }
 
 // chatWithAccount runs one chat request under the account's concurrency slot.
+// When upstream supplies a Retry-After delay for a rate-limit response, the
+// request waits for that delay and is replayed once unless its context ends.
 func (s *Server) chatWithAccount(ctx context.Context, accountID string, account chathub.Account, request chathub.Request) (chathub.Result, error) {
-	release, err := s.accountConcurrency.Acquire(ctx, accountID)
+	release, err := s.accountConcurrency.Acquire(ctx, accountID, request.SessionID)
 	if err != nil {
 		return chathub.Result{}, err
 	}
@@ -139,6 +210,24 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).Chat(ctx, account, request)
+	if err != nil && IsRateLimited(err) {
+		if retryAfter := RetryAfterSeconds(err); retryAfter > 0 {
+			timer := time.NewTimer(time.Duration(retryAfter) * time.Second)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				s.markAccountResult(accountID, err)
+				return result, ctx.Err()
+			case <-timer.C:
+			}
+			if s.accountPool != nil {
+				s.accountPool.MarkCall(accountID)
+			}
+			result, err = s.accountClient(accountID).Chat(ctx, account, request)
+		}
+	}
 	s.markAccountResult(accountID, err)
 	return result, err
 }
@@ -146,7 +235,7 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 // chatWithAccountEvents runs one streaming chat request under the account's
 // concurrency slot.
 func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, account chathub.Account, request chathub.Request, onEvent func(chathub.StreamEvent) error) (chathub.Result, error) {
-	release, err := s.accountConcurrency.Acquire(ctx, accountID)
+	release, err := s.accountConcurrency.Acquire(ctx, accountID, request.SessionID)
 	if err != nil {
 		return chathub.Result{}, err
 	}
@@ -162,7 +251,7 @@ func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, ac
 // chatWithAccountReasoning runs one reasoning-stream chat request under the
 // account's concurrency slot.
 func (s *Server) chatWithAccountReasoning(ctx context.Context, accountID string, account chathub.Account, request chathub.Request, onDelta, onReasoning func(string) error) (chathub.Result, error) {
-	release, err := s.accountConcurrency.Acquire(ctx, accountID)
+	release, err := s.accountConcurrency.Acquire(ctx, accountID, request.SessionID)
 	if err != nil {
 		return chathub.Result{}, err
 	}

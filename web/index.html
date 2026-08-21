@@ -1786,7 +1786,7 @@ async function loadTraceStatus(){
     if($('traceEnabled'))$('traceEnabled').checked=!!d.enabled;
     if($('traceMax'))$('traceMax').value=d.max||50;
     if($('traceMaxLabel'))$('traceMaxLabel').textContent=d.max||50;
-    loadTraceLogs();
+    loadTraceLogs(true);
   }catch(e){}
 }
 async function saveTraceConfig(){
@@ -1827,24 +1827,32 @@ async function loadTraceLogs(force=false){
     traceTotal=d.total||0;
     const records=d.records||[];
     const tbody=$('traceLogRows');
-    // Each response is a complete page. Clear rows from the previous page so
-    // pagination always renders exactly the current batch of up to 10 records.
-    tbody.innerHTML='';
-    traceExpanded.clear();
-    for(const k in traceDetailCache)delete traceDetailCache[k];
+    // A forced load (initial load, page change, or manual/config refresh) renders
+    // the requested page from scratch. Background polling must never replace
+    // completed/error rows because doing so destroys the user's text selection.
+    if(force||!tbody.querySelector('tr:not(.empty)')){
+      tbody.innerHTML='';
+      traceExpanded.clear();
+      for(const k in traceDetailCache)delete traceDetailCache[k];
+    }
     for(const x of [...records].reverse()){
       const existing=document.getElementById('tr-'+x.id);
       if(!existing){
+        tbody.querySelector('.empty')?.closest('tr')?.remove();
         tbody.insertAdjacentHTML('afterbegin',traceRowHTML(x));
         continue;
       }
+      // Only an in-progress record is mutable during automatic polling. Once a
+      // request reaches success or error, its row and expanded payload remain
+      // untouched so selecting and copying request content is reliable.
       if(existing.dataset.traceStatus==='in_progress'){
         const detail=document.getElementById('trd-'+x.id);
+        const wasExpanded=traceExpanded.has(x.id);
         existing.insertAdjacentHTML('beforebegin',traceRowHTML(x));
         existing.remove();
         if(detail)detail.remove();
-        if(x.status!=='in_progress')delete traceDetailCache[x.id];
-        if(traceExpanded.has(x.id))await insertTraceDetailRow(x.id);
+        delete traceDetailCache[x.id];
+        if(wasExpanded)await insertTraceDetailRow(x.id);
       }
     }
     if(!records.length&&!tbody.querySelector('tr'))tbody.innerHTML='<tr><td colspan="12" class="empty">Tracing disabled or no requests yet</td></tr>';
@@ -2425,7 +2433,7 @@ window.addEventListener('hashchange',()=>{
 });
 fetch('/api/admin/session').then(r=>r.json()).then(d=>{
   if(d.authenticated&&d.must_change_password){location.replace('/login');return;}
-  if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage(savedPage());loadStats();loadOnboarding();loadVersion().then(()=>checkForUpdates(false));}
+  if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage(savedPage());loadStats();loadOnboarding();loadVersion();}
   else{$('login').style.display='grid';}
 }).catch(()=>{$('login').style.display='grid';});
 </script>
