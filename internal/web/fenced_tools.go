@@ -9,11 +9,12 @@ import (
 var fencedToolCall = regexp.MustCompile("(?s)```([A-Za-z0-9_-]+)\\s*\\n(.*?)\\n```")
 
 // declaredShell returns the shell-ish tool name the client actually
-// declared (bash/sh/shell/powershell/cmd), or "" if none. Forcing an
-// undeclared bash call on clients that don't support it (issue #12) makes
-// them error out and loop, so conversion only happens for declared tools.
+// declared (bash/sh/shell/powershell/pwsh/cmd/workspace_shell), or "" if
+// none. Forcing an undeclared bash call on clients that don't support it
+// (issue #12) makes them error out and loop, so conversion only happens for
+// declared tools.
 func declaredShell(allowed map[string]bool) string {
-	for _, n := range []string{"bash", "sh", "shell", "powershell", "cmd"} {
+	for _, n := range knownShellNames {
 		if allowed[n] {
 			return n
 		}
@@ -32,7 +33,7 @@ func fencedToolCalls(text string, tools []map[string]any, choice any) []detected
 		_ = json.Unmarshal([]byte(args), &v)
 		// Auto-convert bash/shell code blocks to tool calls, but only when
 		// the client declared the tool.
-		if name == "bash" || name == "sh" || name == "shell" || name == "powershell" || name == "cmd" {
+		if name == "bash" || name == "sh" || name == "shell" || name == "powershell" || name == "pwsh" || name == "cmd" {
 			converted := name
 			if !allowed[name] {
 				if shell == "" {
