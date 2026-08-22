@@ -477,8 +477,8 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var patch map[string]any
-		if json.NewDecoder(r.Body).Decode(&patch) != nil {
-			writeOpenAIError(w, 400, "invalid_request_error", "bad json")
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&patch) != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
 			return
 		}
 		for k, v := range patch {

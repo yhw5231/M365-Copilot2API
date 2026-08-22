@@ -25,7 +25,7 @@ func (s *Server) deleteConversation(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID string `json:"id"`
 	}
-	if json.NewDecoder(r.Body).Decode(&body) != nil || body.ID == "" {
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body) != nil || body.ID == "" {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -46,7 +46,7 @@ func (s *Server) conversationCleanup(w http.ResponseWriter, r *http.Request) {
 		Mode  string `json:"mode"`
 		KeepN int    `json:"keep_n"`
 	}
-	if json.NewDecoder(r.Body).Decode(&body) == nil {
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body) == nil {
 		if body.Mode != "" {
 			s.conversationManager.SetMode(ConversationCleanupMode(body.Mode))
 		}
@@ -86,7 +86,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			SessionID string `json:"session_id"`
 		}
-		json.NewDecoder(r.Body).Decode(&body)
+		json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body)
 		sess, ok := s.sessionResolver.GetSession(body.SessionID)
 		if !ok {
 			jsonOut(w, map[string]any{
@@ -314,7 +314,7 @@ func (s *Server) handleM365Delete(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ConversationID string `json:"conversation_id"`
 	}
-	if json.NewDecoder(r.Body).Decode(&body) != nil || body.ConversationID == "" {
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body) != nil || body.ConversationID == "" {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -339,7 +339,7 @@ func (s *Server) handleM365Cleanup(w http.ResponseWriter, r *http.Request) {
 		MaxAgeHours int `json:"max_age_hours"`
 		KeepN       int `json:"keep_n"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body)
 
 	maxAge := time.Duration(body.MaxAgeHours) * time.Hour
 	if maxAge <= 0 {
@@ -386,7 +386,7 @@ func (s *Server) conversationWhitelist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body conversationWhitelistRequest
-	if json.NewDecoder(r.Body).Decode(&body) != nil || body.ConversationID == "" {
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body) != nil || body.ConversationID == "" {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}

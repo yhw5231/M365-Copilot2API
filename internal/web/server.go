@@ -168,6 +168,9 @@ func New() (*Server, error) {
 		return nil, err
 	}
 	password, mustChange := loadAdminPassword()
+	if password == "" {
+		return nil, fmt.Errorf("administrator password is not configured; set M365_ADMIN_PASSWORD, M365_ADMIN_PASSWORD_FILE, or M365_ADMIN_PASSWORD_BOOTSTRAP_FILE")
+	}
 	sessionTTL := 30 * time.Minute
 	if v := os.Getenv("M365_USER_SESSION_TTL_MINUTES"); v != "" {
 		if d, err := time.ParseDuration(v + "m"); err == nil {
@@ -510,7 +513,7 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
 		var b struct {
 			Name string `json:"name"`
 		}
-		if json.NewDecoder(r.Body).Decode(&b) != nil {
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&b) != nil {
 			http.Error(w, "bad json", 400)
 			return
 		}
@@ -541,7 +544,7 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
 			Name    string `json:"name"`
 			Revoked *bool  `json:"revoked"`
 		}
-		if json.NewDecoder(r.Body).Decode(&b) != nil || b.ID == "" {
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&b) != nil || b.ID == "" {
 			http.Error(w, "bad json", 400)
 			return
 		}
@@ -567,13 +570,7 @@ func (s *Server) validAPIKey(r *http.Request) bool {
 			raw = strings.TrimSpace(v[7:])
 		}
 	}
-	if raw != "" && s.apiKeys.valid(raw) {
-		return true
-	}
-	if strings.HasPrefix(raw, "eyJ") {
-		return true
-	}
-	return false
+	return raw != "" && s.apiKeys.valid(raw)
 }
 
 func jsonOut(w http.ResponseWriter, v any) {
@@ -648,7 +645,7 @@ func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -672,7 +669,7 @@ func (s *Server) scheduleAccount(w http.ResponseWriter, r *http.Request) {
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -738,7 +735,7 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body); err != nil || body.ID == "" {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -762,7 +759,7 @@ func (s *Server) provisionAccount(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Email == "" || body.Password == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body); err != nil || body.Email == "" || body.Password == "" {
 		http.Error(w, "email and password required", http.StatusBadRequest)
 		return
 	}
@@ -844,7 +841,7 @@ func (s *Server) bindProxy(w http.ResponseWriter, r *http.Request) {
 		ID       string `json:"id"`
 		ProxyURL string `json:"proxyUrl"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&body); err != nil || body.ID == "" {
 		http.Error(w, "id required", http.StatusBadRequest)
 		return
 	}
@@ -1579,12 +1576,30 @@ func normalizeLegacyTools(body *oaiReq) {
 	}
 }
 
+func toolMapsFromChatHubTools(tools []chathub.Tool) []map[string]any {
+	toolMaps := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		var function map[string]any
+		if err := json.Unmarshal(tool.Function, &function); err != nil {
+			continue
+		}
+		toolMaps = append(toolMaps, map[string]any{
+			"type":     tool.Type,
+			"function": function,
+		})
+	}
+	return toolMaps
+}
+
 func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string, mcpServerURL string) chathub.Request {
 	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
 		answerPrompt += "\n" + ledger.RouterContext()
 	}
 	if len(ledger.Completed) > 0 {
 		answerPrompt += "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
+	}
+	if inst := unifiedWorkspaceInstruction(toolMapsFromChatHubTools(body.Tools)); inst != "" {
+		answerPrompt = inst + "\n\n" + answerPrompt
 	}
 	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments}
 	if planningMode == "native" {

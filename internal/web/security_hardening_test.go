@@ -186,6 +186,35 @@ func TestPKCEStatePoolEvictsOldest(t *testing.T) {
 	}
 }
 
+// TestValidAPIKeyRejectsJWTLikeGarbage guards against accepting arbitrary
+// strings merely because they resemble the beginning of a JWT.
+func TestValidAPIKeyRejectsJWTLikeGarbage(t *testing.T) {
+	store := newAPIKeyStore(filepath.Join(t.TempDir(), "api-keys.json"))
+	validRaw := "sk-valid-test-key"
+	store.Keys = []apiKeyRecord{{
+		ID:        "key-1",
+		Name:      "test",
+		Prefix:    "sk-valid",
+		Hash:      keyHash(validRaw),
+		CreatedAt: time.Now(),
+	}}
+	s := &Server{apiKeys: store}
+
+	for _, raw := range []string{"eyJinvalid", "eyJ", "eyJhbGciOiJub25lIn0.payload.signature"} {
+		r := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		r.Header.Set("Authorization", "Bearer "+raw)
+		if s.validAPIKey(r) {
+			t.Fatalf("validAPIKey accepted unregistered JWT-like credential %q", raw)
+		}
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	r.Header.Set("X-API-Key", validRaw)
+	if !s.validAPIKey(r) {
+		t.Fatal("validAPIKey rejected a registered API key")
+	}
+}
+
 // TestPersistListRegistersStoreOnce guards the persistList growth bug: a
 // store marked dirty many times must be registered exactly once.
 func TestPersistListRegistersStoreOnce(t *testing.T) {

@@ -183,13 +183,14 @@ func TestIsImageQuotaRefusal(t *testing.T) {
 }
 
 func TestDownloadImageAsDataURI(t *testing.T) {
-	// Invalid / unreachable URLs must fall back to the original URL.
+	// Invalid and SSRF-sensitive URLs must fail closed instead of being
+	// returned to the caller as an apparently successful remote URL.
 	u, err := downloadImageAsDataURI("http://127.0.0.1:1/nope.png")
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("downloadImageAsDataURI accepted an unsafe URL")
 	}
-	if u != "http://127.0.0.1:1/nope.png" {
-		t.Fatalf("fallback url=%q", u)
+	if u != "" {
+		t.Fatalf("downloadImageAsDataURI returned fallback URL %q on failure", u)
 	}
 	// Direct base64 encode round-trip via helper.
 	if got := base64.StdEncoding.EncodeToString([]byte("hi")); got != "aGk=" {

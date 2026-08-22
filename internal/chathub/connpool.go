@@ -24,13 +24,11 @@ type ConnPool struct {
 }
 
 func NewConnPool(dialer *websocket.Dialer, header http.Header) *ConnPool {
-	p := &ConnPool{
+	return &ConnPool{
 		conns:  make(map[string]*pooledConn),
 		dialer: dialer,
 		header: header,
 	}
-	go p.gcLoop()
-	return p
 }
 
 func (p *ConnPool) key(oid, tid string) string { return oid + "|" + tid }

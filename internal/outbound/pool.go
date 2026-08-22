@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -343,9 +344,21 @@ func (t *poolRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err == nil {
 		return resp, nil
 	}
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+		resp = nil
+	}
+	// Automatically replay only idempotent methods. A replayable request body
+	// alone does not make a state-changing operation safe to execute twice.
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace,
+		http.MethodPut, http.MethodDelete:
+	default:
+		return nil, err
+	}
 	// Replay the request on the next usable proxy once (body must be replayable).
 	if r.Body != nil && r.GetBody == nil {
-		return resp, err
+		return nil, err
 	}
 	for i := 0; i < len(t.pool.entries)+1; i++ {
 		var next *poolEntry
@@ -367,9 +380,13 @@ func (t *poolRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 		if next == t.entry {
 			break
 		}
-		body, berr := r.GetBody()
-		if berr != nil {
-			break
+		var body io.ReadCloser
+		if r.Body != nil {
+			var berr error
+			body, berr = r.GetBody()
+			if berr != nil {
+				break
+			}
 		}
 		retry := r.Clone(r.Context())
 		retry.Body = body

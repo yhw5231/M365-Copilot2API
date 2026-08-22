@@ -55,15 +55,16 @@ func loadAdminPassword() (string, bool) {
 			return p, p == defaultAdminPassword
 		}
 	}
-	// No password configured anywhere. Fall back to the documented default so
-	// the console stays reachable out of the box; the must-change flag forces
-	// the administrator to set their own password at first login.
-	return defaultAdminPassword, true
+	// No administrator credential is configured. Return an empty password so
+	// server initialization can fail closed instead of exposing a predictable
+	// built-in credential.
+	return "", false
 }
 func saveAdminPassword(password string) error {
 	p := adminPasswordPath()
 	return writeFileAtomic(p, []byte(password+"\n"), 0600)
 }
+
 // trustProxyHeaders reports whether the process is configured to trust
 // X-Forwarded-* headers from any direct peer. This is required when the
 // reverse proxy runs in another container/host (e.g. docker compose bridge

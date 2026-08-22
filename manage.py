@@ -61,9 +61,12 @@ def start():
     os.makedirs(DATA_DIR, exist_ok=True)
 
     env = os.environ.copy()
-    # 默认管理员密码 admin123；设置 M365_ADMIN_PASSWORD 可覆盖。首次登录后
-    # 服务器会强制要求修改密码（must-change 流程）。
-    admin_pw = env.get("M365_ADMIN_PASSWORD", "admin123")
+    # Require an explicitly configured administrator password. The server also
+    # fails closed when no persisted, environment, or bootstrap credential exists.
+    admin_pw = env.get("M365_ADMIN_PASSWORD", "").strip()
+    if not admin_pw and not os.path.exists(os.path.join(DATA_DIR, "admin-password")):
+        print("M365_ADMIN_PASSWORD is required when no persisted administrator password exists.", file=sys.stderr)
+        return
     listen = env.get("M365_LISTEN", "0.0.0.0:9090")
     env.update({
         "M365_LISTEN": listen,

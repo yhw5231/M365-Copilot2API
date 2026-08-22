@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -20,22 +21,43 @@ type PendingToolCall struct {
 // ToolCallQueue manages pending MCP tool calls and their results.
 // It allows the MCP server's onCall handler to block until the client
 // executes the tool and returns the result.
+const (
+	defaultToolCallQueueCapacity = 128
+	defaultToolCallQueueTTL      = 30 * time.Second
+)
+
+var ErrToolCallQueueFull = errors.New("MCP tool call queue is full")
+
+// ToolCallQueue manages a bounded set of pending calls. Entries that are
+// cancelled or exceed the configured TTL are removed before new work is
+// accepted, preventing an unavailable client from causing unbounded growth.
 type ToolCallQueue struct {
-	mu      sync.Mutex
-	pending []*PendingToolCall
-	nextID  int64
+	mu       sync.Mutex
+	pending  []*PendingToolCall
+	nextID   int64
+	capacity int
+	ttl      time.Duration
 }
 
-// NewToolCallQueue creates a new tool call queue.
+// NewToolCallQueue creates a bounded tool call queue using secure defaults.
 func NewToolCallQueue() *ToolCallQueue {
-	return &ToolCallQueue{}
+	return &ToolCallQueue{
+		capacity: defaultToolCallQueueCapacity,
+		ttl:      defaultToolCallQueueTTL,
+	}
 }
 
-// Enqueue adds a tool call to the queue and returns a channel that will receive the result.
-// The caller should block on either ResultCh or ErrCh.
+// Enqueue adds a tool call to the bounded queue. It returns nil when the
+// queue remains at capacity after expired entries have been removed.
 func (q *ToolCallQueue) Enqueue(name string, arguments map[string]any) *PendingToolCall {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
+	q.removeExpiredLocked(time.Now())
+	if len(q.pending) >= q.capacity {
+		return nil
+	}
+
 	q.nextID++
 	call := &PendingToolCall{
 		ID:        fmt.Sprintf("mcp-tool-%d", q.nextID),
@@ -47,6 +69,44 @@ func (q *ToolCallQueue) Enqueue(name string, arguments map[string]any) *PendingT
 	}
 	q.pending = append(q.pending, call)
 	return call
+}
+
+func (q *ToolCallQueue) removeExpiredLocked(now time.Time) {
+	if q.ttl <= 0 || len(q.pending) == 0 {
+		return
+	}
+
+	kept := q.pending[:0]
+	for _, call := range q.pending {
+		if now.Sub(call.CreatedAt) < q.ttl {
+			kept = append(kept, call)
+			continue
+		}
+		select {
+		case call.ErrCh <- context.DeadlineExceeded:
+		default:
+		}
+	}
+	q.pending = kept
+}
+
+// Remove deletes a queued call that timed out or whose caller was cancelled.
+func (q *ToolCallQueue) Remove(call *PendingToolCall) bool {
+	if call == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i, pending := range q.pending {
+		if pending != call {
+			continue
+		}
+		copy(q.pending[i:], q.pending[i+1:])
+		q.pending[len(q.pending)-1] = nil
+		q.pending = q.pending[:len(q.pending)-1]
+		return true
+	}
+	return false
 }
 
 // Dequeue waits for and returns the next pending tool call.
@@ -126,12 +186,17 @@ func (p *MCPToolProvider) ListTools(ctx context.Context) ([]Tool, error) {
 }
 
 func (p *MCPToolProvider) CallTool(ctx context.Context, name string, arguments map[string]any) (CallResult, error) {
-	// Enqueue the tool call for the main flow to pick up
+	// Enqueue the tool call for the main flow to pick up. Reject new work
+	// explicitly when the bounded queue is full instead of dereferencing nil
+	// or allowing unbounded memory growth.
 	call := p.queue.Enqueue(name, arguments)
+	if call == nil {
+		return CallResult{}, ErrToolCallQueueFull
+	}
 
 	// Try to wait for the result, but return immediately if the client
-	// hasn't responded within a short timeout. The actual tool execution
-	// is handled by the standard OpenAI tool calling flow.
+	// hasn't responded within a short timeout. Remove calls that are still
+	// queued when their waiter times out or is cancelled.
 	timeout := 30 * time.Second
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -142,15 +207,14 @@ func (p *MCPToolProvider) CallTool(ctx context.Context, name string, arguments m
 	case err := <-call.ErrCh:
 		return CallResult{}, err
 	case <-timer.C:
-		// Timeout - the tool call has been returned to the user's client.
-		// Return a pending result so the MCP client knows the tool is being
-		// executed. The actual result will be forwarded in a subsequent turn.
+		p.queue.Remove(call)
 		return CallResult{
 			Content: []map[string]any{
 				{"type": "text", "text": fmt.Sprintf("Tool call %s has been forwarded to the client for execution. The result will be provided in a subsequent turn.", name)},
 			},
 		}, nil
 	case <-ctx.Done():
+		p.queue.Remove(call)
 		return CallResult{}, ctx.Err()
 	}
 }

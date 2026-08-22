@@ -125,7 +125,11 @@ func (s *Server) deploymentAction(w http.ResponseWriter, r *http.Request) {
 		CustomURL string `json:"customUrl"`
 	}
 	if r.Method == http.MethodPut {
-		_ = json.NewDecoder(r.Body).Decode(&in)
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&in); err != nil {
+			st.mu.Unlock()
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
+			return
+		}
 		d.CustomURL = strings.TrimRight(strings.TrimSpace(in.CustomURL), "/")
 		d.ActiveURL = d.CustomURL
 		if d.ActiveURL == "" {

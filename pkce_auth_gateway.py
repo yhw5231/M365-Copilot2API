@@ -55,8 +55,9 @@ SCOPES = [
 
 DEFAULT_STATE_DIR = Path(os.environ.get("M365_STATE_DIR", "/tmp/m365-pkce"))
 TOKEN_FILE = Path(os.path.expanduser(os.environ.get("M365_TOKEN_FILE", "~/.config/m365-copilot2api/accounts.json")))
-DEFAULT_HOST = os.environ.get("M365_AUTH_HOST", "0.0.0.0")
+DEFAULT_HOST = os.environ.get("M365_AUTH_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("M365_AUTH_PORT", "8765"))
+GATEWAY_TOKEN = os.environ.get("M365_AUTH_GATEWAY_TOKEN", "").strip() or secrets.token_urlsafe(32)
 
 
 def b64url(data: bytes) -> str:
@@ -243,13 +244,19 @@ def persist_tokens(token_response: dict[str, Any], token_file: Path = TOKEN_FILE
     }
 
     token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    # also mirror to the path our earlier scripts used, if different
-    mirror = Path("/tmp/m365-copilot2api-tokens.json")
-    if token_file.resolve() != mirror.resolve():
+    serialized = json.dumps(payload, indent=2)
+    temporary_file = token_file.with_name(f".{token_file.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        temporary_file.write_text(serialized, encoding="utf-8")
+        if os.name != "nt":
+            temporary_file.chmod(0o600)
+        os.replace(temporary_file, token_file)
+        if os.name != "nt":
+            token_file.chmod(0o600)
+    finally:
         try:
-            mirror.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        except Exception:
+            temporary_file.unlink(missing_ok=True)
+        except OSError:
             pass
 
     # keep session state for debugging
@@ -279,9 +286,12 @@ def complete_with_callback(callback: str, expect_state: Optional[str] = None) ->
         current_state = SESSION.state
     if expect_state is None:
         expect_state = current_state
-    if state and expect_state and state != expect_state:
-        # soft warning only; some pastes may lose state
-        print(f"[warn] state mismatch: got={state} expected={expect_state}", file=sys.stderr)
+    if not expect_state:
+        raise ValueError("PKCE session has no expected state")
+    if not state:
+        raise ValueError("callback is missing the required state parameter")
+    if not secrets.compare_digest(state, expect_state):
+        raise ValueError("callback state does not match the active PKCE session")
 
     token_response = exchange_code(code, verifier)
     account = persist_tokens(token_response)
@@ -337,8 +347,8 @@ HTML_PAGE = """<!doctype html>
       <p class="muted">登录后浏览器会跳到 <code>oauth2/nativeclient?code=...</code>。请立刻复制完整地址粘贴到下方（有时会再跳到 wrongplace）。</p>
       <div class="row">
         <a class="btn" id="loginBtn" href="#" target="_blank" rel="noreferrer">1. 打开 Microsoft 登录</a>
-        <button class="secondary" onclick="refreshStatus()">刷新状态</button>
-        <button class="danger" onclick="resetSession()">重置会话</button>
+        <button class="secondary" id="refreshStatusBtn" type="button">刷新状态</button>
+        <button class="danger" id="resetSessionBtn" type="button">重置会话</button>
       </div>
     </div>
 
@@ -346,7 +356,7 @@ HTML_PAGE = """<!doctype html>
       <h2>2. 粘贴回调地址 / 授权码</h2>
       <textarea id="callback" placeholder="https://login.microsoftonline.com/common/oauth2/nativeclient?code=...&state=...&#10;或者只贴 code= 后面的授权码"></textarea>
       <div class="row">
-        <button onclick="submitCallback()">提交并换 token</button>
+        <button id="submitCallbackBtn" type="button">提交并换 token</button>
       </div>
       <p id="msg" class="muted"></p>
     </div>
@@ -367,32 +377,56 @@ HTML_PAGE = """<!doctype html>
     </div>
   </div>
   <script>
+    const gatewayToken = __GATEWAY_TOKEN_JSON__;
+    const authenticatedHeaders = {'X-M365-Auth-Token': gatewayToken};
+
     async function refreshStatus() {
-      const res = await fetch('/api/status');
+      const res = await fetch('/api/status', {headers: authenticatedHeaders});
       const data = await res.json();
       document.getElementById('loginBtn').href = data.auth_url;
       const box = document.getElementById('status');
+      box.replaceChildren();
+      const appendTextElement = (parent, tag, text, className) => {
+        const element = document.createElement(tag);
+        if (className) element.className = className;
+        element.textContent = String(text ?? '');
+        parent.appendChild(element);
+        return element;
+      };
+      const appendKeyValue = (parent, key, value, useCode = false) => {
+        appendTextElement(parent, 'div', key);
+        const valueElement = document.createElement('div');
+        if (useCode) {
+          appendTextElement(valueElement, 'code', value);
+        } else {
+          valueElement.textContent = String(value ?? '');
+        }
+        parent.appendChild(valueElement);
+      };
       if (data.completed) {
-        const s = data.result_summary;
-        box.innerHTML = `<div class="ok">✅ 已完成</div>
-          <div class="kv" style="margin-top:10px">
-            <div>email</div><div>${s.email || ''}</div>
-            <div>appid</div><div>${s.appid || ''}</div>
-            <div>aud</div><div>${s.aud || ''}</div>
-            <div>expires</div><div>${s.expires_at || ''}</div>
-            <div>token file</div><div><code>${s.token_file || ''}</code></div>
-          </div>`;
+        const s = data.result_summary || {};
+        appendTextElement(box, 'div', '✅ 已完成', 'ok');
+        const values = document.createElement('div');
+        values.className = 'kv status-values';
+        appendKeyValue(values, 'email', s.email);
+        appendKeyValue(values, 'appid', s.appid);
+        appendKeyValue(values, 'aud', s.aud);
+        appendKeyValue(values, 'expires', s.expires_at);
+        appendKeyValue(values, 'token file', s.token_file, true);
+        box.appendChild(values);
       } else if (data.error) {
-        box.innerHTML = `<div class="err">❌ ${data.error}</div><pre>${data.auth_url}</pre>`;
+        appendTextElement(box, 'div', '❌ ' + String(data.error), 'err');
+        appendTextElement(box, 'pre', data.auth_url);
       } else {
-        box.innerHTML = `<div>等待回调...</div>
-          <div class="kv" style="margin-top:10px">
-            <div>client</div><div><code>${data.client_id}</code></div>
-            <div>redirect</div><div><code>${data.redirect_uri}</code></div>
-            <div>state</div><div><code>${data.state}</code></div>
-          </div>
-          <p class="muted">登录 URL：</p>
-          <pre>${data.auth_url}</pre>`;
+        appendTextElement(box, 'div', '等待回调...');
+        const values = document.createElement('div');
+        values.className = 'kv status-values';
+        appendKeyValue(values, 'client', data.client_id, true);
+        appendKeyValue(values, 'redirect', data.redirect_uri, true);
+        appendKeyValue(values, 'state', data.state, true);
+        box.appendChild(values);
+        appendTextElement(box, 'p', '登录 URL：', 'muted');
+        appendTextElement(box, 'pre', data.auth_url);
       }
     }
     async function submitCallback() {
@@ -403,7 +437,7 @@ HTML_PAGE = """<!doctype html>
       try {
         const res = await fetch('/api/exchange', {
           method: 'POST',
-          headers: {'Content-Type': 'application/json'},
+          headers: {'Content-Type': 'application/json', ...authenticatedHeaders},
           body: JSON.stringify({callback})
         });
         const data = await res.json();
@@ -417,11 +451,14 @@ HTML_PAGE = """<!doctype html>
       }
     }
     async function resetSession() {
-      await fetch('/api/reset', {method: 'POST'});
+      await fetch('/api/reset', {method: 'POST', headers: authenticatedHeaders});
       document.getElementById('callback').value = '';
       document.getElementById('msg').textContent = '已重置';
       await refreshStatus();
     }
+    document.getElementById('refreshStatusBtn').addEventListener('click', refreshStatus);
+    document.getElementById('resetSessionBtn').addEventListener('click', resetSession);
+    document.getElementById('submitCallbackBtn').addEventListener('click', submitCallback);
     refreshStatus();
     setInterval(refreshStatus, 3000);
   </script>
@@ -448,13 +485,24 @@ class Handler(BaseHTTPRequestHandler):
         raw = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
         self._send(code, raw, "application/json; charset=utf-8")
 
+    def _authorized(self) -> bool:
+        supplied = self.headers.get("X-M365-Auth-Token", "")
+        if supplied and secrets.compare_digest(supplied, GATEWAY_TOKEN):
+            return True
+        self._json(401, {"error": "valid gateway authentication token required"})
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
 
         if path in ("/", "/index.html"):
-            self._send(200, HTML_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            page = HTML_PAGE.replace("__GATEWAY_TOKEN_JSON__", json.dumps(GATEWAY_TOKEN))
+            self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            return
+
+        if path in ("/api/status", "/api/auth-url", "/callback", "/auth/callback") and not self._authorized():
             return
 
         if path == "/api/status":
@@ -462,7 +510,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/auth-url":
-            self._json(200, {"auth_url": SESSION.status()["auth_url"], "state": SESSION.status()["state"]})
+            status = SESSION.status()
+            self._json(200, {"auth_url": status["auth_url"], "state": status["state"]})
             return
 
         # direct callback capture if someone points a custom redirect here later
@@ -492,12 +541,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        length = int(self.headers.get("Content-Length") or 0)
+        if path in ("/api/reset", "/api/exchange") and not self._authorized():
+            return
+        max_body_bytes = 64 * 1024
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._json(400, {"error": "invalid Content-Length"})
+            return
+        if length < 0 or length > max_body_bytes:
+            self._json(413, {"error": "request body exceeds 64 KiB"})
+            return
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw.decode("utf-8") or "{}")
-        except Exception:
-            body = {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._json(400, {"error": "invalid JSON request body"})
+            return
+        if not isinstance(body, dict):
+            self._json(400, {"error": "JSON request body must be an object"})
+            return
 
         if path == "/api/reset":
             with SESSION.lock:

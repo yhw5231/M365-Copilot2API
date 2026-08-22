@@ -525,9 +525,12 @@ func downloadImageAsBase64WithToken(url, token string) (b64, contentType string,
 	if resp.StatusCode != 200 {
 		return "", "", fmt.Errorf("download returned %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGeneratedImageBytes+1))
 	if err != nil {
 		return "", "", err
+	}
+	if len(body) > maxGeneratedImageBytes {
+		return "", "", fmt.Errorf("downloaded image exceeds %d bytes", maxGeneratedImageBytes)
 	}
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
@@ -540,7 +543,7 @@ func downloadImageAsBase64WithToken(url, token string) (b64, contentType string,
 func downloadImageAsDataURI(url string) (string, error) {
 	b64, ct, err := downloadImageAsBase64(url)
 	if err != nil {
-		return url, nil
+		return "", fmt.Errorf("download image as data URI: %w", err)
 	}
 	return "data:" + ct + ";base64," + b64, nil
 }
@@ -553,7 +556,7 @@ func downloadImageAsDataURIWithToken(url, token string) (string, error) {
 	b64, ct, err := downloadImageAsBase64WithToken(url, token)
 	if err != nil {
 		log.Printf("[image-download] failed url=%s token_len=%d err=%v", url[:minInt(len(url), 80)], len(token), err)
-		return url, nil
+		return "", fmt.Errorf("download image with token: %w", err)
 	}
 	log.Printf("[image-download] ok url=%s ct=%s size=%d", url[:minInt(len(url), 80)], ct, len(b64))
 	return "data:" + ct + ";base64," + b64, nil

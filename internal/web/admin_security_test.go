@@ -31,16 +31,24 @@ func postJSON(t *testing.T, c *http.Client, url, body string) *http.Response {
 	return r
 }
 
-func TestDefaultPasswordWhenNothingConfigured(t *testing.T) {
+func TestNoPasswordWhenNothingConfigured(t *testing.T) {
 	t.Setenv("M365_ADMIN_PASSWORD", "")
-	t.Setenv("M365_ADMIN_PASSWORD_FILE", t.TempDir()+"/admin-password")
+	t.Setenv("M365_ADMIN_PASSWORD_FILE", filepath.Join(t.TempDir(), "admin-password"))
 	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
 	got, mustChange := loadAdminPassword()
-	if mustChange != true {
-		t.Fatalf("mustChange=%v, want true for the default password", mustChange)
+	if got != "" || mustChange {
+		t.Fatalf("loadAdminPassword()=(%q,%v), want empty password and false", got, mustChange)
 	}
-	if got != defaultAdminPassword {
-		t.Fatalf("default admin password=%q, want %q", got, defaultAdminPassword)
+}
+
+func TestNewRejectsMissingAdminPassword(t *testing.T) {
+	t.Setenv("M365_ADMIN_PASSWORD", "")
+	t.Setenv("M365_ADMIN_PASSWORD_FILE", filepath.Join(t.TempDir(), "admin-password"))
+	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
+	t.Setenv("M365_CONFIG", filepath.Join(t.TempDir(), "accounts.json"))
+
+	if _, err := New(); err == nil || !strings.Contains(err.Error(), "administrator password is not configured") {
+		t.Fatalf("New() error=%v, want missing administrator password error", err)
 	}
 }
 

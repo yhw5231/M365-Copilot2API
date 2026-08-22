@@ -185,7 +185,7 @@ func HandleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req jsonRPCRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil {
 		json.NewEncoder(w).Encode(newRPCError(nil, -32700, "parse error: "+err.Error()))
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,6 +42,62 @@ for line in sys.stdin:
 	}
 	if got.Content[0]["text"] != "hello" {
 		t.Fatalf("result=%v", got)
+	}
+}
+
+func pythonTestCommand() string {
+	if runtime.GOOS == "windows" {
+		return "python"
+	}
+	return "python3"
+}
+
+func TestStdioMCPReaderExitFailsPendingRequest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	server := `import sys
+sys.stdin.readline()
+sys.exit(0)`
+	client, err := StartStdio(ctx, pythonTestCommand(), []string{"-c", server}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	started := time.Now()
+	err = client.Initialize(ctx)
+	if err == nil {
+		t.Fatal("Initialize succeeded after the MCP subprocess exited")
+	}
+	if !strings.Contains(err.Error(), "MCP stdio reader stopped") {
+		t.Fatalf("Initialize error=%q, want MCP stdio reader stopped", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 4*time.Second {
+		t.Fatalf("pending request was not failed promptly; elapsed=%v", elapsed)
+	}
+}
+
+func TestStdioMCPRejectsOversizedResponse(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	server := `import json,sys
+r=json.loads(sys.stdin.readline())
+out={"jsonrpc":"2.0","id":r.get("id"),"result":{"padding":"x"*(9*1024*1024)}}
+print(json.dumps(out),flush=True)`
+	client, err := StartStdio(ctx, pythonTestCommand(), []string{"-c", server}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	err = client.Initialize(ctx)
+	if err == nil {
+		t.Fatal("Initialize accepted an MCP response larger than the configured limit")
+	}
+	if !strings.Contains(err.Error(), "MCP stdio reader stopped") {
+		t.Fatalf("Initialize error=%q, want MCP stdio reader stopped", err)
 	}
 }
 

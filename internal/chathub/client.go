@@ -315,6 +315,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 	log.Printf("chathub timing ws_dial_ms=%d total_ms=%d reused=%t", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds(), reused)
 
+	// Bound every WebSocket message before the handshake or streaming loop reads it.
+	// This prevents a malformed or compromised upstream from causing unbounded allocation.
+	conn.SetReadLimit(8 << 20)
+
 	returnConn := true
 	defer func() {
 		if returnConn && conn != nil && c.Pool != nil {
@@ -796,18 +800,18 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			log.Printf("[upload] http error: %v", err)
-			continue
+			return fmt.Errorf("upload image: %w", err)
 		}
-		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
 		resp.Body.Close()
 		if readErr != nil {
-			log.Printf("[upload] read error: %v", readErr)
-			continue
+			return fmt.Errorf("read upload response: %w", readErr)
+		}
+		if len(data) > 2<<20 {
+			return fmt.Errorf("upload response exceeds %d bytes", 2<<20)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			log.Printf("[upload] status %s: %s", resp.Status, strings.TrimSpace(string(data[:minInt(len(data), 500)])))
-			continue
+			return fmt.Errorf("upload returned %s: %s", resp.Status, strings.TrimSpace(string(data[:minInt(len(data), 500)])))
 		}
 		var out struct {
 			DocID    string `json:"docId"`
@@ -818,12 +822,10 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 			} `json:"result"`
 		}
 		if err := json.Unmarshal(data, &out); err != nil {
-			log.Printf("[upload] json error: %v", err)
-			continue
+			return fmt.Errorf("decode upload response: %w", err)
 		}
 		if out.Result.Value != "Success" || out.DocID == "" {
-			log.Printf("[upload] failed: %s", strings.TrimSpace(string(data)))
-			continue
+			return fmt.Errorf("upload failed: %s", strings.TrimSpace(string(data[:minInt(len(data), 500)])))
 		}
 		a.DocID = out.DocID
 		a.FileType = strings.TrimPrefix(strings.ToLower(out.FileType), ".")

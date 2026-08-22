@@ -25,7 +25,7 @@ services:
       M365_CONVERSATION_SESSION_CACHE: /data/conversation-sessions.json
       M365_API_KEYS: /data/api-keys.json
       # 管理员密码直接从环境变量读取（优先），支持从 .env 文件注入。
-      # 留空表示采用内置默认密码 admin123（首次登录仍会强制修改并写入 /data/admin-password）。
+      # 首次启动时必须设置该变量，或预先提供 /data/admin-password 或 bootstrap 密钥文件；不再使用固定默认密码。
       M365_ADMIN_PASSWORD: ${M365_ADMIN_PASSWORD:-}
       # 持久化密码文件（web 修改后自动写入）；升级/重启后继续生效。
       M365_ADMIN_PASSWORD_FILE: /data/admin-password

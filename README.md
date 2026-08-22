@@ -118,7 +118,7 @@ chmod +x m365-copilot2api-linux-amd64
 git clone https://github.com/yhw5231/M365-Copilot2API.git
 cd M365-Copilot2API
 
-# 设置管理员密码（可选，默认 admin123），生产环境务必设置强密码
+# 设置管理员密码（必填；项目不再提供默认密码），请使用强密码
 $env:M365_ADMIN_PASSWORD = "your_strong_password"
 
 go build -o m365-copilot2api.exe ./cmd/server
@@ -179,7 +179,7 @@ docker compose up -d          # 重建容器；./data 挂载卷保留全部数�
 M365_ADMIN_PASSWORD=your_strong_password
 ```
 
-如需改用文件注入（传统的 Docker Secret 方式），在 `secrets/m365_admin_password` 中写入明文密码（`0400` 权限），容器会把它作为 bootstrap 密码读取。两者都不配置时才会回退到内置默认 `admin123`。
+如需改用文件注入（传统的 Docker Secret 方式），在 `secrets/m365_admin_password` 中写入明文密码（`0400` 权限），容器会把它作为 bootstrap 密码读取。必须通过环境变量或该文件配置管理员密码，项目不再提供内置默认密码。
 
 **首次部署免权限问题**
 
@@ -241,7 +241,7 @@ server {
 
 浏览器打开控制台（默认 `http://127.0.0.1:9090`）：
 
-1. 用管理员密码登录（首次登录**强制要求修改密码**，默认密码 `admin123`）。
+1. 使用通过 `M365_ADMIN_PASSWORD` 或密码文件配置的管理员密码登录。首次登录仍会**强制要求修改密码**。
 2. 在「账号」页点击**开始授权**：
    - 浏览器会弹出新窗口，跳转到 Microsoft 登录页。
    - 用你的 M365 账号完成登录。
@@ -263,7 +263,7 @@ server {
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `M365_LISTEN` | `127.0.0.1:9090` | 监听地址（`manage.py` 与 Docker 内置为 `0.0.0.0:9090`） |
-| `M365_ADMIN_PASSWORD` | `admin123` | 管理员密码。未配置时使用默认值 `admin123`（首次登录强制修改）；可通过环境变量或 `M365_ADMIN_PASSWORD_FILE` 持久化密码文件覆盖 |
+| `M365_ADMIN_PASSWORD` | 无，必须配置 | 管理员密码。必须通过该环境变量或 `M365_ADMIN_PASSWORD_FILE` 指向的密码文件配置；首次登录仍会强制修改密码 |
 | `M365_TOKEN_ENC_KEY` | 空（不加密） | 账号 Token 加密密钥：64 位十六进制（32 字节），启用后 `accounts.json` 中的 accessToken / refreshToken 以 AES-256-GCM 密文落盘（`enc:v1:` 前缀），旧明文数据会自动迁移；不配置则保持明文以兼容旧部署，**请务必配置** |
 | `M365_DATA_DIR` | `~/.config/m365-copilot2api` | 数据目录（token、密钥、用量等集中存储；`manage.py` 内置为 `data/`）。**备份该目录等同于备份全部账号凭据，须按敏感数据对待** |
 | `M365_CONFIG` | `~/.config/m365-copilot2api/accounts.json` | 账号配置文件路径 |
@@ -565,7 +565,7 @@ M365-Copilot2API/
 ## 安全说明
 
 - **默认仅监听内网**：直接运行二进制默认 `M365_LISTEN=127.0.0.1:9090`；对外提供服务务必通过 TLS 终止的反向代理（Nginx / Caddy，配置示例见上方「Nginx 反向代理」节），并为 SSE 与 WebSocket 开启长连接与 `proxy_buffering off`。
-- **强制改密**：未配置 `M365_ADMIN_PASSWORD` 时使用内置默认密码 `admin123`（`manage.py` 同样注入该默认值），首次登录后必须立即修改；遗留的 `admin123` 密码文件会被识别并强制改密。
+- **强制改密**：必须通过 `M365_ADMIN_PASSWORD` 或 `M365_ADMIN_PASSWORD_FILE` 配置初始管理员密码；首次登录后仍必须立即修改。项目不再提供内置默认密码。
 - **Token 加密落盘**：设置 `M365_TOKEN_ENC_KEY`（64 位十六进制）后，`accounts.json` 中的 accessToken / refreshToken 以 AES-256-GCM 密文存储；加载时若密钥缺失或不匹配会直接拒绝启动，绝不静默回退明文。
 - **密钥可回读**：API Key 明文与 SHA-256 哈希一并持久化到 `api-keys.json`（`0600`），控制台可随时重新显示并复制完整密钥；旧版明文只在缺少哈希时补写哈希、不再清零。请妥善保护控制台与数据目录权限。
 - **数据落盘权限**：账号凭据、Token 缓存、会话绑定、API Key 等数据文件以 `0600` 权限写入，数据目录建议 `0700`。**备份数据目录等同于备份全部账号凭据与 M365 会话**，请按敏感数据处理，并考虑用 `M365_TOKEN_ENC_KEY` 加密后再归档。
@@ -596,7 +596,7 @@ M365-Copilot2API/
 
 **Q6：Docker 部署后管理员密码登录不上，输什么都不对，或进入后添加账号提示「请先修改密码」？**
 
-密码框留空或未正确注入会导致回退到默认密码 `admin123`，或受制于首启时 `/data/admin-password` 为空 / 权限异常。推荐直接在 compose 环境变量里注入密码：
+未通过环境变量或密码文件正确配置管理员密码，或首启时 `/data/admin-password` 为空、权限异常，都会导致服务无法正常完成管理员初始化。推荐直接在 compose 环境变量里注入密码：
 
 ```bash
 # 在仓库根目录的 .env 里设置后执行
@@ -604,7 +604,7 @@ M365_ADMIN_PASSWORD=你的强密码
 docker compose up -d --build
 ```
 
-容器会优先使用 `M365_ADMIN_PASSWORD`，不再依赖默认就为空的密码文件。若希望彻底不用默认回退，务必设置该环境变量。
+容器会优先使用 `M365_ADMIN_PASSWORD`，也可使用 `M365_ADMIN_PASSWORD_FILE` 指向的密码文件。必须通过其中一种方式配置管理员密码，否则服务无法正常完成管理员初始化。
 
 **Q7：git 拉取后改配置的密码部署不生效，或登录后改配置保存报错？**
 

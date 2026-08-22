@@ -13,27 +13,41 @@ import (
 // loopback, link-local and cloud metadata ranges. It is the single gate used
 // both by ChatHub attachment downloads and by the web image-fetch path.
 func ValidateRemoteDownloadURL(raw string) error {
+	_, err := ResolveRemoteDownloadURL(raw)
+	return err
+}
+
+// ResolveRemoteDownloadURL validates an attacker-influenced HTTPS URL and
+// returns every public address resolved during that validation. Callers that
+// connect directly must bind the subsequent dial to one of these addresses so
+// DNS cannot change between validation and connection establishment.
+func ResolveRemoteDownloadURL(raw string) ([]net.IP, error) {
 	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("invalid attachment URL")
+	if err != nil || u == nil {
+		return nil, fmt.Errorf("invalid attachment URL")
 	}
 	if u.Scheme != "https" {
-		return fmt.Errorf("attachment download requires https")
+		return nil, fmt.Errorf("attachment download requires https")
+	}
+	if u.User != nil {
+		return nil, fmt.Errorf("attachment URL must not contain user information")
 	}
 	host := u.Hostname()
 	if host == "" {
-		return fmt.Errorf("attachment URL has no host")
+		return nil, fmt.Errorf("attachment URL has no host")
 	}
 	ips, err := net.LookupIP(host)
 	if err != nil || len(ips) == 0 {
-		return fmt.Errorf("attachment host does not resolve")
+		return nil, fmt.Errorf("attachment host does not resolve")
 	}
+	validated := make([]net.IP, 0, len(ips))
 	for _, ip := range ips {
 		if ipUnsafe(ip) {
-			return fmt.Errorf("attachment URL targets a non-public address")
+			return nil, fmt.Errorf("attachment URL targets a non-public address")
 		}
+		validated = append(validated, append(net.IP(nil), ip...))
 	}
-	return nil
+	return validated, nil
 }
 
 // MaxRedirects caps how many redirects a validated fetch may follow; every

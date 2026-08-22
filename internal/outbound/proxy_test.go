@@ -3,6 +3,8 @@ package outbound
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"testing"
 )
 
@@ -156,4 +158,50 @@ func TestProxyModeEnvParsing(t *testing.T) {
 			t.Fatalf("M365_ENFORCE_PROXY=%q: want %v, got %v", raw, want, ProxyMode())
 		}
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestPoolRoundTripperRetriesGETWithoutBody(t *testing.T) {
+	p := mustPool(t, []string{"http://a.example", "http://b.example"})
+	first := p.entries[0]
+	second := p.entries[1]
+
+	firstTransport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errConnBroken
+	})
+	secondTransport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Body != nil {
+			t.Fatalf("retried GET must not gain a request body")
+		}
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(http.NoBody),
+			Request:    req,
+		}, nil
+	})
+	first.clients.HTTP.Transport = firstTransport
+	second.clients.HTTP.Transport = secondTransport
+
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Body != nil || req.GetBody != nil {
+		t.Fatalf("test requires a bodyless request, got BodyNil=%t GetBodyNil=%t", req.Body == nil, req.GetBody == nil)
+	}
+
+	tripper := &poolRoundTripper{pool: p, entry: first, base: firstTransport}
+	resp, err := tripper.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("bodyless GET retry failed: %v", err)
+	}
+	if resp == nil || resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected retry response: %#v", resp)
+	}
+	resp.Body.Close()
 }
