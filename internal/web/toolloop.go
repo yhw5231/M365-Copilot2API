@@ -239,45 +239,64 @@ func isContentPolicyBlock(text string) bool {
 	return false
 }
 
-var sandboxHallucinationPatterns = []string{
-	"I can run that for you",
-	"I'll run that",
-	"let me run that",
-	"let me execute",
-	"running in sandbox",
-	"executing in sandbox",
-	"code interpreter",
-	"python sandbox",
-	"sandbox environment",
-	"/mnt/data",
-	"linux container",
-	"linux sandbox",
-	"cloud sandbox",
-	"execution environment has changed",
-	"cannot access the Windows path",
-	"only provides Linux",
-	"只提供 Linux 容器",
-	"no Windows execution",
-	"don't have a Windows",
-	"cannot execute on Windows",
-	"no execution channel",
-	"没有 Windows 执行通道",
-	"没有执行通道",
-	"cannot run commands on",
-	"don't have command execution",
-	"无法执行命令",
-	"执行环境已经切换",
-	"I don't have SSH access tools",
-	"I don't have any tools",
-	"none of which can reach",
+var workspaceToolMisjudgmentPatterns = []string{
+	"cannot access the windows path because this session only provides linux",
+	"cannot access your windows workspace because this session only provides linux",
+	"this session only provides a linux container",
+	"this session only has a linux sandbox",
+	"the current session only has access to /mnt/data",
+	"i can only access /mnt/data",
+	"i don't have any tools in this session",
+	"no tools are available in this session",
+	"the provided tools are not available in this session",
+	"i don't have command execution in this session",
+	"i cannot access the actual workspace",
+	"i cannot access your actual workspace",
+	"当前会话只提供 linux 容器",
+	"当前会话只能访问 /mnt/data",
+	"当前会话没有任何可用工具",
+	"当前会话没有执行工具",
+	"无法访问实际工作区",
+	"无法访问你的实际工作区",
 }
 
 func isSandboxHallucination(text string) bool {
-	low := strings.ToLower(text)
-	for _, p := range sandboxHallucinationPatterns {
-		if strings.Contains(low, strings.ToLower(p)) {
+	return isWorkspaceToolMisjudgment(text)
+}
+
+// isWorkspaceToolMisjudgment identifies explicit, incorrect claims that the
+// current gateway or session can access only a different environment, lacks
+// caller-provided tools, or cannot access the actual workspace. Ordinary
+// technical discussion of containers, sandboxes, /mnt/data, code interpreters,
+// or legitimate tool failures is intentionally not classified as pollution.
+func isWorkspaceToolMisjudgment(text string) bool {
+	low := strings.ToLower(strings.TrimSpace(text))
+	if low == "" {
+		return false
+	}
+	for _, pattern := range workspaceToolMisjudgmentPatterns {
+		if strings.Contains(low, strings.ToLower(pattern)) {
 			return true
 		}
 	}
 	return false
+}
+
+// cleanWorkspaceToolMisjudgments removes only previously persisted assistant
+// messages that contain a workspace/tool-availability misjudgment. User,
+// system, developer, and tool messages are always preserved, including genuine
+// discussions of /mnt/data, Linux containers, sandboxes, or Windows tooling.
+func cleanWorkspaceToolMisjudgments(messages []oaiMsg) []oaiMsg {
+	if len(messages) == 0 {
+		return nil
+	}
+	cleaned := make([]oaiMsg, 0, len(messages))
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") &&
+			isWorkspaceToolMisjudgment(contentToString(msg.Content)) {
+			continue
+		}
+		cleaned = append(cleaned, msg)
+	}
+	return cleaned
 }

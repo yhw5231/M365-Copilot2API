@@ -21,7 +21,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -1388,6 +1387,93 @@ func (s *Server) dropTransientConversation(conversationID string) {
 	}(conversationID)
 }
 
+var (
+	errWorkspaceToolCorrectionFailed = errors.New("workspace/tool correction failed")
+	errWorkspaceToolMisjudgment      = errors.New("upstream repeatedly misidentified workspace or tool availability")
+)
+
+// recoverWorkspaceToolMisjudgment abandons the polluted upstream conversation
+// and retries once on a clean branch. Only a distinct, non-empty replacement
+// conversation is accepted, so callers can safely persist the returned result.
+func (s *Server) recoverWorkspaceToolMisjudgment(
+	ctx context.Context,
+	acc auth.AccountToken,
+	account chathub.Account,
+	body *oaiReq,
+	bad chathub.Result,
+	answerReq chathub.Request,
+	toolMaps []map[string]any,
+	convCacheModel string,
+	convReused bool,
+	tone string,
+	requestID string,
+) (chathub.Result, error) {
+	badConversationID := strings.TrimSpace(bad.ConversationID)
+	if convReused {
+		s.invalidateConvCache(acc.ID, convCacheModel)
+	}
+	if badConversationID != "" {
+		s.dropTransientConversation(badConversationID)
+	}
+
+	cleanMessages := cleanWorkspaceToolMisjudgments(body.Messages)
+	cleanPrompt, cleanAttachments := flattenPromptMessages(cleanMessages, nil)
+	cleanPrompt = strings.TrimSpace(cleanPrompt)
+	if cleanPrompt == "" {
+		cleanPrompt = strings.TrimSpace(answerReq.Text)
+	}
+
+	correctionReq := answerReq
+	correctionReq.ConversationID = ""
+	correctionReq.SessionID = ""
+	correctionReq.Started = true
+	correctionReq.Tone = tone
+	correctionReq.Attachments = append(cleanAttachments, body.Attachments...)
+	correctionReq.TraceID = requestID
+	correctionReq.BindAccount = acc.ID
+	correctionReq.Text = unifiedSandboxCorrection(toolMaps, cleanPrompt)
+
+	corrected, err := s.chatWithAccount(ctx, acc.ID, account, correctionReq)
+	if err != nil {
+		return chathub.Result{}, fmt.Errorf("%w: %v", errWorkspaceToolCorrectionFailed, err)
+	}
+	correctedConversationID := strings.TrimSpace(corrected.ConversationID)
+	if correctedConversationID == "" || correctedConversationID == badConversationID {
+		if correctedConversationID != "" && correctedConversationID != badConversationID {
+			s.dropTransientConversation(correctedConversationID)
+		}
+		return chathub.Result{}, fmt.Errorf("%w: correction did not create a distinct conversation", errWorkspaceToolCorrectionFailed)
+	}
+	if strings.TrimSpace(corrected.Text) == "" {
+		s.dropTransientConversation(correctedConversationID)
+		return chathub.Result{}, fmt.Errorf("%w: correction returned an empty response", errWorkspaceToolCorrectionFailed)
+	}
+	if isWorkspaceToolMisjudgment(corrected.Text) {
+		s.dropTransientConversation(correctedConversationID)
+		return chathub.Result{}, errWorkspaceToolMisjudgment
+	}
+
+	body.Messages = cleanMessages
+	body.ConversationID = corrected.ConversationID
+	body.SessionID = corrected.SessionID
+	body.Attachments = cleanAttachments
+	return corrected, nil
+}
+
+func workspaceToolCorrectionErrorCode(err error) string {
+	if errors.Is(err, errWorkspaceToolMisjudgment) {
+		return "workspace_tool_misjudgment"
+	}
+	return "workspace_tool_correction_failed"
+}
+
+func workspaceToolCorrectionPublicMessage(err error) string {
+	if errors.Is(err, errWorkspaceToolMisjudgment) {
+		return "upstream repeatedly misidentified workspace or tool availability"
+	}
+	return "upstream workspace/tool correction failed"
+}
+
 func (s *Server) adminModelSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2005,38 +2091,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if ev.Kind != "text" || ev.Text == "" {
 				return nil
 			}
+			// Buffer the complete upstream response. Do not emit assistant text
+			// until tool-call parsing and workspace/tool-misjudgment validation pass.
 			text.WriteString(ev.Text)
-			pending.WriteString(ev.Text)
-			v := pending.String()
-			// If the text contains a bash block or a JSON command, don't emit it as text
-			// It will be caught by fencedToolCalls after the stream completes
-			if strings.Contains(v, "```bash") || strings.Contains(v, "\"command\"") {
-				return nil
-			}
-			if i := strings.Index(v, "```"); i >= 0 {
-				if err := emitText(v[:i]); err != nil {
-					return err
-				}
-				pending.Reset()
-				pending.WriteString(v[i:])
-				return nil
-			}
-			if runeCount := utf8.RuneCountInString(v); runeCount > 8 {
-				cut := 0
-				seen := 0
-				for i := range v {
-					if seen == runeCount-8 {
-						cut = i
-						break
-					}
-					seen++
-				}
-				if err := emitText(v[:cut]); err != nil {
-					return err
-				}
-				pending.Reset()
-				pending.WriteString(v[cut:])
-			}
 			return nil
 		})
 		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
@@ -2063,36 +2120,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if ev.Kind != "text" || ev.Text == "" {
 						return nil
 					}
+					// Buffer the complete failover response as well. Validation must
+					// finish before any assistant text becomes client-visible.
 					text.WriteString(ev.Text)
-					pending.WriteString(ev.Text)
-					v := pending.String()
-					if strings.Contains(v, "```bash") || strings.Contains(v, "\"command\"") {
-						return nil
-					}
-					if i := strings.Index(v, "```"); i >= 0 {
-						if err := emitText(v[:i]); err != nil {
-							return err
-						}
-						pending.Reset()
-						pending.WriteString(v[i:])
-						return nil
-					}
-					if runeCount := utf8.RuneCountInString(v); runeCount > 8 {
-						cut := 0
-						seen := 0
-						for i := range v {
-							if seen == runeCount-8 {
-								cut = i
-								break
-							}
-							seen++
-						}
-						if err := emitText(v[:cut]); err != nil {
-							return err
-						}
-						pending.Reset()
-						pending.WriteString(v[cut:])
-					}
 					return nil
 				})
 				if err2 == nil {
@@ -2322,16 +2352,14 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		contentFilter := newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
 		reasoningFilter := newPublicReasoningStreamFilter()
+		var bufferedContent strings.Builder
+		var bufferedReasoning strings.Builder
 		onDelta := func(content string) error {
-			if content = contentFilter.Push(content); content != "" {
-				return writeChunk(map[string]any{"content": content})
-			}
+			bufferedContent.WriteString(content)
 			return nil
 		}
 		onReasoning := func(reasoning string) error {
-			if reasoning = reasoningFilter.Push(reasoning); reasoning != "" {
-				return writeChunk(map[string]any{"reasoning_content": reasoning})
-			}
+			bufferedReasoning.WriteString(reasoning)
 			return nil
 		}
 		if err := sseRaw(r.Context(), w, flusher, ": connected\n\n"); err != nil {
@@ -2363,18 +2391,43 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 		}
 		if err == nil {
-			if content := contentFilter.Flush(); content != "" {
+			// The upstream stream has been fully buffered. Validate the complete
+			// assistant response before emitting any client-visible body content or
+			// persisting conversation state.
+			if bufferedContent.Len() > 0 {
+				res.Text = bufferedContent.String()
+			}
+			if bufferedReasoning.Len() > 0 {
+				res.Reasoning = bufferedReasoning.String()
+			}
+			if len(toolMaps) > 0 && isWorkspaceToolMisjudgment(res.Text) {
+				correctionReq := answerReq
+				correctionReq.Text = unifiedSandboxCorrection(toolMaps, prompt)
+				res2, correctionErr := s.chatWithAccount(ctx, acc.ID, account, correctionReq)
+				if correctionErr != nil {
+					_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "code": "workspace_tool_correction_failed"}})+"\n\n")
+					_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+					return
+				}
+				if isWorkspaceToolMisjudgment(res2.Text) {
+					_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream repeatedly misidentified workspace or tool availability", "code": "workspace_tool_misjudgment"}})+"\n\n")
+					_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+					return
+				}
+				res = res2
+			}
+			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
+			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
+			if content := contentFilter.Push(res.Text) + contentFilter.Flush(); content != "" {
 				if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
 					return
 				}
 			}
-			if reasoning := reasoningFilter.Flush(); reasoning != "" {
+			if reasoning := reasoningFilter.Push(res.Reasoning) + reasoningFilter.Flush(); reasoning != "" {
 				if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
 					return
 				}
 			}
-			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
-			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
@@ -2476,52 +2529,27 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		return
 	}
 	s.accountPool.MarkSuccess(acc.ID)
-	if body.Stream {
-		if body.User != "" && res.ConversationID != "" {
-			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
-		}
-		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
-		return
-	}
 
-	if body.SessionKey != "" {
-		s.sessions.upsert(conversation{ID: body.SessionKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: prompt})
-	}
-	if body.User != "" && res.ConversationID != "" {
-		s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
-		log.Printf("[user-session] put user=%s conversation=%s session=%s", body.User, res.ConversationID, res.SessionID)
-	}
-	if res.ConversationID != "" {
-		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
-	}
-	if res.ConversationID != "" {
-		resolved := s.sessionResolver.Resolve(r, &body)
-		if !resolved.IsNew {
-			w.Header().Set(sessionHeaderName, resolved.SessionID)
-		}
-	}
+	// Do not update SessionKey or userSessions until the complete response has
+	// passed workspace/tool-misjudgment validation and any clean-branch repair.
+	// This prevents the invalid upstream conversation A from becoming reusable.
 	model := body.Model
 	if model == "" {
 		model = "m365-copilot"
 	}
 	id := "chatcmpl-" + uuid.NewString()
-	if len(toolMaps) > 0 && isToolRefusal(res.Text) {
-		log.Printf("[tool-eject] model refused tools, retrying with correction")
-		correction := "Your previous response incorrectly denied that caller tools are available. They are real, active, and callable on the caller's machine. Call the appropriate tool now. Do not explain tool availability.\n\nUser request:\n" + prompt
-		res2, err2 := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
-		if err2 == nil && !isToolRefusal(res2.Text) {
-			res = res2
+	// Validate and, when necessary, repair the complete assistant answer before
+	// any conversation binding, cache update, or client output. The shared helper
+	// always creates a clean upstream branch and accepts only a distinct, valid
+	// replacement conversation.
+	if len(toolMaps) > 0 && isWorkspaceToolMisjudgment(res.Text) {
+		res, err = s.recoverWorkspaceToolMisjudgment(ctx, acc, account, &body, res, answerReq, toolMaps, convCacheModel, convReused, tone, requestID)
+		if err != nil {
+			log.Printf("[workspace-tool-eject] id=%s clean-branch correction failed: %v", requestID, err)
+			writeOpenAIError(w, http.StatusBadGateway, workspaceToolCorrectionErrorCode(err), workspaceToolCorrectionPublicMessage(err))
+			return
 		}
-	}
-	if len(toolMaps) > 0 && isSandboxHallucination(res.Text) {
-		log.Printf("[sandbox-eject] model used code interpreter/sandbox, retrying with explicit tool instruction")
-		correction := unifiedSandboxCorrection(toolMaps, prompt)
-		res2, err2 := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
-		if err2 == nil && !isSandboxHallucination(res2.Text) {
-			res = res2
-		}
+		convReused = false
 	}
 	invalidDetectedTool := false
 	if rawCalls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice); len(rawCalls) > 0 {
@@ -2578,6 +2606,19 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
+
+	// Persist only the final validated response. This point is after workspace/tool
+	// misjudgment detection, the bounded corrective retry, tool-call recovery,
+	// content-policy handling, and completion-evidence normalization, but before
+	// either streaming or non-streaming client output.
+	if res.ConversationID != "" {
+		s.bindConversation(acc, &body, r, res, prompt, startedAt)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, cleanWorkspaceToolMisjudgments(body.Messages), convReused)
+		resolved := s.sessionResolver.Resolve(r, &body)
+		if !resolved.IsNew {
+			w.Header().Set(sessionHeaderName, resolved.SessionID)
+		}
+	}
 	created := time.Now().Unix()
 
 	if body.Stream {

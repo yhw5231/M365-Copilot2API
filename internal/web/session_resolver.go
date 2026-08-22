@@ -442,8 +442,12 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 	sr.evictLocked()
 
 	now := time.Now().UTC()
-	history := cloneMessages(body.Messages)
-	if strings.TrimSpace(assistantText) != "" {
+	// Remove only known-bad assistant workspace/tool-availability claims before
+	// calculating fingerprints or persisting history. User, system, developer,
+	// and tool messages are preserved even when they discuss /mnt/data,
+	// containers, sandboxes, or Windows execution.
+	history := cleanWorkspaceToolMisjudgments(cloneMessages(body.Messages))
+	if strings.TrimSpace(assistantText) != "" && !isWorkspaceToolMisjudgment(assistantText) {
 		history = append(history, oaiMsg{Role: "assistant", Content: assistantText})
 	}
 	explicitID := strings.TrimSpace(r.Header.Get("X-M365-Session-Id"))

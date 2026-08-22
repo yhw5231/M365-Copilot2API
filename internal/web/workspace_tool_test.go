@@ -205,6 +205,59 @@ func TestUnifiedSandboxCorrection_NoTools(t *testing.T) {
 	}
 }
 
+func TestIsWorkspaceToolMisjudgment(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "explicit Linux-only claim", text: "This session only provides a Linux container.", want: true},
+		{name: "explicit no-tools claim", text: "I don't have any tools in this session.", want: true},
+		{name: "explicit workspace denial", text: "I cannot access your actual workspace.", want: true},
+		{name: "Chinese explicit claim", text: "当前会话只能访问 /mnt/data。", want: true},
+		{name: "ordinary container discussion", text: "The service deploys in a Linux container.", want: false},
+		{name: "ordinary path discussion", text: "Copy the generated file to /mnt/data before returning it.", want: false},
+		{name: "legitimate tool error", text: "The command failed with exit code 1.", want: false},
+		{name: "empty", text: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isWorkspaceToolMisjudgment(tt.text); got != tt.want {
+				t.Fatalf("isWorkspaceToolMisjudgment(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanWorkspaceToolMisjudgments_AssistantOnly(t *testing.T) {
+	messages := []oaiMsg{
+		{Role: "system", Content: "This session only provides a Linux container."},
+		{Role: "user", Content: "I cannot access your actual workspace."},
+		{Role: "assistant", Content: "I don't have any tools in this session."},
+		{Role: "assistant", Content: "The service deploys in a Linux container."},
+		{Role: "tool", Content: "The current session only has access to /mnt/data."},
+	}
+
+	got := cleanWorkspaceToolMisjudgments(messages)
+	if len(got) != 4 {
+		t.Fatalf("expected exactly one polluted assistant message removed, got %d messages", len(got))
+	}
+	for _, msg := range got {
+		if msg.Role == "assistant" && contentToString(msg.Content) == "I don't have any tools in this session." {
+			t.Fatal("polluted assistant message was not removed")
+		}
+	}
+	if got[0].Role != "system" || got[1].Role != "user" || got[2].Role != "assistant" || got[3].Role != "tool" {
+		t.Fatalf("non-assistant messages or clean assistant history were not preserved in order: %#v", got)
+	}
+}
+
+func TestCleanWorkspaceToolMisjudgments_Empty(t *testing.T) {
+	if got := cleanWorkspaceToolMisjudgments(nil); got != nil {
+		t.Fatalf("expected nil for nil history, got %#v", got)
+	}
+}
+
 func containsString(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && (s == substr ||
 		len(s) >= len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
