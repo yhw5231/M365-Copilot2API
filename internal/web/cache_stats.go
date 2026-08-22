@@ -30,16 +30,22 @@ type CacheStats struct {
 }
 
 type statsSnapshot struct {
-	TotalRequests  int64               `json:"total_requests"`
-	CacheHits      int64               `json:"cache_hits"`
-	CacheMisses    int64               `json:"cache_misses"`
-	TokensSent     int64               `json:"tokens_sent"`
-	TokensSaved    int64               `json:"tokens_saved"`
-	ActiveSessions int                 `json:"active_sessions"`
-	MaxSessionAge  time.Duration       `json:"max_session_age"`
-	HitRate        float64             `json:"hit_rate"`
-	SavingsPercent float64             `json:"savings_percent"`
-	KeyStats       map[string]*KeyStat `json:"key_stats"`
+	TotalRequests int64 `json:"total_requests"`
+	CacheHits     int64 `json:"cache_hits"`
+	CacheMisses   int64 `json:"cache_misses"`
+	TokensSent    int64 `json:"tokens_sent"`
+	TokensSaved   int64 `json:"tokens_saved"`
+	// Explicit token fields preserve TokensSent/TokensSaved compatibility while
+	// making clear that sent means newly submitted input and saved means cached input.
+	NewInputTokens    int64               `json:"new_input_tokens"`
+	CachedInputTokens int64               `json:"cached_input_tokens"`
+	InputTotalTokens  int64               `json:"input_total_tokens"`
+	CacheInputPercent float64             `json:"cache_input_percent"`
+	ActiveSessions    int                 `json:"active_sessions"`
+	MaxSessionAge     time.Duration       `json:"max_session_age"`
+	HitRate           float64             `json:"hit_rate"`
+	SavingsPercent    float64             `json:"savings_percent"`
+	KeyStats          map[string]*KeyStat `json:"key_stats"`
 }
 
 type KeyStat struct {
@@ -124,16 +130,20 @@ func (s *CacheStats) GetStats() statsSnapshot {
 		keys[k] = &cp
 	}
 	return statsSnapshot{
-		TotalRequests:  s.TotalRequests,
-		CacheHits:      s.CacheHits,
-		CacheMisses:    s.CacheMisses,
-		TokensSent:     s.TokensSent,
-		TokensSaved:    s.TokensSaved,
-		ActiveSessions: s.ActiveSessions,
-		MaxSessionAge:  s.MaxSessionAge,
-		HitRate:        s.HitRate,
-		SavingsPercent: s.SavingsPercent,
-		KeyStats:       keys,
+		TotalRequests:     s.TotalRequests,
+		CacheHits:         s.CacheHits,
+		CacheMisses:       s.CacheMisses,
+		TokensSent:        s.TokensSent,
+		TokensSaved:       s.TokensSaved,
+		NewInputTokens:    s.TokensSent,
+		CachedInputTokens: s.TokensSaved,
+		InputTotalTokens:  s.TokensSent + s.TokensSaved,
+		CacheInputPercent: s.SavingsPercent,
+		ActiveSessions:    s.ActiveSessions,
+		MaxSessionAge:     s.MaxSessionAge,
+		HitRate:           s.HitRate,
+		SavingsPercent:    s.SavingsPercent,
+		KeyStats:          keys,
 	}
 }
 

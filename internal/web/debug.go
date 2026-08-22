@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +23,9 @@ type debugRecord struct {
 	Status       int       `json:"status"`
 	Level        string    `json:"level"`
 	DurationMS   int64     `json:"durationMs"`
+	TTFTMS       *int64    `json:"ttftMs,omitempty"`
 	InputTokens  *int      `json:"inputTokens"`
+	CachedTokens *int      `json:"cachedTokens,omitempty"`
 	OutputTokens *int      `json:"outputTokens"`
 	TokenSource  string    `json:"tokenSource"`
 	CacheHit     *bool     `json:"cacheHit"`
@@ -142,13 +145,39 @@ func (d *debugStore) rotateIfNeededLocked() {
 	_ = os.Rename(d.path, d.path+"."+time.Now().Format("20060102-150405"))
 }
 func (d *debugStore) list() []debugRecord {
+	records, _ := d.listPage(1, 0)
+	return records
+}
+
+func (d *debugStore) listPage(page, pageSize int) ([]debugRecord, int) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	o := append([]debugRecord(nil), d.records...)
-	for i, j := 0, len(o)-1; i < j; i, j = i+1, j-1 {
-		o[i], o[j] = o[j], o[i]
+
+	total := len(d.records)
+	if page < 1 {
+		page = 1
 	}
-	return o
+	if pageSize <= 0 {
+		pageSize = total
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+
+	start := (page - 1) * pageSize
+	if start >= total {
+		return []debugRecord{}, total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+
+	records := make([]debugRecord, 0, end-start)
+	for i := total - 1 - start; i >= total-end; i-- {
+		records = append(records, d.records[i])
+	}
+	return records, total
 }
 func (d *debugStore) get(id string) (debugRecord, bool) {
 	d.mu.RLock()
@@ -244,16 +273,101 @@ func (s *Server) debugMiddleware(next http.Handler) http.Handler {
 		startedAt := requestStartedAtFrom(r)
 		next.ServeHTTP(cw, r)
 		out := cw.body.Bytes()
-		accountEmail := ""
-		if tr := traceFromRequest(r); tr != nil {
-			accountEmail = tr.AccountEmail
+		rec := debugRecord{
+			ID:          "dbg_" + uuid.NewString(),
+			At:          startedAt,
+			Level:       debugLevel(cw.status),
+			Path:        r.URL.Path,
+			Method:      r.Method,
+			Status:      cw.status,
+			DurationMS:  time.Since(startedAt).Milliseconds(),
+			TokenSource: "unavailable_from_chathub",
+			CacheSource: "not_reported_by_upstream",
+			Client:      redactBody(in),
+			Gateway:     redactBody(out),
+			Upstream:    map[string]any{"captured": false, "reason": "ChatHub transport tracing not yet attached to request context"},
 		}
-		rec := debugRecord{ID: "dbg_" + uuid.NewString(), At: startedAt, Level: debugLevel(cw.status), Path: r.URL.Path, Method: r.Method, Status: cw.status, DurationMS: time.Since(startedAt).Milliseconds(), TokenSource: "unavailable_from_chathub", CacheSource: "not_reported_by_upstream", AccountEmail: accountEmail, Client: redactBody(in), Gateway: redactBody(out), Upstream: map[string]any{"captured": false, "reason": "ChatHub transport tracing not yet attached to request context"}}
+
+		// The trace middleware may pass a derived request to downstream handlers,
+		// so use the retained record keyed by this request ID after the handler
+		// completes. Fall back to the context pointer for compatible middleware
+		// orderings.
+		var tr traceRecord
+		var hasTrace bool
+		if requestID := requestIDFrom(r); requestID != "" {
+			tr, hasTrace = s.trace.get(requestID)
+		}
+		if !hasTrace {
+			if active := traceFromRequest(r); active != nil {
+				tr = cloneTraceRecord(active)
+				hasTrace = true
+			}
+		}
+		if hasTrace {
+			rec.AccountEmail = tr.AccountEmail
+			if tr.TTFTMs > 0 {
+				ttft := tr.TTFTMs
+				rec.TTFTMS = &ttft
+			}
+			if tr.InputTokens > 0 || tr.OutputTokens > 0 || tr.CachedTokens > 0 {
+				inputTokens := int(tr.InputTokens)
+				cachedTokens := int(tr.CachedTokens)
+				outputTokens := int(tr.OutputTokens)
+				rec.InputTokens = &inputTokens
+				rec.CachedTokens = &cachedTokens
+				rec.OutputTokens = &outputTokens
+				rec.TokenSource = "trace"
+				rec.CacheSource = "trace"
+				cacheHit := tr.CachedTokens > 0
+				rec.CacheHit = &cacheHit
+			}
+			if tr.UpstreamReq != nil || tr.UpstreamResp != nil || tr.UpstreamError != "" {
+				rec.Upstream = map[string]any{
+					"request":  tr.UpstreamReq,
+					"response": tr.UpstreamResp,
+					"error":    tr.UpstreamError,
+				}
+			}
+		}
 		s.debug.add(rec)
 	})
 }
 func (s *Server) debugList(w http.ResponseWriter, r *http.Request) {
-	jsonOut(w, map[string]any{"records": s.debug.list()})
+	q := r.URL.Query()
+	pageValue := strings.TrimSpace(q.Get("page"))
+	pageSizeValue := strings.TrimSpace(q.Get("pageSize"))
+
+	// Preserve the legacy response behavior when no pagination parameters are
+	// supplied, while allowing the debug page to request only its current page.
+	if pageValue == "" && pageSizeValue == "" {
+		jsonOut(w, map[string]any{"records": s.debug.list()})
+		return
+	}
+
+	page := 1
+	pageSize := 50
+	if parsed, err := strconv.Atoi(pageValue); err == nil && parsed > 0 {
+		page = parsed
+	}
+	if parsed, err := strconv.Atoi(pageSizeValue); err == nil && parsed > 0 {
+		pageSize = parsed
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+
+	records, total := s.debug.listPage(page, pageSize)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	jsonOut(w, map[string]any{
+		"records":    records,
+		"page":       page,
+		"pageSize":   pageSize,
+		"total":      total,
+		"totalPages": totalPages,
+	})
 }
 func (s *Server) debugDetail(w http.ResponseWriter, r *http.Request) {
 	if x, ok := s.debug.get(r.URL.Query().Get("id")); ok {

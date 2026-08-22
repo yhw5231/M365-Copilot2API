@@ -167,3 +167,98 @@ func TestAdminTraceStatusPaginationAndIDFilter(t *testing.T) {
 		t.Fatalf("id filter total=%d len=%d rec=%s want 1/1/%s", page.Total, len(page.Records), page.Records[0].ID, target.ID)
 	}
 }
+
+func TestUsageTokenSemanticsNoCachePartialAndFullCache(t *testing.T) {
+	tests := []struct {
+		name             string
+		newInput         int64
+		cachedInput      int64
+		output           int64
+		wantInputTotal   int64
+		wantTotal        int64
+		wantCachePercent float64
+	}{
+		{name: "no cache", newInput: 100, cachedInput: 0, output: 20, wantInputTotal: 100, wantTotal: 120, wantCachePercent: 0},
+		{name: "partial cache", newInput: 40, cachedInput: 60, output: 20, wantInputTotal: 100, wantTotal: 120, wantCachePercent: 60},
+		{name: "full cache", newInput: 0, cachedInput: 100, output: 20, wantInputTotal: 100, wantTotal: 120, wantCachePercent: 100},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := UsageRecord{InputTokens: tt.newInput, CacheTokens: tt.cachedInput, OutputTokens: tt.output}
+			rec.normalizeTokens()
+			if rec.InputTotalTokens != tt.wantInputTotal || rec.TotalTokens != tt.wantTotal || rec.CacheInputPercent != tt.wantCachePercent {
+				t.Fatalf("normalized tokens=%+v, want input_total=%d total=%d cache_percent=%v", rec, tt.wantInputTotal, tt.wantTotal, tt.wantCachePercent)
+			}
+		})
+	}
+}
+
+func TestUsageSnapshotFieldsAndBreakdownsStayConsistent(t *testing.T) {
+	now := time.Now()
+	s := &usageLog{records: []UsageRecord{
+		{Time: now.Add(-time.Hour), APIKeyPrefix: "key-a", Model: "model-a", Endpoint: "/v1/chat/completions", InputTokens: 40, CacheTokens: 60, OutputTokens: 20},
+		{Time: now.Add(-2 * time.Hour), APIKeyPrefix: "key-a", Model: "model-a", Endpoint: "/v1/chat/completions", InputTokens: 10, OutputTokens: 5},
+	}}
+	stats := s.snapshot(7)
+	summary := stats["summary"].(map[string]any)
+	if summary["new_input_tokens"].(int64) != 50 || summary["input_total_tokens"].(int64) != 110 || summary["cache_tokens"].(int64) != 60 || summary["output_tokens"].(int64) != 25 || summary["total_tokens"].(int64) != 135 {
+		t.Fatalf("unexpected summary token fields: %#v", summary)
+	}
+	if summary["tokens"].(int64) != summary["total_tokens"].(int64) {
+		t.Fatalf("legacy tokens=%v differs from total_tokens=%v", summary["tokens"], summary["total_tokens"])
+	}
+	models := stats["models"].([]map[string]any)
+	endpoints := stats["endpoints"].([]map[string]any)
+	keys := stats["keys"].([]map[string]any)
+	trend := stats["trend"].([]map[string]any)
+	if len(models) != 1 || models[0]["tokens"].(int64) != 135 || len(endpoints) != 1 || endpoints[0]["tokens"].(int64) != 135 || len(keys) != 1 || keys[0]["tokens"].(int64) != 135 {
+		t.Fatalf("breakdown totals inconsistent: models=%#v endpoints=%#v keys=%#v", models, endpoints, keys)
+	}
+	var trendTokens int64
+	for _, point := range trend {
+		trendTokens += point["tokens"].(int64)
+	}
+	if trendTokens != 135 {
+		t.Fatalf("trend tokens=%d want 135", trendTokens)
+	}
+}
+
+func TestUsageLogsFilteredPaginationNewestFirst(t *testing.T) {
+	base := time.Now()
+	s := &usageLog{}
+	for i := 0; i < 8; i++ {
+		key := "skip"
+		if i%2 == 0 {
+			key = "match"
+		}
+		s.records = append(s.records, UsageRecord{Time: base.Add(time.Duration(i) * time.Minute), APIKeyPrefix: key, InputTokens: int64(i + 1)})
+	}
+	got := s.logs(2, 1, usageLogFilter{Key: "match"})
+	if got["total"].(int) != 4 {
+		t.Fatalf("filtered total=%d want 4", got["total"].(int))
+	}
+	logs := got["logs"].([]UsageRecord)
+	if len(logs) != 2 || logs[0].InputTokens != 5 || logs[1].InputTokens != 3 {
+		t.Fatalf("page=%+v, want matching records 5 then 3", logs)
+	}
+	for _, rec := range logs {
+		if rec.InputTotalTokens != rec.InputTokens+rec.CacheTokens || rec.TotalTokens != rec.InputTotalTokens+rec.OutputTokens {
+			t.Fatalf("page returned inconsistent token fields: %+v", rec)
+		}
+	}
+}
+
+func TestCacheStatsExplicitTokenFields(t *testing.T) {
+	s := &CacheStats{KeyStats: make(map[string]*KeyStat), persist: &persistStore{flush: func() error { return nil }}}
+	s.RecordRequest("key", true, 40, 60, 1)
+	got := s.GetStats()
+	if got.TotalRequests != 1 || got.CacheHits != 1 || got.CacheMisses != 0 {
+		t.Fatalf("request statistics=%+v", got)
+	}
+	if got.NewInputTokens != 40 || got.CachedInputTokens != 60 || got.InputTotalTokens != 100 || got.CacheInputPercent != 60 {
+		t.Fatalf("explicit cache token statistics=%+v", got)
+	}
+	if got.TokensSent != got.NewInputTokens || got.TokensSaved != got.CachedInputTokens || got.SavingsPercent != got.CacheInputPercent {
+		t.Fatalf("legacy and explicit cache fields differ: %+v", got)
+	}
+}

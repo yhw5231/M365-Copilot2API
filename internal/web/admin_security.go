@@ -191,10 +191,21 @@ func (s *Server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	previousPassword := s.adminPassword
+	previousMustChange := s.mustChangePassword
+	previousSessions := s.adminSessions
 	s.adminPassword = b.New
 	s.mustChangePassword = false
 	s.adminSessions = map[string]time.Time{}
+	if err := saveAdminSessions(s.adminSessions); err != nil {
+		s.adminPassword = previousPassword
+		s.mustChangePassword = previousMustChange
+		s.adminSessions = previousSessions
+		s.mu.Unlock()
+		writeOpenAIError(w, http.StatusInternalServerError, "storage_error", "administrator sessions could not be revoked; check the persistent data directory permissions")
+		return
+	}
 	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "m365_admin_session", Path: "/", HttpOnly: true, Secure: secureAdminCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: "m365_admin_session", Path: "/", HttpOnly: true, Secure: secureAdminCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)})
 	jsonOut(w, map[string]any{"status": "password_changed", "reauthenticate": true})
 }

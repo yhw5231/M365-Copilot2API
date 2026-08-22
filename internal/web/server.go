@@ -115,6 +115,7 @@ type Server struct {
 	conversationManager *conversationManager
 	adminPassword       string
 	adminSessions       map[string]time.Time
+	adminSessionTTL     time.Duration
 	mustChangePassword  bool
 	loginAttempts       map[string]loginAttempt
 	apiKeys             *apiKeyStore
@@ -161,6 +162,11 @@ func New() (*Server, error) {
 	if password == "" {
 		return nil, fmt.Errorf("administrator password is not configured; set M365_ADMIN_PASSWORD, M365_ADMIN_PASSWORD_FILE, or M365_ADMIN_PASSWORD_BOOTSTRAP_FILE")
 	}
+	adminSessions, err := loadAdminSessions(time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("load administrator sessions: %w", err)
+	}
+	adminTTL := adminSessionTTL()
 	sessionTTL := 30 * time.Minute
 	if v := os.Getenv("M365_USER_SESSION_TTL_MINUTES"); v != "" {
 		if d, err := time.ParseDuration(v + "m"); err == nil {
@@ -183,7 +189,8 @@ func New() (*Server, error) {
 		sessionResolver:     openSessionResolver(),
 		conversationManager: openConversationManager(),
 		adminPassword:       password,
-		adminSessions:       map[string]time.Time{},
+		adminSessions:       adminSessions,
+		adminSessionTTL:     adminTTL,
 		mustChangePassword:  mustChange,
 		loginAttempts:       map[string]loginAttempt{},
 		apiKeys:             openAPIKeys(),
@@ -405,13 +412,23 @@ func (s *Server) validAdminSession(r *http.Request) bool {
 	if err != nil || c.Value == "" {
 		return false
 	}
+	digest := adminSessionDigest(c.Value)
+	now := time.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	expires, ok := s.adminSessions[c.Value]
-	if !ok || time.Now().After(expires) {
-		delete(s.adminSessions, c.Value)
+	expires, ok := s.adminSessions[digest]
+	if !ok {
+		s.mu.Unlock()
 		return false
 	}
+	if !now.Before(expires) {
+		delete(s.adminSessions, digest)
+		if err := saveAdminSessions(s.adminSessions); err != nil {
+			log.Printf("persist administrator session expiration: %v", err)
+		}
+		s.mu.Unlock()
+		return false
+	}
+	s.mu.Unlock()
 	return true
 }
 
@@ -458,10 +475,12 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := base64.RawURLEncoding.EncodeToString(b)
+	digest := adminSessionDigest(token)
+	expires := now.Add(s.adminSessionTTL)
 	s.mu.Lock()
 	pruneAdminSessions(s.adminSessions, now)
 	if len(s.adminSessions) >= maxAdminSessions {
-		// Evict the oldest entry to keep the map bounded.
+		// Evict the oldest entry to keep the persisted session set bounded.
 		var oldest string
 		var oldestExp time.Time
 		for k, exp := range s.adminSessions {
@@ -471,18 +490,32 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		delete(s.adminSessions, oldest)
 	}
-	s.adminSessions[token] = now.Add(24 * time.Hour)
+	s.adminSessions[digest] = expires
+	if err := saveAdminSessions(s.adminSessions); err != nil {
+		delete(s.adminSessions, digest)
+		s.mu.Unlock()
+		writeOpenAIError(w, http.StatusInternalServerError, "storage_error", "administrator session could not be saved; check the persistent data directory permissions")
+		return
+	}
 	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "m365_admin_session", Value: token, Path: "/", HttpOnly: true, Secure: secureAdminCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: 86400})
+	maxAge := int(time.Until(expires).Seconds())
+	if maxAge < 1 {
+		maxAge = 1
+	}
+	http.SetCookie(w, &http.Cookie{Name: "m365_admin_session", Value: token, Path: "/", HttpOnly: true, Secure: secureAdminCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: maxAge, Expires: expires})
 	jsonOut(w, map[string]any{"status": "authenticated", "must_change_password": mustChange})
 }
 func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
-	if c, e := r.Cookie("m365_admin_session"); e == nil {
+	if c, err := r.Cookie("m365_admin_session"); err == nil && c.Value != "" {
+		digest := adminSessionDigest(c.Value)
 		s.mu.Lock()
-		delete(s.adminSessions, c.Value)
+		delete(s.adminSessions, digest)
+		if err := saveAdminSessions(s.adminSessions); err != nil {
+			log.Printf("persist administrator session logout: %v", err)
+		}
 		s.mu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: "m365_admin_session", Path: "/", HttpOnly: true, Secure: secureAdminCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: "m365_admin_session", Path: "/", HttpOnly: true, Secure: secureAdminCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)})
 	jsonOut(w, map[string]string{"status": "logged_out"})
 }
 func (s *Server) adminSession(w http.ResponseWriter, r *http.Request) {
@@ -2606,6 +2639,15 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
+
+	// Never serialize an empty assistant message as a successful completion.
+	// Some clients interpret finish_reason=stop with blank content as
+	// "completed response with no content". Image-only responses remain valid.
+	if strings.TrimSpace(res.Text) == "" && len(res.Images) == 0 {
+		log.Printf("[req-trace] id=%s stage=empty_completion model=%s reasoning_bytes=%d events=%d", requestID, model, len(res.Reasoning), len(res.Events))
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_empty_completion", "upstream completed without assistant content; retry the request or verify that the requested model is available for this tenant")
+		return
+	}
 
 	// Persist only the final validated response. This point is after workspace/tool
 	// misjudgment detection, the bounded corrective retry, tool-call recovery,

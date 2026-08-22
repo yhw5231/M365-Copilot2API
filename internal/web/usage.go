@@ -12,18 +12,26 @@ import (
 )
 
 type UsageRecord struct {
-	Time             time.Time  `json:"time"`
-	APIKeyPrefix     string     `json:"api_key_prefix"`
-	AccountEmail     string     `json:"account_email,omitempty"`
-	Model            string     `json:"model"`
-	ReasoningLevel   string     `json:"reasoning_level,omitempty"`
-	Endpoint         string     `json:"endpoint"`
-	Stream           bool       `json:"stream"`
-	InputTokens      int64      `json:"input_tokens"`
-	OutputTokens     int64      `json:"output_tokens"`
-	CacheTokens      int64      `json:"cache_tokens"`
-	EstimatedCostUSD float64    `json:"estimated_cost_usd"`
-	Price            modelPrice `json:"price"`
+	Time           time.Time `json:"time"`
+	APIKeyPrefix   string    `json:"api_key_prefix"`
+	AccountEmail   string    `json:"account_email,omitempty"`
+	Model          string    `json:"model"`
+	ReasoningLevel string    `json:"reasoning_level,omitempty"`
+	Endpoint       string    `json:"endpoint"`
+	Stream         bool      `json:"stream"`
+	// InputTokens is the newly submitted, non-cached input token count. This
+	// preserves the existing upstream and persisted-log semantics.
+	InputTokens int64 `json:"input_tokens"`
+	// InputTotalTokens is the complete input size: InputTokens + CacheTokens.
+	InputTotalTokens int64 `json:"input_total_tokens"`
+	OutputTokens     int64 `json:"output_tokens"`
+	CacheTokens      int64 `json:"cache_tokens"`
+	// TotalTokens counts complete input plus output without counting cached input twice.
+	TotalTokens int64 `json:"total_tokens"`
+	// CacheInputPercent is CacheTokens / InputTotalTokens * 100.
+	CacheInputPercent float64    `json:"cache_input_percent"`
+	EstimatedCostUSD  float64    `json:"estimated_cost_usd"`
+	Price             modelPrice `json:"price"`
 	// TTFTMs is the time-to-first-token (first visible text delta) in ms.
 	TTFTMs int64 `json:"ttft_ms,omitempty"`
 	// SpeedTPs is the output throughput in tokens per second.
@@ -32,6 +40,16 @@ type UsageRecord struct {
 	Status     int     `json:"status"`
 	// Error captures a short failure message for failed requests.
 	Error string `json:"error,omitempty"`
+}
+
+func (r *UsageRecord) normalizeTokens() {
+	r.InputTotalTokens = r.InputTokens + r.CacheTokens
+	r.TotalTokens = r.InputTotalTokens + r.OutputTokens
+	if r.InputTotalTokens > 0 {
+		r.CacheInputPercent = float64(r.CacheTokens) / float64(r.InputTotalTokens) * 100
+	} else {
+		r.CacheInputPercent = 0
+	}
 }
 
 const maxUsageRecords = 50000
@@ -69,6 +87,7 @@ func (s *usageLog) load() {
 	for scanner.Scan() {
 		var rec UsageRecord
 		if json.Unmarshal(scanner.Bytes(), &rec) == nil {
+			rec.normalizeTokens()
 			s.records = append(s.records, rec)
 		}
 	}
@@ -82,6 +101,9 @@ func (s *usageLog) trim() {
 }
 
 func (s *usageLog) record(rec UsageRecord) {
+	// InputTokens retains its existing meaning: newly submitted, non-cached input.
+	// Derive complete-input, total-token, and cache-share fields consistently.
+	rec.normalizeTokens()
 	// Calculate the local reference cost when the record is created so every
 	// endpoint uses the same model, new-input, cached-input, and output pricing.
 	rec.EstimatedCostUSD = estimateUsageCost(rec.Model, rec.InputTokens, rec.OutputTokens, rec.CacheTokens)
@@ -152,8 +174,9 @@ func (s *usageLog) snapshot(days int) map[string]any {
 		if rec.Time.Before(cutoff) {
 			continue
 		}
+		rec.normalizeTokens()
 		requests++
-		reqTok := rec.InputTokens + rec.OutputTokens + rec.CacheTokens
+		reqTok := rec.TotalTokens
 		in += rec.InputTokens
 		out += rec.OutputTokens
 		cache += rec.CacheTokens
@@ -229,11 +252,25 @@ func (s *usageLog) snapshot(days int) map[string]any {
 
 	return map[string]any{
 		"summary": map[string]any{
-			"requests":                   requests,
-			"tokens":                     in + out + cache,
-			"input":                      in,
-			"output":                     out,
-			"cache":                      cache,
+			"requests": requests,
+			// Legacy fields remain available: input means newly submitted input,
+			// while tokens is the non-duplicated total of all input plus output.
+			"tokens": in + cache + out,
+			"input":  in,
+			"output": out,
+			"cache":  cache,
+			// Explicit fields remove ambiguity for new clients.
+			"new_input_tokens":   in,
+			"input_total_tokens": in + cache,
+			"cache_tokens":       cache,
+			"output_tokens":      out,
+			"total_tokens":       in + cache + out,
+			"cache_input_percent": func() float64 {
+				if in+cache == 0 {
+					return 0
+				}
+				return float64(cache) / float64(in+cache) * 100
+			}(),
 			"avg_ms":                     avgMs,
 			"estimated_cost_usd":         estimatedCostUSD,
 			"today_requests":             todayReq,
@@ -295,7 +332,8 @@ func (f usageLogFilter) match(rec UsageRecord) bool {
 	if f.Stream != nil && rec.Stream != *f.Stream {
 		return false
 	}
-	total := rec.InputTokens + rec.OutputTokens + rec.CacheTokens
+	rec.normalizeTokens()
+	total := rec.TotalTokens
 	if f.HasMinTok && total < f.MinTokens {
 		return false
 	}
@@ -323,30 +361,27 @@ func (f usageLogFilter) match(rec UsageRecord) bool {
 }
 
 func (s *usageLog) logs(limit, offset int, f usageLogFilter) map[string]any {
+	// Records are retained chronologically, so scan backwards to produce the
+	// newest-first page directly. Count all matches for stable pagination while
+	// copying only the requested page out from under the lock.
 	s.mu.Lock()
-	recs := append([]UsageRecord(nil), s.records...)
-	s.mu.Unlock()
-
-	matched := recs[:0]
-	for _, rec := range recs {
-		if f.match(rec) {
-			matched = append(matched, rec)
+	out := make([]UsageRecord, 0, limit)
+	total := 0
+	for i := len(s.records) - 1; i >= 0; i-- {
+		rec := s.records[i]
+		if !f.match(rec) {
+			continue
 		}
+		if total >= offset && len(out) < limit {
+			rec.normalizeTokens()
+			out = append(out, rec)
+		}
+		total++
 	}
-	total := len(matched)
-	if total == 0 {
-		return map[string]any{"logs": []UsageRecord{}, "total": 0}
+	s.mu.Unlock()
+	if out == nil {
+		out = []UsageRecord{}
 	}
-	// matched is chronological; present newest first.
-	sort.Slice(matched, func(i, j int) bool { return matched[i].Time.After(matched[j].Time) })
-	if offset > total {
-		offset = total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	out := matched[offset:end]
 	return map[string]any{"logs": out, "total": total}
 }
 

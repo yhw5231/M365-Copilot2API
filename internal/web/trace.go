@@ -230,20 +230,57 @@ func (t *traceStore) trimToLocked(max int) {
 	}
 }
 
-// list returns all retained records newest-first as deep copies so concurrent
-// handler updates never race with the admin API reader.
-func (t *traceStore) list() []traceRecord {
+// cloneTraceRecord returns a detached copy so readers never race with handler
+// updates to the retained record.
+func cloneTraceRecord(rec *traceRecord) traceRecord {
+	if rec == nil {
+		return traceRecord{}
+	}
+	return *rec
+}
+
+// get returns one detached record without copying or sorting the full store.
+func (t *traceStore) get(id string) (traceRecord, bool) {
 	t.mu.RLock()
-	defer t.mu.RUnlock()
-	raw := make([]traceRecord, 0, len(t.byID))
+	rec, ok := t.byID[id]
+	if !ok {
+		t.mu.RUnlock()
+		return traceRecord{}, false
+	}
+	out := cloneTraceRecord(rec)
+	t.mu.RUnlock()
+	return out, true
+}
+
+// page returns retained records newest-first. It sorts lightweight pointers and
+// copies only the requested page instead of JSON-round-tripping the full store.
+func (t *traceStore) page(limit, offset int) ([]traceRecord, int, int) {
+	t.mu.RLock()
+	all := make([]*traceRecord, 0, len(t.byID))
 	for _, rec := range t.byID {
-		raw = append(raw, *rec)
+		all = append(all, rec)
 	}
-	var out []traceRecord
-	if b, err := json.Marshal(raw); err == nil {
-		_ = json.Unmarshal(b, &out)
+	sort.Slice(all, func(i, j int) bool { return all[i].At.After(all[j].At) })
+	total := len(all)
+	active := len(t.active)
+	if offset > total {
+		offset = total
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	out := make([]traceRecord, 0, end-offset)
+	for _, rec := range all[offset:end] {
+		out = append(out, cloneTraceRecord(rec))
+	}
+	t.mu.RUnlock()
+	return out, total, active
+}
+
+// list remains available for existing internal callers and tests.
+func (t *traceStore) list() []traceRecord {
+	out, _, _ := t.page(len(t.byID), 0)
 	return out
 }
 
@@ -258,16 +295,12 @@ func (t *traceStore) clear() {
 
 func (s *Server) adminTraceStatus(w http.ResponseWriter, r *http.Request) {
 	enabled, max := traceConfig()
-	all := s.trace.list()
 	q := r.URL.Query()
-	// Optional id filter returns at most the matching record (used by the
-	// console detail view, which may be paged out of the current listing).
+	// Optional id lookup avoids copying and sorting the complete trace store.
 	if id := strings.TrimSpace(q.Get("id")); id != "" {
-		for _, rec := range all {
-			if rec.ID == id {
-				jsonOut(w, map[string]any{"enabled": enabled, "max": max, "active": s.trace.activeCount(), "total": 1, "records": []traceRecord{rec}})
-				return
-			}
+		if rec, ok := s.trace.get(id); ok {
+			jsonOut(w, map[string]any{"enabled": enabled, "max": max, "active": s.trace.activeCount(), "total": 1, "records": []traceRecord{rec}})
+			return
 		}
 		jsonOut(w, map[string]any{"enabled": enabled, "max": max, "active": s.trace.activeCount(), "total": 0, "records": []traceRecord{}})
 		return
@@ -284,15 +317,8 @@ func (s *Server) adminTraceStatus(w http.ResponseWriter, r *http.Request) {
 			offset = n
 		}
 	}
-	total := len(all)
-	if offset > total {
-		offset = total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	jsonOut(w, map[string]any{"enabled": enabled, "max": max, "active": s.trace.activeCount(), "total": total, "records": all[offset:end]})
+	records, total, active := s.trace.page(limit, offset)
+	jsonOut(w, map[string]any{"enabled": enabled, "max": max, "active": active, "total": total, "records": records})
 }
 
 // adminTrace handles debug-mode configuration: GET returns the live config,
