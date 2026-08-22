@@ -253,3 +253,93 @@ func TestExplicitDownstreamSessionMapsToSeparateUpstreamSession(t *testing.T) {
 		t.Fatalf("explicit sessions crossed conversations: A=%q B=%q", resolvedA.ConversationID, resolvedB.ConversationID)
 	}
 }
+
+func TestExplicitSessionDetectsCompactedContext(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("X-M365-Session-Id", "downstream-compacted")
+
+	original := &oaiReq{Messages: []oaiMsg{
+		{Role: "user", Content: "first question"},
+		{Role: "assistant", Content: "first answer"},
+		{Role: "user", Content: "second question"},
+		{Role: "assistant", Content: "second answer"},
+	}}
+	sr.Bind("upstream-session-old", "conversation-old", "account-a", original, "", req)
+
+	compacted := &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "Summary of the earlier conversation"},
+		{Role: "user", Content: "continue from the summary"},
+	}}
+	resolved := sr.Resolve(req, compacted)
+	if resolved.IsNew {
+		t.Fatal("stable downstream session should still resolve after compaction")
+	}
+	if !resolved.ResetUpstream {
+		t.Fatalf("compacted context should reset the upstream conversation, matched=%q", resolved.MatchedBy)
+	}
+	if resolved.HistoryLen != 0 {
+		t.Fatalf("compacted context must be sent in full, HistoryLen=%d", resolved.HistoryLen)
+	}
+	if resolved.MatchedBy != "explicit_context_reset" {
+		t.Fatalf("unexpected match mode %q", resolved.MatchedBy)
+	}
+}
+
+func TestExplicitSessionTreatsSingleMessageAsIncremental(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("X-M365-Session-Id", "downstream-incremental")
+
+	original := &oaiReq{Messages: []oaiMsg{
+		{Role: "user", Content: "first question"},
+		{Role: "assistant", Content: "first answer"},
+	}}
+	sr.Bind("upstream-session", "conversation-existing", "account-a", original, "", req)
+
+	incremental := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "next question"}}}
+	resolved := sr.Resolve(req, incremental)
+	if resolved.IsNew || resolved.ResetUpstream {
+		t.Fatalf("single-message incremental mode must reuse the upstream conversation: %+v", resolved)
+	}
+	if resolved.HistoryLen != 0 {
+		t.Fatalf("single incremental message must be sent as-is, HistoryLen=%d", resolved.HistoryLen)
+	}
+	if resolved.MatchedBy != "explicit_incremental" {
+		t.Fatalf("unexpected match mode %q", resolved.MatchedBy)
+	}
+	if resolved.ConversationID != "conversation-existing" {
+		t.Fatalf("incremental request resolved conversation %q", resolved.ConversationID)
+	}
+}
+
+func TestExplicitSessionUsesStrictPrefixForIncrementalSlice(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("X-M365-Session-Id", "downstream-prefix")
+
+	original := &oaiReq{Messages: []oaiMsg{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi"},
+	}}
+	sr.Bind("upstream-session", "conversation-existing", "account-a", original, "", req)
+
+	continued := &oaiReq{Messages: []oaiMsg{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi"},
+		{Role: "user", Content: "tell me more"},
+	}}
+	resolved := sr.Resolve(req, continued)
+	if resolved.IsNew || resolved.ResetUpstream {
+		t.Fatalf("strict history prefix should reuse the upstream conversation: %+v", resolved)
+	}
+	if resolved.HistoryLen != 2 {
+		t.Fatalf("expected two already-sent prefix messages, got %d", resolved.HistoryLen)
+	}
+	if resolved.MatchedBy != "explicit_prefix_2" {
+		t.Fatalf("unexpected match mode %q", resolved.MatchedBy)
+	}
+}

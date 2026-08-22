@@ -171,9 +171,14 @@ type ResolveResult struct {
 	AccountID      string
 	MatchedBy      string
 	IsNew          bool
-	// HistoryLen 鏄鐢ㄥ懡涓椂"浜戠瀵硅瘽宸插寘鍚殑娑堟伅鏉℃暟"锛?
-	// 鍗冲閲忓彂閫佺殑璧风偣涓嬫爣锛坆ody.Messages[HistoryLen:] 鍙彂鏂板閮ㄥ垎锛夈€?
+	// HistoryLen is the number of leading messages in the current request that
+	// are already present in the upstream conversation. It is safe to use only
+	// as the start index of body.Messages[HistoryLen:].
 	HistoryLen int
+	// ResetUpstream signals that the downstream session is still valid, but its
+	// submitted context no longer extends the stored history. The caller must
+	// start a fresh upstream conversation and send the complete current context.
+	ResetUpstream bool
 }
 
 func clientIPFingerprint(r *http.Request) string {
@@ -215,33 +220,44 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	// 瀹㈡埛绔樉寮忔寚瀹氱殑浼氳瘽 ID 鏄渶楂樹紭鍏堢殑缁帴璇箟锛氫笉鍙備笌浠讳綍韬唤鍒ゅ畾锛?
 	// 鐢辫皟鐢ㄦ柟涓诲姩鍐冲畾瑕佺户缁摢涓簯绔璇濄€?
 	if explicitID != "" {
-		if sessID, ok := sr.byExplicit[explicitID]; ok {
-			if sess, ok := sr.sessions[sessID]; ok && sessionOwnedBy(sess, key) {
-				sess.LastUsedAt = time.Now().UTC()
-				sr.sessions[sessID] = sess
-				sr.persist.markDirty()
-				return ResolveResult{
-					SessionID:      sess.SessionID,
-					ConversationID: sess.ConversationID,
-					AccountID:      sess.AccountID,
-					MatchedBy:      "explicit",
-					IsNew:          false,
-					HistoryLen:     len(sess.ContextHistory),
-				}
-			}
-		}
-		if sess, ok := sr.sessions[explicitID]; ok && sessionOwnedBy(sess, key) {
+		resolveExplicit := func(sessID string, sess sessionBinding) ResolveResult {
 			sess.LastUsedAt = time.Now().UTC()
-			sr.sessions[explicitID] = sess
+			sr.sessions[sessID] = sess
 			sr.persist.markDirty()
-			return ResolveResult{
+
+			result := ResolveResult{
 				SessionID:      sess.SessionID,
 				ConversationID: sess.ConversationID,
 				AccountID:      sess.AccountID,
 				MatchedBy:      "explicit",
 				IsNew:          false,
-				HistoryLen:     len(sess.ContextHistory),
 			}
+			if n := contextPrefixLen(sess.ContextHistory, body.Messages); n > 0 {
+				result.HistoryLen = n
+				result.MatchedBy = fmt.Sprintf("explicit_prefix_%d", n)
+				return result
+			}
+			// A request containing only the current turn is a normal incremental
+			// client mode, not evidence that the client compacted its context.
+			if len(body.Messages) <= 1 {
+				result.MatchedBy = "explicit_incremental"
+				return result
+			}
+			// A multi-message request that no longer extends the stored history is
+			// treated as a compacted/replaced context. Preserve the downstream ID,
+			// but require the caller to create a fresh upstream conversation.
+			result.MatchedBy = "explicit_context_reset"
+			result.ResetUpstream = true
+			return result
+		}
+
+		if sessID, ok := sr.byExplicit[explicitID]; ok {
+			if sess, ok := sr.sessions[sessID]; ok && sessionOwnedBy(sess, key) {
+				return resolveExplicit(sessID, sess)
+			}
+		}
+		if sess, ok := sr.sessions[explicitID]; ok && sessionOwnedBy(sess, key) {
+			return resolveExplicit(explicitID, sess)
 		}
 	}
 

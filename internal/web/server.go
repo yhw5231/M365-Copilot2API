@@ -1771,17 +1771,27 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if body.ConversationID == "" && len(body.Messages) > 0 {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
-			resolvedConversationID = resolved.ConversationID
-			body.ConversationID = resolved.ConversationID
-			body.SessionID = resolved.SessionID
 			body.AccountID = firstNonEmpty(body.AccountID, resolved.AccountID)
-			log.Printf("[session-resolver] matched=%s conversation=%s history=%d total=%d", resolved.MatchedBy, resolved.ConversationID, resolved.HistoryLen, len(body.Messages))
-			if resolved.HistoryLen > 0 && resolved.HistoryLen < len(body.Messages) {
-				incPrompt, incAtt := flattenPromptMessages(body.Messages[resolved.HistoryLen:], nil)
-				incPrompt = strings.TrimSpace(incPrompt)
-				if incPrompt != "" {
-					answerPrompt = incPrompt
-					body.Attachments = incAtt
+			log.Printf("[session-resolver] matched=%s conversation=%s history=%d total=%d reset=%t", resolved.MatchedBy, resolved.ConversationID, resolved.HistoryLen, len(body.Messages), resolved.ResetUpstream)
+			if resolved.ResetUpstream {
+				// Keep the stable downstream session identity, but detach this request
+				// from the old upstream conversation and submit the complete compacted
+				// context when creating its replacement.
+				body.ConversationID = ""
+				body.SessionID = ""
+				resolvedConversationID = ""
+				answerPrompt, body.Attachments = flattenPromptMessages(body.Messages, nil)
+			} else {
+				resolvedConversationID = resolved.ConversationID
+				body.ConversationID = resolved.ConversationID
+				body.SessionID = resolved.SessionID
+				if resolved.HistoryLen > 0 && resolved.HistoryLen < len(body.Messages) {
+					incPrompt, incAtt := flattenPromptMessages(body.Messages[resolved.HistoryLen:], nil)
+					incPrompt = strings.TrimSpace(incPrompt)
+					if incPrompt != "" {
+						answerPrompt = incPrompt
+						body.Attachments = incAtt
+					}
 				}
 			}
 		}
