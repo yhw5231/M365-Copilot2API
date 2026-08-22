@@ -46,12 +46,7 @@ func IsRateLimited(err error) bool {
 	if errors.As(err, &dialErr) {
 		return dialErr.Status == 429 || dialErr.Status == 503
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "429") ||
-		strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "rate limit") ||
-		strings.Contains(msg, "limited") ||
-		strings.Contains(msg, "throttl")
+	return false
 }
 
 // IsAuthFailure reports whether err represents an upstream 401/403, meaning
@@ -109,6 +104,7 @@ func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
 	rateLimited := h.limited[accountID]
 	delete(h.cooldown, accountID)
 	delete(h.limited, accountID)
+	delete(h.authFail, accountID)
 	if rateLimited {
 		delete(h.calls, accountID)
 	}
@@ -160,7 +156,7 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 			cooldown = 2 * time.Minute
 		}
 		h.cooldown[accountID] = time.Now().Add(cooldown)
-		delete(h.authFail, accountID)
+		h.authFail[accountID] = true
 		delete(h.limited, accountID)
 		return
 	}
@@ -191,10 +187,10 @@ func (h *accountHealth) MarkSuccess(accountID string) {
 func (h *accountHealth) Available(accountID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.cleanupExpiredCooldownLocked(accountID)
 	if h.authFail[accountID] {
 		return false
 	}
-	h.cleanupExpiredCooldownLocked(accountID)
 	if until, ok := h.cooldown[accountID]; ok && time.Now().Before(until) {
 		return false
 	}
@@ -248,10 +244,15 @@ func (h *accountHealth) ClearAllCooldowns() {
 func (h *accountHealth) EarliestRecovery() time.Time {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	earliest := time.Now().Add(5 * time.Minute)
+	if len(h.cooldown) == 0 {
+		return time.Time{}
+	}
+	var earliest time.Time
+	first := true
 	for _, until := range h.cooldown {
-		if until.Before(earliest) {
+		if first || until.Before(earliest) {
 			earliest = until
+			first = false
 		}
 	}
 	return earliest

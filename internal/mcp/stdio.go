@@ -123,29 +123,17 @@ func (c *StdioClient) call(ctx context.Context, method string, id int64, params 
 	}
 	ch := make(chan stdioResponse, 1)
 	c.pending[id] = ch
+	if _, err := c.stdin.Write(b); err != nil {
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return nil, err
+	}
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
 	}()
-
-	c.writeMu.Lock()
-	written := 0
-	for written < len(b) {
-		n, writeErr := c.stdin.Write(b[written:])
-		if writeErr != nil {
-			c.writeMu.Unlock()
-			return nil, writeErr
-		}
-		if n <= 0 {
-			c.writeMu.Unlock()
-			return nil, io.ErrShortWrite
-		}
-		written += n
-	}
-	c.writeMu.Unlock()
-
 	select {
 	case response := <-ch:
 		if response.err != nil {

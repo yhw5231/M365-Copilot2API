@@ -4,9 +4,10 @@ import (
 	"m365-copilot2api/internal/chathub"
 	"net/http"
 	"time"
+	"unicode/utf8"
 )
 
-func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, calls []detectedToolCall, res chathub.Result) error {
+func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sendUsage bool, calls []detectedToolCall, res chathub.Result) error {
 	toolCalls := toolCallMaps(calls)
 	msg := map[string]any{"role": "assistant", "content": nil, "tool_calls": toolCalls}
 	if res.Reasoning != "" {
@@ -39,18 +40,42 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 			}
 		}
 		emit(base(firstDelta, nil))
+		const chunkSize = 512
 		for i, tc := range calls {
 			typ := tc.Type
 			if typ == "" {
 				typ = "function"
 			}
-			emit(base(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": string(tc.Arguments)}}}}, nil))
+			isLast := i == len(calls)-1
+			emit(base(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil))
+			args := string(tc.Arguments)
+			for off := 0; off < len(args); off += chunkSize {
+				end := off + chunkSize
+				if end > len(args) {
+					end = len(args)
+				}
+				for end < len(args) && !utf8.RuneStart(args[end]) {
+					end++
+				}
+				argChunk := args[off:end]
+				isLastArgChunk := off+chunkSize >= len(args)
+				var finish any
+				if isLast && isLastArgChunk {
+					finish = "tool_calls"
+				}
+				emit(base(map[string]any{"tool_calls": []any{map[string]any{"index": i, "function": map[string]any{"arguments": argChunk}}}}, finish))
+			}
+			if len(args) == 0 && isLast {
+				emit(base(map[string]any{}, "tool_calls"))
+			}
 		}
-		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
-		_ = sseSafeRaw(w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
+		if sendUsage {
+			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+			_ = sseSafeRaw(w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
+		}
 		_ = sseSafeRaw(w, flusher, "data: [DONE]\n\n")
 		return nil
 	}
-	jsonOut(w, map[string]any{"id": id, "object": "chat.completion", "model": model, "choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": "tool_calls"}}, "m365": compatM365Metadata(res), "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}})
+	jsonOut(w, map[string]any{"id": id, "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": "tool_calls"}}, "m365": compatM365Metadata(res), "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}})
 	return nil
 }

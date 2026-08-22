@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -56,7 +57,9 @@ func openSessionStore() *sessionStore {
 	s := &sessionStore{path: path, data: map[string]conversation{}, maxEntries: sessionStoreMaxEntries}
 	s.persist = &persistStore{flush: s.flush}
 	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &s.data)
+		if err := json.Unmarshal(b, &s.data); err != nil {
+			log.Printf("[sessions] failed to unmarshal %s: %v", path, err)
+		}
 	}
 	s.evictLocked()
 	return s
@@ -165,7 +168,9 @@ func openUserSessionStore(ttl time.Duration) *userSessionStore {
 	s := &userSessionStore{path: path, data: map[string]userSession{}, ttl: ttl, maxEntries: userSessionMaxEntries}
 	s.persist = &persistStore{flush: s.flush}
 	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &s.data)
+		if err := json.Unmarshal(b, &s.data); err != nil {
+			log.Printf("[user-sessions] failed to unmarshal %s: %v", path, err)
+		}
 	}
 	s.evictLocked()
 	return s

@@ -14,7 +14,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -46,6 +48,9 @@ var chTrace = os.Getenv("M365_TRACE") == "1"
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "..."
 }
@@ -322,6 +327,15 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	// This prevents a malformed or compromised upstream from causing unbounded allocation.
 	conn.SetReadLimit(8 << 20)
 
+	// Gorilla WebSocket permits one concurrent writer. Serialize all writes so
+	// keepalive and request writes cannot corrupt the connection.
+	var writeMu sync.Mutex
+	wsWrite := func(msgType int, data []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteMessage(msgType, data)
+	}
+
 	returnConn := true
 	defer func() {
 		if returnConn && conn != nil && c.Pool != nil {
@@ -347,7 +361,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 
 	if !reused {
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"protocol":"json","version":1}`+rs)); err != nil {
+		if err := wsWrite(websocket.TextMessage, []byte(`{"protocol":"json","version":1}`+rs)); err != nil {
 			returnConn = false
 			if c.OnUpstream != nil {
 				c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "handshake send: " + err.Error()})
@@ -386,7 +400,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 	log.Printf("chathub timing handshake_ms=%d", time.Since(dialStarted).Milliseconds())
 	payloadSentAt := time.Now()
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+	if err := wsWrite(websocket.TextMessage, []byte(payload)); err != nil {
 		returnConn = false
 		if c.OnUpstream != nil {
 			c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "chat send: " + err.Error()})
@@ -476,14 +490,18 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		msg []byte
 		err error
 	}
-	for time.Now().Before(deadline) {
-		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		// ReadMessage 阻塞期间无法响应 ctx 取消，放入独立 goroutine 由 select 联动。
-		readCh := make(chan wsRead, 1)
-		go func() {
+	readCh := make(chan wsRead, 1)
+	go func() {
+		for {
+			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 			_, msg, err := conn.ReadMessage()
 			readCh <- wsRead{msg: msg, err: err}
-		}()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	for time.Now().Before(deadline) {
 		var read wsRead
 		select {
 		case <-ctx.Done():
@@ -522,7 +540,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 
 			// SignalR ping
 			if int(t) == 6 {
-				_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":6}`+rs))
+				_ = wsWrite(websocket.TextMessage, []byte(`{"type":6}`+rs))
 				continue
 			}
 
@@ -732,16 +750,19 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 			}
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
 			if err != nil {
-				continue
+				return fmt.Errorf("attachment %d: create request: %w", i, err)
 			}
 			resp, err := httpClient.Do(req)
 			if err != nil {
-				continue
+				return fmt.Errorf("attachment %d: download: %w", i, err)
 			}
 			body, err := io.ReadAll(io.LimitReader(resp.Body, maxAttachmentMiB<<20))
 			resp.Body.Close()
-			if err != nil || resp.StatusCode != http.StatusOK {
-				continue
+			if err != nil {
+				return fmt.Errorf("attachment %d: read body: %w", i, err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("attachment %d: HTTP %d", i, resp.StatusCode)
 			}
 			mimeType := resp.Header.Get("Content-Type")
 			if mimeType == "" {
@@ -754,7 +775,7 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 			return fmt.Errorf("invalid image data URL")
 		}
 		encoded := imageData[comma+1:]
-		if strings.Contains(strings.ToLower(imageData[:comma]), ";base64") == false {
+		if !strings.Contains(strings.ToLower(imageData[:comma]), ";base64") {
 			return fmt.Errorf("image URL is not base64")
 		}
 		if _, err := base64.StdEncoding.DecodeString(encoded); err != nil {

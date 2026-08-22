@@ -85,15 +85,21 @@ func ExchangeCode(ctx context.Context, code, verifier, redirect string) (TokenSe
 	return requestToken(ctx, form)
 }
 
-func Refresh(refreshToken string) (TokenSet, error) {
+func Refresh(refreshToken, clientID, tokenEndpoint string) (TokenSet, error) {
 	form := url.Values{}
-	form.Set("client_id", ClientID())
+	if clientID == "" {
+		clientID = ClientID()
+	}
+	if tokenEndpoint == "" {
+		tokenEndpoint = TokenEndpoint()
+	}
+	form.Set("client_id", clientID)
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("scope", Scope())
 	ctx, cancel := context.WithTimeout(context.Background(), TokenExchangeTimeout)
 	defer cancel()
-	return requestToken(ctx, form)
+	return requestTokenTenant(ctx, form, tokenEndpoint, "Refresh")
 }
 
 // RefreshWithScope redeems the same account refresh token for a separately
@@ -123,10 +129,10 @@ func ROPC(username, password string) (TokenSet, error) {
 	form.Set("scope", Scope())
 	ctx, cancel := context.WithTimeout(context.Background(), TokenExchangeTimeout)
 	defer cancel()
-	return requestTokenTenant(ctx, form, Authority()+"/organizations/oauth2/v2.0/token")
+	return requestTokenTenant(ctx, form, Authority()+"/organizations/oauth2/v2.0/token", "ROPC")
 }
 
-func requestTokenTenant(ctx context.Context, form url.Values, endpoint string) (TokenSet, error) {
+func requestTokenTenant(ctx context.Context, form url.Values, endpoint string, caller string) (TokenSet, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return TokenSet{}, err
@@ -137,7 +143,7 @@ func requestTokenTenant(ctx context.Context, form url.Values, endpoint string) (
 		return TokenSet{}, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return TokenSet{}, err
 	}
@@ -146,10 +152,10 @@ func requestTokenTenant(ctx context.Context, form url.Values, endpoint string) (
 		return TokenSet{}, fmt.Errorf("decode token response: %w", err)
 	}
 	if tr.Error != "" {
-		return TokenSet{}, fmt.Errorf("ROPC %s: %s", tr.Error, tr.ErrorDesc)
+		return TokenSet{}, fmt.Errorf("%s %s: %s", caller, tr.Error, tr.ErrorDesc)
 	}
 	if tr.AccessToken == "" {
-		return TokenSet{}, fmt.Errorf("ROPC HTTP %d: empty access token", resp.StatusCode)
+		return TokenSet{}, fmt.Errorf("%s HTTP %d: empty access token", caller, resp.StatusCode)
 	}
 	set := TokenSet{
 		AccessToken:  tr.AccessToken,
@@ -180,7 +186,7 @@ func requestToken(ctx context.Context, form url.Values) (TokenSet, error) {
 		return TokenSet{}, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return TokenSet{}, err
 	}

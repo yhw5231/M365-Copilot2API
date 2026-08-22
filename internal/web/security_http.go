@@ -1,26 +1,38 @@
 package web
 
 import (
+	"embed"
+	"io/fs"
 	"net/http"
-	"os"
-	"path/filepath"
+	"path"
 	"strings"
 )
+
+//go:embed all:web
+var webFS embed.FS
+
+var webContent http.FileSystem
+
+func init() {
+	sub, err := fs.Sub(webFS, "web")
+	if err != nil {
+		panic(err)
+	}
+	webContent = http.FS(sub)
+}
 
 func vendorFiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/vendor/")
-	// Path traversal guard: vendor files live directly under web/vendor.
-	if name == "" || name != filepath.Base(name) || strings.Contains(name, "..") {
+	if name == "" || name != path.Base(name) || strings.Contains(name, "..") {
 		http.NotFound(w, r)
 		return
 	}
-	path := filepath.Join("web", "vendor", name)
-	f, err := os.Open(path)
+	f, err := webContent.Open("vendor/" + name)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -59,21 +71,21 @@ func (s *Server) rootPage(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	name := "web/index.html"
+	name := "index.html"
 	if r.URL.Path == "/login" {
-		name = "web/login.html"
+		name = "login.html"
 	} else if r.URL.Path == "/conversation" {
-		name = "web/conversation.html"
+		name = "conversation.html"
 	}
-	f, err := os.Open(name)
+	f, err := webContent.Open(name)
 	if err != nil {
-		http.Error(w, "web interface unavailable", http.StatusInternalServerError)
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "web interface unavailable")
 		return
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		http.Error(w, "web interface unavailable", http.StatusInternalServerError)
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "web interface unavailable")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

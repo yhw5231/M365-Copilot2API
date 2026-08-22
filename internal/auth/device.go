@@ -46,7 +46,7 @@ func StartDeviceCode() (DeviceCode, error) {
 		return DeviceCode{}, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return DeviceCode{}, err
 	}
@@ -90,7 +90,7 @@ func PollDeviceCode(deviceCode string) (TokenSet, bool, error) {
 		return TokenSet{}, false, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return TokenSet{}, false, err
 	}
@@ -106,9 +106,7 @@ func PollDeviceCode(deviceCode string) (TokenSet, bool, error) {
 	case "expired_token", "authorization_declined", "bad_verification_code":
 		return TokenSet{}, false, fmt.Errorf("%s: %s", tr.Error, tr.ErrorDesc)
 	default:
-		if tr.AccessToken == "" {
-			return TokenSet{}, false, fmt.Errorf("%s: %s", tr.Error, tr.ErrorDesc)
-		}
+		return TokenSet{}, false, fmt.Errorf("%s: %s", tr.Error, tr.ErrorDesc)
 	}
 	if tr.AccessToken == "" {
 		return TokenSet{}, false, fmt.Errorf("token endpoint returned no access token")

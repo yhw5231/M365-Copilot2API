@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,10 +56,12 @@ func (c *M365CloudClient) getAccessToken() (string, error) {
 		return c.accessToken, nil
 	}
 
-	payload := fmt.Sprintf(
-		"client_id=%s&refresh_token=%s&grant_type=refresh_token&scope=https://m365.cloud.microsoft/v2/.default",
-		c.clientID, c.refreshToken,
-	)
+	v := url.Values{}
+	v.Set("client_id", c.clientID)
+	v.Set("refresh_token", c.refreshToken)
+	v.Set("grant_type", "refresh_token")
+	v.Set("scope", "https://m365.cloud.microsoft/v2/.default")
+	payload := v.Encode()
 
 	resp, err := c.httpClient.Post(
 		fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", c.tenantID),
@@ -197,7 +200,14 @@ func (c *M365CloudClient) ListConversations() ([]map[string]any, error) {
 
 	historyList, ok := store["conversationPageHistoryList"].(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("no conversationPageHistoryList")
+		log.Printf("[m365-cloud] conversationPageHistoryList missing from store, returning empty list. store keys: %v", func() []string {
+			keys := make([]string, 0)
+			for k := range store {
+				keys = append(keys, k)
+			}
+			return keys
+		}())
+		return []map[string]any{}, nil
 	}
 
 	chatsRaw, ok := historyList["chats"].([]any)
@@ -243,8 +253,11 @@ func (c *M365CloudClient) CleanupOldConversations(maxAge time.Duration, keepN in
 		anyDeleted := false
 		for _, chat := range chats {
 			convID, _ := chat["conversationId"].(string)
-			createTime, _ := chat["createTimeUtc"].(float64)
+			createTime, ok := chat["createTimeUtc"].(float64)
 			if convID == "" {
+				continue
+			}
+			if !ok {
 				continue
 			}
 

@@ -28,14 +28,19 @@ func parseContent(c any) (string, []chathub.Attachment) {
 		if v, ok := m["text"].(string); ok && (typ == "text" || typ == "input_text" || typ == "output_text" || typ == "") {
 			text.WriteString(v)
 		}
-		if direct, ok := m["image_url"].(string); ok && direct != "" {
+		if direct, ok := m["image_url"].(string); ok && direct != "" && typ == "" {
 			files = append(files, chathub.Attachment{Type: "image", URL: direct, MimeType: "image/*"})
 		}
 		switch typ {
 		case "text", "input_text", "output_text":
 			// handled above
 		case "image_url":
-			if u, ok := m["image_url"].(map[string]any); ok {
+			switch u := m["image_url"].(type) {
+			case string:
+				if u != "" {
+					files = append(files, chathub.Attachment{Type: "image", URL: u, MimeType: "image/*"})
+				}
+			case map[string]any:
 				if v, ok := u["url"].(string); ok {
 					a := chathub.Attachment{Type: "image", URL: v, MimeType: "image/*"}
 					if d, ok := u["detail"].(string); ok {

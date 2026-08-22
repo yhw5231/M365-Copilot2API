@@ -360,24 +360,28 @@ func (t *poolRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	if r.Body != nil && r.GetBody == nil {
 		return nil, err
 	}
-	for i := 0; i < len(t.pool.entries)+1; i++ {
+	t.pool.mu.Lock()
+	n := len(t.pool.entries) + 1
+	t.pool.mu.Unlock()
+	if n > 3 {
+		n = 3
+	}
+	for i := 0; i < n; i++ {
 		var next *poolEntry
 		if t.account != "" {
-			// Account-bound replay: only unbound healthy nodes count; when
-			// none is left the request must move to another account instead
-			// of borrowing that account's node. In loose mode the replay
-			// simply stops and the original error is returned.
+			// Account-bound replay must remain on a proxy usable by this
+			// account instead of silently borrowing another account's node.
 			next = t.pool.pickFor(t.account)
 			if next == nil {
-				if ProxyMode() != ProxyModeStrict {
-					break
+				if ProxyMode() == ProxyModeStrict {
+					return nil, ErrNoProxyNode
 				}
-				return nil, ErrNoProxyNode
+				break
 			}
 		} else {
 			next = t.pool.pick()
 		}
-		if next == t.entry {
+		if next == nil || next == t.entry {
 			break
 		}
 		var body io.ReadCloser
