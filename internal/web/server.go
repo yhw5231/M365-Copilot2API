@@ -2468,12 +2468,19 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if convReused {
 				s.invalidateConvCache(acc.ID, convCacheModel)
 			}
+			code := "upstream_error"
 			msg := upstreamError(err)
-			if IsRateLimited(err) {
+			if IsEmptyCompletion(err) {
+				code = "upstream_empty_completion"
+				msg = "upstream completed without assistant content; retry the request or verify that the requested model is available for this tenant"
+			} else if IsRateLimited(err) {
+				code = "rate_limit_error"
 				msg = "upstream is rate limiting; try again shortly"
 			}
 			msg = sanitizePublicInternalText(msg)
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
+			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+			return
 		}
 		pt := EstimateTokens(prompt)
 		ct := EstimateTokens(res.Text)

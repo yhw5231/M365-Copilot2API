@@ -67,7 +67,7 @@ def start():
     if not admin_pw and not os.path.exists(os.path.join(DATA_DIR, "admin-password")):
         print("M365_ADMIN_PASSWORD is required when no persisted administrator password exists.", file=sys.stderr)
         return
-    listen = env.get("M365_LISTEN", "0.0.0.0:9090")
+    listen = env.get("M365_LISTEN", "0.0.0.0:4141")
     env.update({
         "M365_LISTEN": listen,
         "M365_DATA_DIR": os.path.join(DATA_DIR, ""),
@@ -124,13 +124,26 @@ def stop():
         return
 
     try:
-        os.kill(pid, signal.SIGTERM)
-        time.sleep(2)
-        if is_running(pid):
-            os.kill(pid, signal.SIGKILL)
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(2)
+            if is_running(pid):
+                os.kill(pid, signal.SIGKILL)
         print(f"Server stopped (PID {pid})")
     except ProcessLookupError:
         print(f"Process {pid} already gone")
+    except subprocess.CalledProcessError:
+        if is_running(pid):
+            print(f"Error stopping process {pid}")
+        else:
+            print(f"Process {pid} already gone")
     except Exception as e:
         print(f"Error stopping: {e}")
 
