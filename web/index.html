@@ -114,10 +114,12 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .trace-detail details{max-width:100%;min-width:0;overflow:hidden}
 .trace-detail summary{cursor:pointer;white-space:normal;overflow-wrap:anywhere}
 .trace-detail pre{box-sizing:border-box;width:100%;max-width:100%;margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
-.trace-token-cell,.trace-latency-cell{font-size:12px;color:var(--muted);white-space:normal!important;min-width:150px}
-.trace-token-cell div,.trace-latency-cell div{display:flex;align-items:center;justify-content:space-between;gap:12px;line-height:1.7}
-.trace-token-cell b,.trace-latency-cell b{font-size:11px;font-weight:600;color:var(--muted)}
-.trace-token-cell span,.trace-latency-cell span{font-variant-numeric:tabular-nums;white-space:nowrap}
+.trace-token-cell,.trace-latency-cell{font-size:12px;color:var(--muted);white-space:normal!important;min-width:0}
+.trace-token-cell{width:170px}
+.trace-latency-cell{width:105px}
+.trace-token-cell div,.trace-latency-cell div{display:flex;align-items:center;justify-content:flex-start;gap:6px;line-height:1.7;text-align:left}
+.trace-token-cell b,.trace-latency-cell b{font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap}
+.trace-token-cell span,.trace-latency-cell span{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:left}
 .trace-latency-fast{color:var(--green)}
 .trace-latency-warn{color:var(--orange)}
 .trace-latency-slow{color:var(--red)}
@@ -1320,7 +1322,7 @@ document.addEventListener('click',e=>{
     case 'edit-key': editKey(target.dataset.keyId, target.dataset.keyName); break;
     case 'toggle-key': toggleKey(target.dataset.keyId, target.dataset.revoked === 'true'); break;
     case 'revoke-key': revokeKey(target.dataset.keyId); break;
-    case 'toggle-trace-detail': toggleTraceDetail(target.dataset.traceId); break;
+    case 'toggle-trace-detail': toggleTraceDetail(target.dataset.traceId,target.dataset.traceMode||'current'); break;
     case 'select-use-key-client': ukeClient=target.dataset.clientId; renderUkeTabs(); renderUkeFiles(); break;
     case 'select-use-key-os': ukeOsSel=target.dataset.osId; renderUkeFiles(); break;
     case 'copy-use-key-file': navigator.clipboard.writeText(target.closest('.uke-file').querySelector('pre').textContent.trim()).then(()=>showNotice('已复制','success')).catch(()=>{}); break;
@@ -2101,7 +2103,8 @@ function traceRowHTML(x){
   const stcls=x.status==='in_progress'?' warn':(x.status==='error'?' err':'');
   const sttxt=x.status==='in_progress'?'处理中':(x.status==='error'?'错误':'成功');
   const tokens=usageTokenParts({
-    input_total_tokens:x.inputTotalTokens??x.inputTokens,
+    input_total_tokens:x.inputTotalTokens,
+    input_tokens:x.inputTokens,
     new_input_tokens:x.newInputTokens,
     cache_tokens:x.cachedTokens,
     output_tokens:x.outputTokens,
@@ -2122,7 +2125,7 @@ function traceRowHTML(x){
       <div><b>延迟</b><span class="${traceLatencyClass(x.durationMs)}">${fmtDuration(x.durationMs)}</span></div>
       <div><b>首字</b><span class="${traceLatencyClass(x.ttftMs)}">${fmtDuration(x.ttftMs)}</span></div>
     </td>
-    <td><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}">查看</button></td>
+    <td><div style="display:flex;gap:6px;white-space:nowrap"><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="current">查看本次内容</button><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="full">查看完整请求</button></div></td>
   </tr>`;
 }
 let traceLogsLoadPromise=null;
@@ -2180,10 +2183,20 @@ function tracePage(delta){
   tracePageNo=Math.max(0,tracePageNo+delta);
   loadTraceLogs();
 }
-async function toggleTraceDetail(id){
+async function toggleTraceDetail(id,mode='current'){
   const row=document.getElementById('trd-'+id);
+  const rec=traceDetailCache[id];
   if(row){
-    const rec=traceDetailCache[id];
+    if(rec&&rec._mode!==mode){
+      rec._mode=mode;
+      row.querySelectorAll('[data-trace-panel]').forEach(panel=>{
+        panel.hidden=panel.dataset.tracePanel!==mode;
+      });
+      row.querySelectorAll('[data-trace-mode]').forEach(button=>{
+        button.classList.toggle('primary',button.dataset.traceMode===mode);
+      });
+      return;
+    }
     if(rec){
       const ds=row.querySelectorAll('details');
       rec._open=Array.from(ds).map(d=>d.open);
@@ -2191,7 +2204,21 @@ async function toggleTraceDetail(id){
     row.remove();traceExpanded.delete(id);return;
   }
   try{
-    if(await insertTraceDetailRow(id))traceExpanded.add(id);
+    if(rec)rec._mode=mode;
+    if(await insertTraceDetailRow(id)){
+      const loaded=traceDetailCache[id];
+      if(loaded)loaded._mode=mode;
+      const inserted=document.getElementById('trd-'+id);
+      if(inserted){
+        inserted.querySelectorAll('[data-trace-panel]').forEach(panel=>{
+          panel.hidden=panel.dataset.tracePanel!==mode;
+        });
+        inserted.querySelectorAll('[data-trace-mode]').forEach(button=>{
+          button.classList.toggle('primary',button.dataset.traceMode===mode);
+        });
+      }
+      traceExpanded.add(id);
+    }
   }catch(e){showNotice(e.message,'error');}
 }
 async function insertTraceDetailRow(id){

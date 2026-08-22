@@ -62,6 +62,15 @@ func extractToolFields(m map[string]any) (string, json.RawMessage) {
 
 func eventRaw(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 
+// updateCursorSnapshot returns the visible assistant snapshot carried by a
+// SignalR update argument. The snapshot remains valid even when the same
+// argument also contains progress, search, code, or tool messages; ChatHub can
+// coalesce those events with a task-completion summary in one update.
+func updateCursorSnapshot(arg map[string]any) string {
+	text, _ := arg["writeAtCursor"].(string)
+	return text
+}
+
 // extractToolEvents walks the complete SignalR update argument. ChatHub often
 // places native plugin calls outside messages[], so looking only at messages
 // loses the call after the assistant's preamble.

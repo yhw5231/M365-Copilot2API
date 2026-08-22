@@ -44,3 +44,35 @@ func TestExtractToolEventsNestedAndDeduped(t *testing.T) {
 		t.Fatalf("unexpected nested tools: %#v", got)
 	}
 }
+
+func TestUpdateCursorSnapshotPreservedWithProgressMessages(t *testing.T) {
+	const summary = "任务已完成：修复代码并通过测试。"
+	arg := map[string]any{
+		"writeAtCursor": summary,
+		"messages": []any{
+			map[string]any{
+				"author":      "bot",
+				"messageType": "Progress",
+				"contentType": "ToolCall",
+				"text":        "正在更新任务清单",
+			},
+		},
+	}
+
+	if got := updateCursorSnapshot(arg); got != summary {
+		t.Fatalf("completion summary was lost when progress messages were coalesced: got %q, want %q", got, summary)
+	}
+}
+
+func TestUpdateCursorSnapshotIgnoresMissingOrNonStringValue(t *testing.T) {
+	for name, arg := range map[string]map[string]any{
+		"missing":    {},
+		"non-string": {"writeAtCursor": 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := updateCursorSnapshot(arg); got != "" {
+				t.Fatalf("got %q, want empty snapshot", got)
+			}
+		})
+	}
+}

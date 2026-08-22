@@ -555,19 +555,14 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 							}
 						}
 					}
-					toolFrame := false
-					for _, mraw := range msgs {
-						m, _ := mraw.(map[string]any)
-						mt, _ := m["messageType"].(string)
-						ct, _ := m["contentType"].(string)
-						if mt == "Progress" || ct == "SearchResults" || ct == "Code" || ct == "ToolCall" {
-							toolFrame = true
-						}
-					}
 					if thr, ok := arg["throttling"]; ok {
 						throttling = thr
 					}
-					if w, ok := arg["writeAtCursor"].(string); ok && w != "" && !toolFrame {
+					// writeAtCursor is assistant output belonging to the update argument
+					// itself. Do not discard it merely because messages[] also contains a
+					// progress, search, code, or tool event. ChatHub can coalesce task
+					// progress and the visible task-completion summary into one update.
+					if w := updateCursorSnapshot(arg); w != "" {
 						if err := emitSnapshot(w); err != nil {
 							returnConn = false
 							return Result{}, err

@@ -9,6 +9,7 @@
     :root{color-scheme:light dark;--bg:#f5f5f7;--surface:#fff;--line:rgba(0,0,0,.08);--text:#1d1d1f;--muted:#6e6e73;--accent:#0071e3;--green:#248a3d;--orange:#c93400;--radius:12px}
     @media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--surface:#2c2c2e;--line:rgba(255,255,255,.1);--text:#f5f5f7;--muted:#98989d;--accent:#0a84ff;--green:#30d158;--orange:#ff9f0a}}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1280px;margin:28px auto;padding:0 20px}h1{margin:0 0 18px;font-size:24px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}.card,.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}.card{padding:14px}.label{color:var(--muted);font-size:12px}.value{font-size:22px;font-weight:700;margin-top:4px}.panel{overflow:hidden}.toolbar,.pager{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}.pager{justify-content:flex-end;border-top:1px solid var(--line);border-bottom:0}.spacer{flex:1}button,select{border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);padding:7px 11px}button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;white-space:nowrap}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:12px}tbody tr{cursor:pointer}tbody tr:hover{background:color-mix(in srgb,var(--accent) 7%,transparent)}.tokens{display:flex;gap:8px}.token{font-variant-numeric:tabular-nums}.muted{color:var(--muted)}.error{color:var(--orange)}dialog{width:min(960px,calc(100vw - 32px));max-height:85vh;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--text);padding:0}dialog::backdrop{background:rgba(0,0,0,.45)}.dialog-head{display:flex;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}.dialog-body{padding:16px;overflow:auto}.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.detail{border:1px solid var(--line);border-radius:10px;padding:12px}.detail h3{margin:0 0 8px;font-size:14px}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace}.empty{text-align:center;color:var(--muted);padding:30px}.status{font-weight:600}.status-ok{color:var(--green)}.status-error{color:var(--orange)}
+    .trace-token-cell,.trace-latency-cell{font-size:12px;color:var(--muted);white-space:normal!important;min-width:0}.trace-token-cell{width:170px}.trace-latency-cell{width:105px}.trace-token-cell div,.trace-latency-cell div{display:flex;align-items:center;justify-content:flex-start;gap:6px;line-height:1.7;text-align:left}.trace-token-cell b,.trace-latency-cell b{font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap}.trace-token-cell span,.trace-latency-cell span{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:left}.latency-fast{color:var(--green)}.latency-warn{color:var(--orange)}.latency-slow{color:#ff453a}
   </style>
 </head>
 <body>
@@ -29,8 +30,8 @@
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>时间</th><th>请求</th><th>状态</th><th>延迟 / 首字延迟</th><th>新增输入 Token</th><th>缓存 Token</th><th>输出 Token</th><th>缓存占比</th><th>账户</th></tr></thead>
-        <tbody id="records"><tr><td colspan="9" class="empty">正在加载…</td></tr></tbody>
+        <thead><tr><th>时间</th><th>请求</th><th>状态</th><th>Token</th><th>耗时</th><th>账户</th></tr></thead>
+        <tbody id="records"><tr><td colspan="6" class="empty">正在加载…</td></tr></tbody>
       </table>
     </div>
     <div class="pager"><button id="prev" type="button">上一页</button><span id="pageLabel">第 1 页</span><button id="next" type="button">下一页</button></div>
@@ -53,13 +54,17 @@ function escapeHTML(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&'
 function cacheRatio(record){const fresh=tokenNumber(record.inputTokens);const cached=tokenNumber(record.cachedTokens);if(fresh===null||cached===null)return null;const total=fresh+cached;return total>0?cached/total*100:null}
 function formatPercent(value){return Number.isFinite(value)?`${value.toFixed(1)}%`:'-'}
 function safeJSON(value){if(value===undefined||value===null)return '-';try{return JSON.stringify(value,null,2)}catch{return String(value)}}
+function latencyClass(value){const ms=finiteNumber(value)??0;if(ms>=15000)return 'latency-slow';if(ms>=5000)return 'latency-warn';return 'latency-fast'}
 function render(records){
   const body=$('records');
-  if(!records.length){body.innerHTML='<tr><td colspan="9" class="empty">当前页暂无记录</td></tr>'}else{
+  if(!records.length){body.innerHTML='<tr><td colspan="6" class="empty">当前页暂无记录</td></tr>'}else{
     body.innerHTML=records.map(record=>{
       const status=finiteNumber(record.status)??0;
       const ratio=cacheRatio(record);
-      return `<tr data-id="${escapeHTML(record.id)}"><td>${escapeHTML(new Date(record.at).toLocaleString())}</td><td><strong>${escapeHTML(record.method)}</strong> ${escapeHTML(record.path)}</td><td class="status ${status>=400?'status-error':'status-ok'}">${status||'-'}</td><td>${formatLatency(record.durationMs)} / ${formatLatency(record.ttftMs)}</td><td class="token">${formatToken(record.inputTokens)}</td><td class="token">${formatToken(record.cachedTokens)}</td><td class="token">${formatToken(record.outputTokens)}</td><td>${formatPercent(ratio)}</td><td>${escapeHTML(record.accountEmail||'-')}</td></tr>`
+      const input=tokenNumber(record.inputTokens)??0;
+      const cached=tokenNumber(record.cachedTokens)??0;
+      const inputTotal=input+cached;
+      return `<tr data-id="${escapeHTML(record.id)}"><td>${escapeHTML(new Date(record.at).toLocaleString())}</td><td><strong>${escapeHTML(record.method)}</strong> ${escapeHTML(record.path)}</td><td class="status ${status>=400?'status-error':'status-ok'}">${status||'-'}</td><td class="trace-token-cell" title="缓存占输入总量 ${formatPercent(ratio)}"><div><b>总输入 / 输出</b><span>${formatToken(inputTotal)} / ${formatToken(record.outputTokens)}</span></div><div><b>新增</b><span>${formatToken(input)}</span></div><div><b>缓存</b><span>${formatToken(cached)} · ${formatPercent(ratio)}</span></div></td><td class="trace-latency-cell" title="绿色：小于 5 秒；黄色：5–15 秒；红色：15 秒以上"><div><b>延迟</b><span class="${latencyClass(record.durationMs)}">${formatLatency(record.durationMs)}</span></div><div><b>首字</b><span class="${latencyClass(record.ttftMs)}">${formatLatency(record.ttftMs)}</span></div></td><td>${escapeHTML(record.accountEmail||'-')}</td></tr>`
     }).join('');
   }
   body.querySelectorAll('tr[data-id]').forEach(row=>row.addEventListener('click',()=>showDetail(row.dataset.id)));
@@ -75,8 +80,8 @@ function render(records){
   $('next').disabled=state.totalPages===0||state.page>=state.totalPages;
 }
 async function load(){
-  $('records').innerHTML='<tr><td colspan="9" class="empty">正在加载…</td></tr>';
-  try{const response=await fetch(`/admin/debug?${new URLSearchParams({page:String(state.page),pageSize:String(state.pageSize)})}`,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();const records=Array.isArray(data.records)?data.records:[];state.total=tokenNumber(data.total)??records.length;state.totalPages=tokenNumber(data.totalPages)??Math.ceil(state.total/state.pageSize);if(state.totalPages>0&&state.page>state.totalPages){state.page=state.totalPages;return load()}render(records)}catch(error){$('records').innerHTML=`<tr><td colspan="9" class="empty error">加载失败：${escapeHTML(error.message)}</td></tr>`}
+  $('records').innerHTML='<tr><td colspan="6" class="empty">正在加载…</td></tr>';
+  try{const response=await fetch(`/admin/debug?${new URLSearchParams({page:String(state.page),pageSize:String(state.pageSize)})}`,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();const records=Array.isArray(data.records)?data.records:[];state.total=tokenNumber(data.total)??records.length;state.totalPages=tokenNumber(data.totalPages)??Math.ceil(state.total/state.pageSize);if(state.totalPages>0&&state.page>state.totalPages){state.page=state.totalPages;return load()}render(records)}catch(error){$('records').innerHTML=`<tr><td colspan="6" class="empty error">加载失败：${escapeHTML(error.message)}</td></tr>`}
 }
 async function showDetail(id){
   try{const response=await fetch(`/admin/debug/detail?id=${encodeURIComponent(id)}`,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const record=await response.json();$('detailTitle').textContent=`请求详情 · ${record.id||id}`;$('clientDetail').textContent=safeJSON(record.client);$('upstreamDetail').textContent=safeJSON(record.upstream);$('gatewayDetail').textContent=safeJSON(record.gateway);$('detailDialog').showModal()}catch(error){alert(`详情加载失败：${error.message}`)}
