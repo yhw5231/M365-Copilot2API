@@ -114,6 +114,13 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .trace-detail details{max-width:100%;min-width:0;overflow:hidden}
 .trace-detail summary{cursor:pointer;white-space:normal;overflow-wrap:anywhere}
 .trace-detail pre{box-sizing:border-box;width:100%;max-width:100%;margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
+.trace-token-cell,.trace-latency-cell{font-size:12px;color:var(--muted);white-space:normal!important;min-width:150px}
+.trace-token-cell div,.trace-latency-cell div{display:flex;align-items:center;justify-content:space-between;gap:12px;line-height:1.7}
+.trace-token-cell b,.trace-latency-cell b{font-size:11px;font-weight:600;color:var(--muted)}
+.trace-token-cell span,.trace-latency-cell span{font-variant-numeric:tabular-nums;white-space:nowrap}
+.trace-latency-fast{color:var(--green)}
+.trace-latency-warn{color:var(--orange)}
+.trace-latency-slow{color:var(--red)}
 .conv-row{cursor:pointer}
 .conv-link{display:block;max-width:360px;padding:0;border:0;background:transparent;color:var(--accent);font:inherit;font-weight:600;text-align:left;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
 .conv-meta{font-size:11px;color:var(--muted);margin-top:3px}
@@ -523,7 +530,7 @@ if (response.output_text) {
             </div>
           </div>
           <p style="font-size:11px;color:var(--muted);padding:8px 12px 0">启用后，将保留最近 <b id="traceMaxLabel">50</b> 个请求的完整下游请求、上游 ChatHub 请求、上游响应和下游响应，并实时显示状态（处理中、成功或错误）。更早的记录会自动删除。</p>
-          <table class="table"><thead><tr><th>时间</th><th>模型</th><th>推理等级</th><th>端点</th><th>状态</th><th>新增输入 Token</th><th>缓存 Token</th><th>输出 Token</th><th>延迟 / 首字延迟</th><th>详情</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="10" class="empty">加载中...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>时间</th><th>模型</th><th>推理等级</th><th>端点</th><th>状态</th><th>Token<br><small>总输入与输出 / 新增 / 缓存</small></th><th>延迟 / 首字延迟</th><th>详情</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody></table>
           <div class="pagination"><span id="tracePageInfo"></span><button class="btn btn-sm" id="tracePrev" data-action="trace-page" data-direction="-1">上一页</button><button class="btn btn-sm" id="traceNext" data-action="trace-page" data-direction="1">下一页</button></div>
         </div>
         <div class="card" style="margin-top:16px">
@@ -2084,6 +2091,12 @@ async function saveTraceConfig(){
     loadTraceLogs();
   }catch(e){showNotice(e.message,'error');}
 }
+function traceLatencyClass(ms){
+  const value=Number(ms)||0;
+  if(value>=15000)return ' trace-latency-slow';
+  if(value>=5000)return ' trace-latency-warn';
+  return ' trace-latency-fast';
+}
 function traceRowHTML(x){
   const stcls=x.status==='in_progress'?' warn':(x.status==='error'?' err':'');
   const sttxt=x.status==='in_progress'?'处理中':(x.status==='error'?'错误':'成功');
@@ -2100,10 +2113,15 @@ function traceRowHTML(x){
     <td style="font-size:12px;color:var(--muted)">${esc(x.reasoningLevel||'-')}</td>
     <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
     <td><span class="usage-status${stcls}">${sttxt}</span></td>
-    <td style="font-size:12px;color:var(--muted)">${fmtTok(tokens.newInput)}</td>
-    <td style="font-size:12px;color:var(--muted)" title="占输入总量 ${tokens.cachePercent.toFixed(1)}%">${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</td>
-    <td style="font-size:12px;color:var(--muted)">${fmtTok(tokens.output)}</td>
-    <td style="font-size:12px;color:var(--muted);white-space:nowrap" title="延迟 / 首字延迟">${fmtDuration(x.durationMs)} / ${fmtDuration(x.ttftMs)}</td>
+    <td class="trace-token-cell" title="缓存占输入总量 ${tokens.cachePercent.toFixed(1)}%">
+      <div><b>总输入 / 输出</b><span>${fmtTok(tokens.inputTotal)} / ${fmtTok(tokens.output)}</span></div>
+      <div><b>新增</b><span>${fmtTok(tokens.newInput)}</span></div>
+      <div><b>缓存</b><span>${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span></div>
+    </td>
+    <td class="trace-latency-cell" title="绿色：小于 5 秒；黄色：5–15 秒；红色：15 秒以上">
+      <div><b>延迟</b><span class="${traceLatencyClass(x.durationMs)}">${fmtDuration(x.durationMs)}</span></div>
+      <div><b>首字</b><span class="${traceLatencyClass(x.ttftMs)}">${fmtDuration(x.ttftMs)}</span></div>
+    </td>
     <td><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}">查看</button></td>
   </tr>`;
 }
@@ -2190,16 +2208,39 @@ async function insertTraceDetailRow(id){
   const tr=document.createElement('tr');tr.id='trd-'+id;
   const open=(rec._open&&rec._open.length)?rec._open:[];
   const o=(i)=>open[i]!==false;
-  tr.innerHTML=`<td colspan="10" class="trace-detail-cell"><div class="trace-detail">
+  tr.innerHTML=`<td colspan="8" class="trace-detail-cell"><div class="trace-detail">
       <div class="trace-detail-meta"><b>端点：</b> ${esc(rec.endpoint||'-')} · <b>方法：</b> ${esc(rec.method||'-')} · <b>状态：</b> ${rec.statusCode||'-'} · <b>账户：</b> ${esc(rec.accountEmail||'-')} · <b>密钥：</b> ${esc(rec.apiKeyPrefix||'-')}</div>
       ${rec.error?`<div style="color:var(--red)"><b>错误：</b> ${esc(rec.error)}</div>`:''}
       ${rec.upstreamError?`<div style="color:var(--orange)"><b>上游错误：</b> ${esc(rec.upstreamError)}</div>`:''}
-      <details${o(0)?' open':''}><summary>下游请求</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
-      <details${o(1)?' open':''}><summary>上游请求</summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
-      <details${o(2)?' open':''}><summary>上游响应</summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
-      <details${o(3)?' open':''}><summary>下游响应</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+      <div class="trace-detail-modes" style="display:flex;gap:8px;margin:10px 0">
+        <button type="button" class="btn btn-sm primary" data-trace-mode="current">本次请求</button>
+        <button type="button" class="btn btn-sm" data-trace-mode="full">完整请求</button>
+      </div>
+      <div data-trace-panel="current">
+        <details${o(0)?' open':''}><summary>本次请求</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
+        <details${o(1)?' open':''}><summary>本次响应</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+      </div>
+      <div data-trace-panel="full" hidden>
+        <details${o(2)?' open':''}><summary>下游请求</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
+        <details${o(3)?' open':''}><summary>上游请求</summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
+        <details${o(4)?' open':''}><summary>上游响应</summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
+        <details${o(5)?' open':''}><summary>下游响应</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+      </div>
     </div></td>`;
   anchor.insertAdjacentElement('afterend',tr);
+  const setTraceMode=(mode)=>{
+    rec._mode=mode;
+    tr.querySelectorAll('[data-trace-panel]').forEach(panel=>{
+      panel.hidden=panel.dataset.tracePanel!==mode;
+    });
+    tr.querySelectorAll('[data-trace-mode]').forEach(button=>{
+      button.classList.toggle('primary',button.dataset.traceMode===mode);
+    });
+  };
+  tr.querySelectorAll('[data-trace-mode]').forEach(button=>{
+    button.addEventListener('click',()=>setTraceMode(button.dataset.traceMode));
+  });
+  setTraceMode(rec._mode||'current');
   // Persist each section's explicit open/closed state so the 3-second trace
   // refresh cannot reopen a section that the user has collapsed.
   tr.querySelectorAll('details').forEach((detail,index)=>{

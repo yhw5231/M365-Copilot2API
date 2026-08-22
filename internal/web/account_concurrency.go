@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -210,6 +211,17 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).Chat(ctx, account, request)
+	if IsEmptyCompletion(err) {
+		// ChatHub occasionally emits a successful completion frame without any
+		// assistant text after arbitrary model turns, including ordinary reads and
+		// final status updates. Retry the generation once centrally instead of
+		// limiting recovery to a particular tool or endpoint.
+		log.Printf("[empty-completion] account=%s retrying completed response with no content", accountID)
+		if s.accountPool != nil {
+			s.accountPool.MarkCall(accountID)
+		}
+		result, err = s.accountClient(accountID).Chat(ctx, account, request)
+	}
 	if err != nil && IsRateLimited(err) {
 		if retryAfter := RetryAfterSeconds(err); retryAfter > 0 {
 			timer := time.NewTimer(time.Duration(retryAfter) * time.Second)

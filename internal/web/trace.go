@@ -239,6 +239,36 @@ func cloneTraceRecord(rec *traceRecord) traceRecord {
 	return *rec
 }
 
+// cloneTraceSummary returns only the lightweight fields needed by the trace
+// list. Full request and response payloads are fetched separately by id when
+// the operator opens a record.
+func cloneTraceSummary(rec *traceRecord) traceRecord {
+	if rec == nil {
+		return traceRecord{}
+	}
+	return traceRecord{
+		ID:             rec.ID,
+		At:             rec.At,
+		Endpoint:       rec.Endpoint,
+		Method:         rec.Method,
+		Model:          rec.Model,
+		ReasoningLevel: rec.ReasoningLevel,
+		Stream:         rec.Stream,
+		Status:         rec.Status,
+		StatusCode:     rec.StatusCode,
+		DurationMs:     rec.DurationMs,
+		TTFTMs:         rec.TTFTMs,
+		InputTokens:    rec.InputTokens,
+		OutputTokens:   rec.OutputTokens,
+		CachedTokens:   rec.CachedTokens,
+		SpeedTPs:       rec.SpeedTPs,
+		AccountEmail:   rec.AccountEmail,
+		APIKeyPrefix:   rec.APIKeyPrefix,
+		Error:          rec.Error,
+		UpstreamError:  rec.UpstreamError,
+	}
+}
+
 // get returns one detached record without copying or sorting the full store.
 func (t *traceStore) get(id string) (traceRecord, bool) {
 	t.mu.RLock()
@@ -272,7 +302,7 @@ func (t *traceStore) page(limit, offset int) ([]traceRecord, int, int) {
 	}
 	out := make([]traceRecord, 0, end-offset)
 	for _, rec := range all[offset:end] {
-		out = append(out, cloneTraceRecord(rec))
+		out = append(out, cloneTraceSummary(rec))
 	}
 	t.mu.RUnlock()
 	return out, total, active
