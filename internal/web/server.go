@@ -121,16 +121,12 @@ type Server struct {
 	apiKeys             *apiKeyStore
 	debug               *debugStore
 	settings            *settingsStore
-	responseMu          sync.Mutex
-	responseMessages    map[string]map[string]respHistory
 	usage               *usageLog
 	trace               *traceStore
 	convCache           *conversationCache
 	generatedImages     map[string]*generatedImage
 	generatedImagesMu   sync.Mutex
 }
-
-const maxResponsesPerTenant = 256
 
 func (s *Server) clientForProxy(proxyURL string) *chathub.Client {
 	if proxyURL == "" {
@@ -155,11 +151,6 @@ func (s *Server) clientForProxy(proxyURL string) *chathub.Client {
 	c.HTTPHeader.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0")
 	actual, _ := s.proxyClients.LoadOrStore(proxyURL, c)
 	return actual.(*chathub.Client)
-}
-
-type respHistory struct {
-	At       time.Time
-	Messages []oaiMsg
 }
 
 func New() (*Server, error) {
@@ -199,7 +190,6 @@ func New() (*Server, error) {
 		apiKeys:             openAPIKeys(),
 		debug:               openDebugStore(),
 		settings:            openSettingsStore(),
-		responseMessages:    map[string]map[string]respHistory{},
 		usage:               openUsageLog(),
 		trace:               openTraceStore(),
 		convCache:           newConversationCache(),
@@ -345,7 +335,6 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/usage/logs", s.adminUsageLogs)
 	m.HandleFunc("/v1/models", s.openaiModels)
 	m.HandleFunc("/v1/chat/completions", s.openaiChat)
-	m.HandleFunc("/v1/responses", s.responses)
 	m.HandleFunc("/v1/mcp/sse", mcp.HandleSSE)
 	m.HandleFunc("/v1/mcp/message", mcp.HandleMessage)
 	m.HandleFunc("/v1/mcp/tools", mcp.HandleToolsList)

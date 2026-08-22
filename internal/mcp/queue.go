@@ -194,11 +194,9 @@ func (p *MCPToolProvider) CallTool(ctx context.Context, name string, arguments m
 		return CallResult{}, ErrToolCallQueueFull
 	}
 
-	// Try to wait for the result, but return immediately if the client
-	// hasn't responded within a short timeout. Remove calls that are still
-	// queued when their waiter times out or is cancelled.
-	timeout := 30 * time.Second
-	timer := time.NewTimer(timeout)
+	// Each call gets its own timer, so a stalled tool cannot block unrelated
+	// calls. Remove the timed-out call from the queue before returning.
+	timer := time.NewTimer(p.queue.ttl)
 	defer timer.Stop()
 
 	select {
@@ -208,11 +206,7 @@ func (p *MCPToolProvider) CallTool(ctx context.Context, name string, arguments m
 		return CallResult{}, err
 	case <-timer.C:
 		p.queue.Remove(call)
-		return CallResult{
-			Content: []map[string]any{
-				{"type": "text", "text": fmt.Sprintf("Tool call %s has been forwarded to the client for execution. The result will be provided in a subsequent turn.", name)},
-			},
-		}, nil
+		return CallResult{}, fmt.Errorf("MCP tool call %q timed out after %s", name, p.queue.ttl)
 	case <-ctx.Done():
 		p.queue.Remove(call)
 		return CallResult{}, ctx.Err()

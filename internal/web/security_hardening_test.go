@@ -215,6 +215,29 @@ func TestValidAPIKeyRejectsJWTLikeGarbage(t *testing.T) {
 	}
 }
 
+func TestResponsesRouteRemoved(t *testing.T) {
+	store := newAPIKeyStore(filepath.Join(t.TempDir(), "api-keys.json"))
+	validRaw := "sk-route-removal-test-key"
+	store.Keys = []apiKeyRecord{{
+		ID:        "key-route-removal",
+		Name:      "route removal test",
+		Prefix:    "sk-route",
+		Hash:      keyHash(validRaw),
+		CreatedAt: time.Now(),
+	}}
+
+	s := &Server{apiKeys: store}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", validRaw)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	s.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("POST /v1/responses status=%d, want %d after route removal; body=%q", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+}
+
 // TestPersistListRegistersStoreOnce guards the persistList growth bug: a
 // store marked dirty many times must be registered exactly once.
 func TestPersistListRegistersStoreOnce(t *testing.T) {

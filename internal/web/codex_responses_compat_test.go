@@ -28,7 +28,7 @@ func TestResponsesUsageEstimateIsNonZeroForText(t *testing.T) {
 }
 
 func TestResponsesGPTUsageUsesOfflineTiktoken(t *testing.T) {
-	input := "这是用于验证 GPT tokenizer 的中文和 code: func main() {}"
+	input := "杩欐槸鐢ㄤ簬楠岃瘉 GPT tokenizer 鐨勪腑鏂囧拰 code: func main() {}"
 	estimate := estimateResponsesUsage("gpt-5.5", []oaiMsg{{Role: "user", Content: input}}, nil, nil, "")
 	enc, err := getGPTTokenizer()
 	if err != nil {
@@ -95,22 +95,6 @@ func TestStreamingResponsesResultIncludesUsage(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, "event: response.completed") || !strings.Contains(body, `"total_tokens":`) || !strings.Contains(body, usageSourceTiktoken) {
 		t.Fatalf("stream completion missing usage: %s", body)
-	}
-}
-
-func TestResponsesStreamEmitsFailedForInnerRequestError(t *testing.T) {
-	s := &Server{}
-	r := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","input":[],"stream":true}`))
-	w := httptest.NewRecorder()
-	s.responses(w, r)
-	body := w.Body.String()
-	for _, want := range []string{"event: response.created", "event: response.failed", `"status":"failed"`} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("missing %q in %s", want, body)
-		}
-	}
-	if strings.Contains(body, "event: response.completed") {
-		t.Fatalf("unexpected completion event in %s", body)
 	}
 }
 

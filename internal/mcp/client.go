@@ -28,7 +28,7 @@ type Client struct {
 func NewClient(serverURL string) *Client {
 	return &Client{
 		serverURL:  serverURL,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{},
 		msgCh:      make(chan json.RawMessage, 64),
 		done:       make(chan struct{}),
 	}

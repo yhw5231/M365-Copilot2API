@@ -160,15 +160,18 @@ func NewClient() *Client {
 // string, so the token cannot be baked into the shared pool header up front.
 // Dial failures with an HTTP status that should route into the web layer's
 // cooldown (429/401/403) surface as *DialError, matching the direct-dial path.
-func (p *ConnPool) takeWithHeaders(ctx context.Context, oid, tid, wsURL string, header http.Header) (*websocket.Conn, bool, error) {
+func (p *ConnPool) takeWithHeaders(ctx context.Context, oid, tid, sessionID, wsURL string, header http.Header) (*websocket.Conn, bool, error) {
+	key := p.key(oid, tid, sessionID)
 	p.mu.Lock()
-	pc := p.conns[p.key(oid, tid)]
+	pc := p.conns[key]
 	if pc != nil {
-		delete(p.conns, p.key(oid, tid))
-		p.mu.Unlock()
-		pc.conn.Close()
-	} else {
-		p.mu.Unlock()
+		delete(p.conns, key)
+	}
+	p.mu.Unlock()
+	if pc != nil {
+		_ = pc.conn.SetReadDeadline(time.Time{})
+		_ = pc.conn.SetWriteDeadline(time.Time{})
+		return pc.conn, true, nil
 	}
 	conn, resp, err := p.dialer.DialContext(ctx, wsURL, header)
 	if err != nil {
@@ -284,7 +287,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	var reused bool
 	if c.Pool != nil && req.BindAccount == "" {
 		var poolErr error
-		conn, reused, poolErr = c.Pool.takeWithHeaders(ctx, acc.OID, acc.TID, wsURL, dialHeaders)
+		conn, reused, poolErr = c.Pool.takeWithHeaders(ctx, acc.OID, acc.TID, req.SessionID, wsURL, dialHeaders)
 		if poolErr != nil {
 			if c.OnUpstream != nil {
 				c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": "ws dial: " + poolErr.Error()})
@@ -324,7 +327,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if returnConn && conn != nil && c.Pool != nil {
 			_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			c.Pool.Return(acc.OID, acc.TID, conn)
+			c.Pool.Return(acc.OID, acc.TID, req.SessionID, conn)
 		} else if conn != nil {
 			conn.Close()
 		}
