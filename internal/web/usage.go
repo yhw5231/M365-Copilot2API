@@ -158,8 +158,10 @@ func (s *usageLog) snapshot(days int) map[string]any {
 	now := time.Now()
 	cutoff := now.AddDate(0, 0, -days)
 	loc, err := time.LoadLocation(strings.TrimSpace(currentSettings().TimeZone))
-	if err != nil {
-		loc, _ = time.LoadLocation("Asia/Shanghai")
+	if err != nil || loc == nil {
+		// Minimal container images may not include the IANA time-zone database.
+		// Always use a non-nil fallback so usage aggregation cannot panic in Time.In.
+		loc = time.FixedZone("Asia/Shanghai", 8*60*60)
 	}
 	localNow := now.In(loc)
 	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
@@ -404,7 +406,9 @@ func (s *usageLog) accountStats(now time.Time, loc *time.Location) map[string]ac
 		return map[string]accountUsageStat{}
 	}
 	if loc == nil {
-		loc, _ = time.LoadLocation("Asia/Shanghai")
+		// Minimal container images may not include the IANA time-zone database.
+		// Keep this helper safe for every caller by guaranteeing a non-nil location.
+		loc = time.FixedZone("Asia/Shanghai", 8*60*60)
 	}
 	localNow := now.In(loc)
 	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)

@@ -259,6 +259,31 @@ func TestUsageSnapshotFieldsAndBreakdownsStayConsistent(t *testing.T) {
 	}
 }
 
+func TestAccountStatsNilLocationUsesSafeFallback(t *testing.T) {
+	now := time.Now()
+	s := &usageLog{records: []UsageRecord{
+		{
+			Time:         now.Add(-time.Hour),
+			AccountEmail: "fallback@example.com",
+			InputTokens:  40,
+			CacheTokens:  60,
+			OutputTokens: 20,
+		},
+	}}
+
+	stats := s.accountStats(now, nil)
+	stat, ok := stats["fallback@example.com"]
+	if !ok {
+		t.Fatalf("account statistics missing after nil-location fallback: %#v", stats)
+	}
+	if stat.Calls != 1 || stat.TodayTokens != 120 {
+		t.Fatalf("account statistics=%+v, want calls=1 todayTokens=120", stat)
+	}
+	if stat.LastRequestAt.IsZero() {
+		t.Fatal("last request time was not retained")
+	}
+}
+
 func TestUsageLogsFilteredPaginationNewestFirst(t *testing.T) {
 	base := time.Now()
 	s := &usageLog{}
