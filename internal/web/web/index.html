@@ -737,7 +737,7 @@ if (response.output_text) {
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Model routes</span><span style="font-size:11px;color:var(--muted)">Models route by mapping name; the mapping's tone is sent to the upstream (ChatHub).</span><button class="btn btn-sm" data-action="add-model-route-row"><i data-lucide="plus" style="width:13px;height:13px"></i> Add model</button></div>
-          <div style="overflow-x:auto"><table class="table"><thead><tr><th>模型</th><th>Display name</th><th>Upstream mapping</th><th>Default reasoning level</th><th>Enabled</th><th>Actions</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table></div>
+          <div style="overflow-x:auto"><table class="table"><thead><tr><th>模型</th><th>Display name</th><th>Upstream mapping</th><th>Default reasoning level</th><th>Max input tokens</th><th>Enabled</th><th>Actions</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody></table></div>
         </div>
       </section>
     </div>
@@ -2687,7 +2687,7 @@ async function loadSettings(){
 }
 function renderModelRoutes(rows){
   const levels=routeLevels.length?routeLevels:['none','minimal','low','medium','high','xhigh'];
-  if(!rows.length){$('modelRouteRows').innerHTML='<tr><td colspan="6" class="empty">No models available</td></tr>';return;}
+  if(!rows.length){$('modelRouteRows').innerHTML='<tr><td colspan="7" class="empty">No models available</td></tr>';return;}
   $('modelRouteRows').innerHTML=rows.map(row=>{
     const levelSel=levels.map(l=>`<option value="${escAttr(l)}"${l===row.defaultReasoningLevel?' selected':''}>${esc(l)}</option>`).join('');
     return `<tr>
@@ -2695,6 +2695,7 @@ function renderModelRoutes(rows){
       <td><input class="form-input" style="min-width:130px" data-f="displayName" value="${escAttr(row.displayName)}"></td>
       <td>${upstreamMapSelect(row.upstreamMapping)}</td>
       <td><select class="form-input" style="min-width:120px" data-f="defaultReasoningLevel">${levelSel}</select></td>
+      <td><input class="form-input" type="number" min="1" step="1" style="min-width:140px" data-f="maxInputTokens" value="${row.maxInputTokens==null?'':escAttr(row.maxInputTokens)}" placeholder="262144"></td>
       <td><label style="display:inline-flex;align-items:center;min-height:36px"><input type="checkbox" data-f="enabled"${row.enabled?' checked':''}></label></td>
       <td><button class="btn btn-sm danger" data-action="remove-model-route-row"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button></td>
     </tr>`;
@@ -2711,6 +2712,7 @@ function addModelRouteRow(){
     <td><input class="form-input" style="min-width:130px" data-f="displayName" value=""></td>
     <td>${upstreamMapSelect('')}</td>
     <td><select class="form-input" style="min-width:120px" data-f="defaultReasoningLevel">${levelSel}</select></td>
+    <td><input class="form-input" type="number" min="1" step="1" style="min-width:140px" data-f="maxInputTokens" value="" placeholder="262144"></td>
     <td><label style="display:inline-flex;align-items:center;min-height:36px"><input type="checkbox" data-f="enabled" checked></label></td>
     <td><button class="btn btn-sm danger" data-action="remove-model-route-row"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button></td>`;
   $('modelRouteRows').appendChild(tr);
@@ -2730,7 +2732,10 @@ async function saveModelRoutes(){
       let model=(tr.querySelector('code')?.textContent||tr.querySelector('[data-f="model"]')?.value||'').trim();
       if(!model)return null;
       const g=f=>{const el=tr.querySelector(`[data-f="${f}"]`);return el?(el.type==='checkbox'?el.checked:el.value.trim()):undefined;};
-      return {publicModel:model,displayName:g('displayName')||model,upstreamMapping:g('upstreamMapping')||'',defaultReasoningLevel:g('defaultReasoningLevel')||'medium',enabled:g('enabled')};
+      const maxInputTokensRaw=g('maxInputTokens');
+      const maxInputTokens=maxInputTokensRaw===''?null:Number(maxInputTokensRaw);
+      if(maxInputTokens!==null&&(!Number.isSafeInteger(maxInputTokens)||maxInputTokens<1))throw new Error('Max input tokens must be empty or a positive integer');
+      return {publicModel:model,displayName:g('displayName')||model,upstreamMapping:g('upstreamMapping')||'',defaultReasoningLevel:g('defaultReasoningLevel')||'medium',maxInputTokens,enabled:g('enabled')};
     }).filter(Boolean);
     if(!rows.length&&!routeCodexModels.length)throw new Error('No models to save');
     const ids=new Set(rows.map(r=>r.publicModel.toLowerCase()));

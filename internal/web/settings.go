@@ -63,6 +63,9 @@ type modelMapping struct {
 	UpstreamMapping       string `json:"upstreamMapping"`
 	DisplayName           string `json:"displayName"`
 	DefaultReasoningLevel string `json:"defaultReasoningLevel"`
+	// MaxInputTokens is the optional per-route input-token budget. Nil preserves
+	// compatibility with older settings and resolves to the unified 256K default.
+	MaxInputTokens *int `json:"maxInputTokens,omitempty"`
 	// Enabled lets the model-routing UI switch a route off without deleting the
 	// mapping. A nil value means enabled (default) so settings files saved by
 	// earlier versions never silently hide every configured model.
@@ -147,6 +150,7 @@ type modelRouteConfig struct {
 	DisplayName           string `json:"displayName"`
 	UpstreamMapping       string `json:"upstreamMapping"`
 	DefaultReasoningLevel string `json:"defaultReasoningLevel"`
+	MaxInputTokens        *int   `json:"maxInputTokens,omitempty"`
 	Enabled               bool   `json:"enabled"`
 }
 
@@ -186,11 +190,13 @@ func modelRouteTable(mappings []modelMapping, upstream []upstreamMapping, hidden
 		}
 		seen[key] = true
 		var mappingName, display, level string
+		var maxInputTokens *int
 		enabled := servable(id) // routes not served today stay off until enabled
 		if m, ok := configuredModelMapping(id, mappings); ok {
 			mappingName = strings.TrimSpace(m.UpstreamMapping)
 			display = strings.TrimSpace(m.DisplayName)
 			level = strings.TrimSpace(m.DefaultReasoningLevel)
+			maxInputTokens = m.MaxInputTokens
 			enabled = m.enabled()
 		}
 		if mappingName == "" {
@@ -210,7 +216,7 @@ func modelRouteTable(mappings []modelMapping, upstream []upstreamMapping, hidden
 		if level == "" {
 			level = "medium"
 		}
-		rows = append(rows, modelRouteConfig{Model: id, DisplayName: display, UpstreamMapping: mappingName, DefaultReasoningLevel: level, Enabled: enabled})
+		rows = append(rows, modelRouteConfig{Model: id, DisplayName: display, UpstreamMapping: mappingName, DefaultReasoningLevel: level, MaxInputTokens: maxInputTokens, Enabled: enabled})
 	}
 	for _, id := range configurableCodexModels {
 		add(id)
@@ -430,6 +436,9 @@ func validateSettings(v runtimeSettings) error {
 		}
 		if _, err := normalizeReasoningEffort(mapping.DefaultReasoningLevel); err != nil || strings.TrimSpace(mapping.DefaultReasoningLevel) == "" {
 			return fmt.Errorf("公开模型 %q 的默认推理级别无效", model)
+		}
+		if mapping.MaxInputTokens != nil && *mapping.MaxInputTokens < 1 {
+			return fmt.Errorf("公开模型 %q 的最大输入 token 必须为空或为正整数", model)
 		}
 	}
 	for _, id := range v.HiddenModels {

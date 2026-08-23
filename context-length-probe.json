@@ -1,0 +1,331 @@
+{
+  "generated_at": "2026-08-23T05:13:13.587463+00:00",
+  "endpoint": "http://127.0.0.1:4141/v1/chat/completions",
+  "model": "gpt-5.6-sol",
+  "method": {
+    "description": "Exponential search followed by binary search",
+    "estimated_characters_per_token": 4,
+    "start_tokens": 4096,
+    "precision_tokens": 1024,
+    "configured_ceiling_tokens": 1048576,
+    "max_output_tokens": 8,
+    "reasoning_effort": "low"
+  },
+  "result": {
+    "largest_accepted_requested_tokens": 1047552,
+    "smallest_rejected_requested_tokens": 1048576,
+    "boundary_width_tokens": 1024,
+    "largest_server_reported_input_tokens": 838353,
+    "ceiling_reached_without_rejection": false,
+    "successful_attempts": 17,
+    "failed_attempts": 1
+  },
+  "interpretation": {
+    "effective_limit": "The largest accepted request is the end-to-end effective limit observed through the local API within the configured precision.",
+    "upstream_limit": "A context-length error returned by the first rejected request is evidence of the upstream boundary. If the proxy truncates before forwarding, compare usage values and server logs to distinguish proxy truncation from a true upstream rejection."
+  },
+  "attempts": [
+    {
+      "requested_tokens": 4096,
+      "estimated_tokens": 4096,
+      "characters": 16384,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 5.047,
+      "request_id": "7c729aff-6b3e-4519-9e47-aa60a551ff3d",
+      "response_id": "chatcmpl-08ae080b-0d19-4065-9e90-57cdbac5f8f6",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 3588,
+        "total_tokens": 3589
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 8192,
+      "estimated_tokens": 8192,
+      "characters": 32768,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 4.093,
+      "request_id": "80903594-1e84-4934-aab3-7a46e1120732",
+      "response_id": "chatcmpl-7f292bd1-b742-4752-bc74-2f40695c62ee",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 6865,
+        "total_tokens": 6866
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 16384,
+      "estimated_tokens": 16384,
+      "characters": 65536,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 7.453,
+      "request_id": "011a2571-fc88-4559-bca1-4bd033392eaa",
+      "response_id": "chatcmpl-3e9ffcbb-bb4c-48fb-9830-58acba37d85f",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 13419,
+        "total_tokens": 13420
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 32768,
+      "estimated_tokens": 32768,
+      "characters": 131072,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 7.959,
+      "request_id": "ecac53af-0740-46c9-8548-0fb0a217daa0",
+      "response_id": "chatcmpl-1ab66812-528f-434c-9918-bf4530eac7c1",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 26526,
+        "total_tokens": 26527
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 65536,
+      "estimated_tokens": 65536,
+      "characters": 262144,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 6.909,
+      "request_id": "970c4f9a-50a2-4f72-8ed7-7afa84c019ff",
+      "response_id": "chatcmpl-bc98534c-305a-4d44-b196-6032b2ffc321",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 52740,
+        "total_tokens": 52741
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 131072,
+      "estimated_tokens": 131072,
+      "characters": 524288,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 5.508,
+      "request_id": "b3a5f66d-158c-4f15-9f15-85339058293f",
+      "response_id": "chatcmpl-0afaec50-9cb1-4564-9611-b2d8e156489f",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 105169,
+        "total_tokens": 105170
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 262144,
+      "estimated_tokens": 262144,
+      "characters": 1048576,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 8.182,
+      "request_id": "47639b24-20e6-4662-9a12-d1b4e2531f99",
+      "response_id": "chatcmpl-e784300d-42c4-4489-8bbc-21e2011f52fb",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 210027,
+        "total_tokens": 210028
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 524288,
+      "estimated_tokens": 524288,
+      "characters": 2097152,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 19.811,
+      "request_id": "dc094c62-9cab-46cb-beb0-96f8f4b4bb15",
+      "response_id": "chatcmpl-166e3a20-f920-4b87-b8f3-8e721e969b54",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 419742,
+        "total_tokens": 419743
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 1048576,
+      "estimated_tokens": 1048576,
+      "characters": 4194304,
+      "status": 502,
+      "accepted": false,
+      "elapsed_seconds": 3.776,
+      "request_id": "70329622-ad09-4ff9-8783-d8271b0ad1ea",
+      "response_id": null,
+      "finish_reason": null,
+      "usage": null,
+      "error": "upstream request failed"
+    },
+    {
+      "requested_tokens": 786432,
+      "estimated_tokens": 786432,
+      "characters": 3145728,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 25.796,
+      "request_id": "c3cf9892-9884-49be-a605-21f2dcf1f097",
+      "response_id": "chatcmpl-d4443dc5-e69d-43fc-b427-7472a75e6095",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 629457,
+        "total_tokens": 629458
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 917504,
+      "estimated_tokens": 917504,
+      "characters": 3670016,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 27.685,
+      "request_id": "68682fa0-a024-4527-aec4-81a9a2dbdace",
+      "response_id": "chatcmpl-6672070f-e759-4805-832f-7fd6237e5301",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 734315,
+        "total_tokens": 734316
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 983040,
+      "estimated_tokens": 983040,
+      "characters": 3932160,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 28.331,
+      "request_id": "0520cc0f-9112-4945-afd3-cf40bde966b0",
+      "response_id": "chatcmpl-d060cd18-c3e5-4a86-a383-7e5ed1740c2e",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 786743,
+        "total_tokens": 786744
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 1015808,
+      "estimated_tokens": 1015808,
+      "characters": 4063232,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 28.374,
+      "request_id": "6052a8aa-d721-4019-9636-f579e769013f",
+      "response_id": "chatcmpl-b8c57443-b4a9-4546-822f-9a1b6b388156",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 812958,
+        "total_tokens": 812959
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 1032192,
+      "estimated_tokens": 1032192,
+      "characters": 4128768,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 30.321,
+      "request_id": "648e6ead-bd1d-4053-9f41-17e4284ad0d0",
+      "response_id": "chatcmpl-5558ee13-7d73-43de-bd70-067655d4383a",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 826065,
+        "total_tokens": 826066
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 1040384,
+      "estimated_tokens": 1040384,
+      "characters": 4161536,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 35.266,
+      "request_id": "134af429-6ed8-4184-8d42-c830545458eb",
+      "response_id": "chatcmpl-6804b174-b6bf-4902-844c-938faf6f3467",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 832619,
+        "total_tokens": 832620
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 1044480,
+      "estimated_tokens": 1044480,
+      "characters": 4177920,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 30.496,
+      "request_id": "df749e6e-bd8f-4b41-9dd9-8908e934e7ef",
+      "response_id": "chatcmpl-4cc7c2a6-3493-4ab3-bb92-a0c193fc505f",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 835895,
+        "total_tokens": 835896
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 1046528,
+      "estimated_tokens": 1046528,
+      "characters": 4186112,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 30.284,
+      "request_id": "8e226e95-bb21-406a-a836-e8e2e1a5effa",
+      "response_id": "chatcmpl-6b95b210-44ad-412a-a031-ef4419ed6058",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 837534,
+        "total_tokens": 837535
+      },
+      "error": null
+    },
+    {
+      "requested_tokens": 1047552,
+      "estimated_tokens": 1047552,
+      "characters": 4190208,
+      "status": 200,
+      "accepted": true,
+      "elapsed_seconds": 29.793,
+      "request_id": "843d24e1-a245-45fe-ad78-f54d3379abc5",
+      "response_id": "chatcmpl-ab5a3bf3-78c8-4151-a49f-e62a3b58aa2a",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 838353,
+        "total_tokens": 838354
+      },
+      "error": null
+    }
+  ]
+}

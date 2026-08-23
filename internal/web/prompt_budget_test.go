@@ -129,3 +129,31 @@ func TestM365EffectiveContextWindowDefault(t *testing.T) {
 		t.Fatalf("env override not honored: %d", got)
 	}
 }
+
+func TestModelRouteMaxInputTokensDefaultsTo256K(t *testing.T) {
+	if got := modelRouteMaxInputTokens("gpt-5.6-sol", nil); got != 262144 {
+		t.Fatalf("missing route value must use unified 256K default: got %d", got)
+	}
+	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol"}}
+	if got := modelRouteMaxInputTokens("gpt-5.6-sol", mappings); got != 262144 {
+		t.Fatalf("nil route value must use unified 256K default: got %d", got)
+	}
+}
+
+func TestModelRouteMaxInputTokensAreRouteLocal(t *testing.T) {
+	limit256 := 262144
+	limit1000 := 1000
+	mappings := []modelMapping{
+		{PublicModel: "gpt-5.6-sol", MaxInputTokens: &limit256},
+		{PublicModel: "gpt-5.4", MaxInputTokens: &limit1000},
+	}
+	if got := modelRouteMaxInputTokens("gpt-5.6-sol", mappings); got != limit256 {
+		t.Fatalf("gpt-5.6-sol route limit mismatch: got %d want %d", got, limit256)
+	}
+	if got := modelRouteMaxInputTokens("gpt-5.4", mappings); got != limit1000 {
+		t.Fatalf("gpt-5.4 route limit mismatch: got %d want %d", got, limit1000)
+	}
+	if got := modelRouteMaxInputTokens("unconfigured-model", mappings); got != 262144 {
+		t.Fatalf("unconfigured model must not inherit another route limit: got %d", got)
+	}
+}

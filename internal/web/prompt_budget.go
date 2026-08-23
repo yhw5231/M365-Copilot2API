@@ -19,7 +19,21 @@ import (
 // advertises that same budget honestly in /v1/models. The default is 96K
 // input tokens; operators may raise it with M365_EFFECTIVE_CONTEXT_WINDOW.
 
-const defaultM365EffectiveContextWindow = 96000
+const (
+	defaultM365EffectiveContextWindow = 96000
+	defaultRouteMaxInputTokens        = 262144
+)
+
+// modelRouteMaxInputTokens returns the input-token budget for one public model
+// route. Missing values preserve compatibility by resolving to the unified
+// 256K default. Explicit values remain route-local and cannot affect another
+// model's context handling.
+func modelRouteMaxInputTokens(model string, mappings []modelMapping) int {
+	if mapping, ok := configuredModelMapping(model, mappings); ok && mapping.MaxInputTokens != nil && *mapping.MaxInputTokens > 0 {
+		return *mapping.MaxInputTokens
+	}
+	return defaultRouteMaxInputTokens
+}
 
 // m365EffectiveContextWindow returns the input budget the gateway actually
 // manages for Microsoft 365 backend models. A configured ContextWindow below
@@ -32,7 +46,7 @@ func m365EffectiveContextWindow() int {
 			return n
 		}
 	}
-	if cfg := currentSettings(); cfg.ContextWindow > 0 && cfg.ContextWindow < defaultM365EffectiveContextWindow {
+	if cfg := currentSettings(); cfg.ContextWindow > 0 {
 		return cfg.ContextWindow
 	}
 	return defaultM365EffectiveContextWindow

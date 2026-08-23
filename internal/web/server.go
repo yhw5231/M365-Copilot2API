@@ -1933,7 +1933,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// (instructions) and tier 2 (tool evidence) survive, tier 3 (ordinary
 	// history) is trimmed oldest-first once the request exceeds the effective
 	// input budget the M365 backend can actually consume.
-	body.Messages = budgetMessages(body.Messages, m365EffectiveContextWindow())
+	body.Messages = budgetMessages(body.Messages, modelRouteMaxInputTokens(body.Model, currentSettings().ModelMappings))
 	var prompt string
 	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
