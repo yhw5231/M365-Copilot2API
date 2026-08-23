@@ -197,8 +197,18 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 		o.Messages = append(o.Messages, oaiMsg{Role: "system", Content: instructions})
 	}
 	if r.Reasoning != nil {
+		effort := strings.TrimSpace(r.Reasoning.Effort)
+		// Validate the requested reasoning effort before the stream opens. An
+		// invalid value must fail with a plain 400 (like chat/completions) rather
+		// than a streamed response.failed after response.created. "auto" is
+		// accepted here and resolved to the model's default by the chat adapter.
+		if effort != "" && !strings.EqualFold(effort, "auto") {
+			if _, err := normalizeReasoningEffort(effort); err != nil {
+				return o, err
+			}
+		}
 		o.Reasoning = r.Reasoning
-		o.ReasoningEffort = r.Reasoning.Effort
+		o.ReasoningEffort = effort
 	}
 	// `text` has two accepted shapes. OpenAI Responses clients send it as the
 	// output-text configuration object (e.g. {"format":{"type":"json_object"}});

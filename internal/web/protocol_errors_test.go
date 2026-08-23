@@ -1,7 +1,10 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -37,5 +40,31 @@ func TestMaxToolRoundsConfig(t *testing.T) {
 	t.Setenv("M365_MAX_TOOL_ROUNDS", "9999")
 	if maxToolRounds() != 32 {
 		t.Fatal("invalid limit accepted")
+	}
+}
+
+func TestPipeResponseWriterCapturesBodyWithoutTruncatingStream(t *testing.T) {
+	pr, pw := io.Pipe()
+	irw := &pipeResponseWriter{h: make(http.Header), w: pw}
+	done := make(chan []byte, 1)
+	go func() {
+		data, _ := io.ReadAll(pr)
+		done <- data
+	}()
+	// A single write larger than the capture budget must reach the pipe intact
+	// while only the bounded prefix is retained for diagnostics.
+	big := bytes.Repeat([]byte("x"), maxInnerErrorCapture+64)
+	if n, _ := irw.Write(big); n != len(big) {
+		t.Fatalf("pipe write truncated: n=%d want=%d", n, len(big))
+	}
+	if irw.status != http.StatusOK {
+		t.Fatalf("status=%d", irw.status)
+	}
+	_ = pw.Close()
+	if got := <-done; len(got) != len(big) {
+		t.Fatalf("pipe content truncated: len=%d want=%d", len(got), len(big))
+	}
+	if irw.body.Len() != maxInnerErrorCapture {
+		t.Fatalf("capture len=%d want=%d", irw.body.Len(), maxInnerErrorCapture)
 	}
 }

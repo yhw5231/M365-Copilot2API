@@ -199,6 +199,34 @@ func TestReasoningEffortRouting(t *testing.T) {
 	}
 }
 
+func TestResolveReasoningEffort(t *testing.T) {
+	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "xhigh"}}
+	// A requested level is trusted.
+	if got := resolveReasoningEffort("high", "gpt-5.6-sol", mappings); got != "high" {
+		t.Fatalf("explicit effort got=%q", got)
+	}
+	// "auto" resolves to the model's configured default.
+	if got := resolveReasoningEffort("auto", "gpt-5.6-sol", mappings); got != "xhigh" {
+		t.Fatalf("auto got=%q want xhigh", got)
+	}
+	// Case-insensitive.
+	if got := resolveReasoningEffort("AUTO", "gpt-5.6-sol", mappings); got != "xhigh" {
+		t.Fatalf("AUTO got=%q want xhigh", got)
+	}
+	// An omitted effort also takes the default.
+	if got := resolveReasoningEffort("", "gpt-5.6-sol", mappings); got != "xhigh" {
+		t.Fatalf("empty got=%q want xhigh", got)
+	}
+	// Unknown models keep the request's own value (defaults only come from
+	// mappings that actually declare one).
+	if got := resolveReasoningEffort("auto", "no-such-model", mappings); got != "" {
+		t.Fatalf("unknown model auto got=%q want empty", got)
+	}
+	if got := resolveReasoningEffort("medium", "no-such-model", mappings); got != "medium" {
+		t.Fatalf("unknown model explicit got=%q", got)
+	}
+}
+
 func TestChatRejectsInvalidReasoningBeforeUpstream(t *testing.T) {
 	s := &Server{}
 	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.6-reasoning","reasoning_effort":"extreme","messages":[{"role":"user","content":"hello"}]}`))

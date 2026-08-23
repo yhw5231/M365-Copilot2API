@@ -152,6 +152,39 @@ func TestResponsesAcceptsSupportedIncludeAndDefaults(t *testing.T) {
 	}
 }
 
+func TestResponsesReasoningEffortValidation(t *testing.T) {
+	// Valid efforts are preserved and forwarded.
+	for _, e := range []string{"none", "minimal", "low", "medium", "high", "xhigh"} {
+		r := responsesRequest{Model: "m", Input: "hi", Reasoning: &reasoningConfig{Effort: e}}
+		o, err := r.openAI()
+		if err != nil {
+			t.Fatalf("effort %q rejected: %v", e, err)
+		}
+		if o.ReasoningEffort != e {
+			t.Fatalf("effort %q lost: got %q", e, o.ReasoningEffort)
+		}
+	}
+	// "auto" is accepted as a request for the model's default reasoning level.
+	for _, e := range []string{"auto", "AUTO"} {
+		r := responsesRequest{Model: "m", Input: "hi", Reasoning: &reasoningConfig{Effort: e}}
+		o, err := r.openAI()
+		if err != nil {
+			t.Fatalf("auto effort %q rejected: %v", e, err)
+		}
+		if o.ReasoningEffort != e {
+			t.Fatalf("auto effort %q lost: got %q", e, o.ReasoningEffort)
+		}
+	}
+	// Invalid efforts fail fast so the stream never opens.
+	for _, e := range []string{"extreme", "bogus"} {
+		r := responsesRequest{Model: "m", Input: "hi", Reasoning: &reasoningConfig{Effort: e}}
+		_, err := r.openAI()
+		if err == nil {
+			t.Fatalf("invalid effort %q must be rejected", e)
+		}
+	}
+}
+
 func TestDropSystemInstructionsReplacesPreviousTurn(t *testing.T) {
 	hist := []oaiMsg{
 		{Role: "system", Content: "OLD instructions that must not survive"},

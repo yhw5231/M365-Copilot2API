@@ -1882,13 +1882,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if body.Reasoning != nil && strings.TrimSpace(body.Reasoning.Effort) != "" {
 		effort = body.Reasoning.Effort
 	}
-	// A request that omits reasoning_effort takes the model's configured default
+	// "auto" (and an omitted effort) resolves to the model's configured default
 	// reasoning level from model route settings.
-	if strings.TrimSpace(effort) == "" {
-		if level, ok := defaultReasoningLevel(body.Model, mappings); ok {
-			effort = level
-		}
-	}
+	effort = resolveReasoningEffort(effort, body.Model, mappings)
 	body.ReasoningEffort = effort
 	if tr := traceFromRequest(r); tr != nil {
 		s.trace.update(tr.ID, func(rec *traceRecord) {

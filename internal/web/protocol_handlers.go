@@ -21,7 +21,15 @@ type pipeResponseWriter struct {
 	h      http.Header
 	w      *io.PipeWriter
 	status int
+	// body retains a bounded copy of what the inner handler wrote so a failed
+	// inner request can surface its real error message to the client instead of
+	// the generic "inner chat request failed".
+	body bytes.Buffer
 }
+
+// maxInnerErrorCapture bounds the retained inner error body. Error payloads are
+// small; this only needs enough room for the diagnostic message.
+const maxInnerErrorCapture = 16 << 10
 
 func (p *pipeResponseWriter) Header() http.Header { return p.h }
 func (p *pipeResponseWriter) WriteHeader(n int) {
@@ -32,6 +40,13 @@ func (p *pipeResponseWriter) WriteHeader(n int) {
 func (p *pipeResponseWriter) Write(b []byte) (int, error) {
 	if p.status == 0 {
 		p.status = 200
+	}
+	if room := maxInnerErrorCapture - p.body.Len(); room > 0 && len(b) > 0 {
+		if len(b) > room {
+			_, _ = p.body.Write(b[:room])
+		} else {
+			_, _ = p.body.Write(b)
+		}
 	}
 	return p.w.Write(b)
 }
@@ -158,11 +173,14 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		if status == 0 {
 			status = http.StatusBadGateway
 		}
+		// Surface the inner request's own error message (e.g. an upstream 4xx/5xx
+		// or a chat protocol rejection) instead of an opaque placeholder, so the
+		// client can see why the response failed.
 		emit("response.failed", map[string]any{
 			"type": "response.failed",
 			"response": map[string]any{
 				"id": id, "object": "response", "status": "failed", "model": model,
-				"error": map[string]any{"code": status, "message": "inner chat request failed"},
+				"error": map[string]any{"code": status, "message": errorMessage(irw.body.Bytes(), "inner chat request failed")},
 			},
 		})
 		return
