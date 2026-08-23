@@ -1502,7 +1502,7 @@ func (s *Server) recoverWorkspaceToolMisjudgment(
 		s.dropTransientConversation(badConversationID)
 	}
 
-	cleanMessages := cleanWorkspaceToolMisjudgments(body.Messages)
+	cleanMessages := cleanWorkspaceToolMisjudgments(body.Messages, toolMaps)
 	cleanPrompt, cleanAttachments := flattenPromptMessages(cleanMessages, nil)
 	cleanPrompt = strings.TrimSpace(cleanPrompt)
 	if cleanPrompt == "" {
@@ -1534,7 +1534,7 @@ func (s *Server) recoverWorkspaceToolMisjudgment(
 		s.dropTransientConversation(correctedConversationID)
 		return chathub.Result{}, fmt.Errorf("%w: correction returned an empty response", errWorkspaceToolCorrectionFailed)
 	}
-	if isWorkspaceToolMisjudgment(corrected.Text) {
+	if isWorkspaceToolMisjudgmentForTools(corrected.Text, toolMaps) {
 		s.dropTransientConversation(correctedConversationID)
 		return chathub.Result{}, errWorkspaceToolMisjudgment
 	}
@@ -2650,7 +2650,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if bufferedReasoning.Len() > 0 {
 				res.Reasoning = bufferedReasoning.String()
 			}
-			if len(toolMaps) > 0 && isWorkspaceToolMisjudgment(res.Text) {
+			if len(toolMaps) > 0 && isWorkspaceToolMisjudgmentForTools(res.Text, toolMaps) {
 				correctionReq := answerReq
 				correctionReq.Text = unifiedSandboxCorrection(toolMaps, prompt)
 				res2, correctionErr := s.chatWithAccount(ctx, acc.ID, account, correctionReq)
@@ -2659,7 +2659,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 					return
 				}
-				if isWorkspaceToolMisjudgment(res2.Text) {
+				if isWorkspaceToolMisjudgmentForTools(res2.Text, toolMaps) {
 					_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream repeatedly misidentified workspace or tool availability", "code": "workspace_tool_misjudgment"}})+"\n\n")
 					_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 					return
@@ -2803,7 +2803,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// any conversation binding, cache update, or client output. The shared helper
 	// always creates a clean upstream branch and accepts only a distinct, valid
 	// replacement conversation.
-	if len(toolMaps) > 0 && isWorkspaceToolMisjudgment(res.Text) {
+	if len(toolMaps) > 0 && isWorkspaceToolMisjudgmentForTools(res.Text, toolMaps) {
 		res, err = s.recoverWorkspaceToolMisjudgment(ctx, acc, account, &body, res, answerReq, toolMaps, convCacheModel, convReused, tone, requestID)
 		if err != nil {
 			log.Printf("[workspace-tool-eject] id=%s clean-branch correction failed: %v", requestID, err)
@@ -2893,7 +2893,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// either streaming or non-streaming client output.
 	if res.ConversationID != "" {
 		s.bindConversation(acc, &body, r, res, prompt, startedAt, task)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, cleanWorkspaceToolMisjudgments(body.Messages), convReused)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, cleanWorkspaceToolMisjudgments(body.Messages, toolMaps), convReused)
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			w.Header().Set(sessionHeaderName, resolved.SessionID)

@@ -458,8 +458,8 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 	// calculating fingerprints or persisting history. User, system, developer,
 	// and tool messages are preserved even when they discuss /mnt/data,
 	// containers, sandboxes, or Windows execution.
-	history := cleanWorkspaceToolMisjudgments(cloneMessages(body.Messages))
-	if strings.TrimSpace(assistantText) != "" && !isWorkspaceToolMisjudgment(assistantText) {
+	history := cleanWorkspaceToolMisjudgments(cloneMessages(body.Messages), toolMapsFromChatHubTools(body.Tools))
+	if strings.TrimSpace(assistantText) != "" && !isWorkspaceToolMisjudgmentForTools(assistantText, toolMapsFromChatHubTools(body.Tools)) {
 		history = append(history, oaiMsg{Role: "assistant", Content: assistantText})
 	}
 	explicitID := strings.TrimSpace(r.Header.Get("X-M365-Session-Id"))

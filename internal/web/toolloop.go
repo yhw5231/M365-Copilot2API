@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -206,6 +207,12 @@ func isContentPolicyBlock(text string) bool {
 	return false
 }
 
+// workspaceToolMisjudgmentPatterns are exact, high-precision phrases that
+// indicate the model wrongly claims the session lacks caller-provided tools or
+// workspace access. Exact matches remain the fast, zero-false-positive path,
+// but they are intentionally NOT the only detector: models rephrase denials
+// freely, so isWorkspaceToolMisjudgment layers structural and tool-aware
+// signals on top of this list (see below).
 var workspaceToolMisjudgmentPatterns = []string{
 	"cannot access the windows path because this session only provides linux",
 	"cannot access your windows workspace because this session only provides linux",
@@ -227,8 +234,107 @@ var workspaceToolMisjudgmentPatterns = []string{
 	"无法访问你的实际工作区",
 }
 
+// workspaceToolAvailabilityDenials are compound availability claims (EN+ZH).
+// Bare "没有"/"无法"/"不能" are deliberately absent: they appear in perfectly
+// legitimate statements ("当前会话没有使用文件操作工具", "无法完成任务") and
+// would make the generic detector over-match.
+var workspaceToolAvailabilityDenials = []string{
+	// English
+	"don't have", "do not have", "doesn't have", "does not have",
+	"doesn't provide", "does not provide", "not available", "not provided",
+	"not installed", "not configured", "not registered", "not callable",
+	"not accessible", "unavailable", "no access to", "no tools", "no tool",
+	"without", "lacks", "lacking", "missing", "absent", "none available",
+	"not exist", "doesn't exist", "does not exist", "not present",
+	// Chinese
+	"没有可调用", "没有可用的", "没有提供", "不提供", "没有任何工具", "没有工具",
+	"无法调用", "不能调用", "不可用", "未提供", "不具备", "不存在",
+	"缺少", "找不到", "没有执行", "没有命令", "没有接口", "没有安装",
+}
+
+// workspaceToolChannelNouns are unambiguous execution/tool-channel nouns (EN+ZH).
+// English file-tool names (read/write/edit/glob/grep) are intentionally absent:
+// they are ordinary English words, so a generic layer using them would
+// over-match ("I don't have time to write the report"). Bare file-tool names
+// are only meaningful in the tool-aware layer, which knows the caller actually
+// declared them.
+var workspaceToolChannelNouns = []string{
+	"tool", "tools", "tooling", "shell", "execution", "command", "commands",
+	"interface", "interfaces", "pwsh", "powershell", "bash", "exec",
+	"file operation", "file tool",
+	// Chinese
+	"工具", "接口", "可调用", "执行", "命令", "文件操作", "shell", "pwsh",
+	"powershell", "bash",
+}
+
+// workspaceToolScopeNouns are session/workspace/environment references that
+// anchor an availability claim to the current session.
+var workspaceToolScopeNouns = []string{
+	"session", "workspace", "environment", "current session", "this session",
+	"the session",
+	// Chinese
+	"当前会话", "本会话", "本次会话", "当前环境", "当前工作区", "工作区", "本机",
+}
+
+// workspaceToolMisjudgmentRegexes capture common structural shapes of a
+// workspace/tool-availability misjudgment without requiring the exact wording.
+// Each pattern combines a denial with a channel noun and/or session scope, so
+// ordinary technical discussion (a failed command, a locked file, a sandbox
+// deployment note) does not match.
+var workspaceToolMisjudgmentRegexes = []*regexp.Regexp{
+	// EN: denial ... channel noun ... session scope
+	regexp.MustCompile(`(?i)(don'?t have|do not have|doesn'?t provide|does not provide|no (longer )?(tools?|shell|execution|command|interface|access to)|not (available|provided|installed|configured|registered|callable|accessible)|unavailable|lacks?|missing|absent|without) .{0,50}(tools?|shell|execution|command|interface|pwsh|powershell|bash|exec|file (operation|tool)) .{0,60}(in this|in the|this|the|current) (session|environment|workspace)`),
+	// EN: session scope first
+	regexp.MustCompile(`(?i)(this|the|current) (session|environment|workspace) .{0,60}(don'?t have|do not have|doesn'?t provide|does not provide|no|without|lacks?|not (available|provided)|unavailable|missing|absent) .{0,50}(tools?|shell|execution|command|interface|pwsh|powershell|bash|exec)`),
+	// ZH: 当前会话 ... 没有可调用/没有提供 ... 工具/接口
+	regexp.MustCompile(`(当前会话|本会话|本次会话|当前环境|当前工作区).{0,40}(没有可调用|没有可用的|没有提供|不提供|没有任何工具|没有工具|无法调用|不能调用|不可用|未提供|不具备|不存在|缺少|找不到|没有执行|没有命令|没有接口).{0,40}(工具|接口|可调用|文件操作|执行|命令|pwsh|powershell|bash|shell)`),
+	// ZH: 没有可调用/没有可用 ... 工具/接口 (no session word needed)
+	regexp.MustCompile(`(没有可调用|没有可用的|没有提供|不提供|没有任何工具|无法调用|不能调用|不可用|未提供|不具备|不存在|缺少|找不到|没有执行|没有命令|没有接口).{0,40}(工具|接口|文件操作|执行|命令|pwsh|powershell|bash|shell)`),
+	// ZH: <工具/接口> 不存在/不可用/未提供
+	regexp.MustCompile(`(工具|接口|pwsh|powershell|bash|shell|文件操作).{0,20}(不存在|不可用|未提供|没有提供|无法调用|不能调用)`),
+	// EN/ZH: environment exclusivity (linux container / sandbox / /mnt/data)
+	regexp.MustCompile(`(?i)(this |the |current )?(session|environment|workspace|sandbox|本机|当前)( |)(only|can only|only has|only provides|只能|仅能|只提供|只允许) .{0,40}(linux|container|sandbox|/mnt/data|cloud|容器|沙箱)`),
+}
+
+// containsAnyTerm reports whether s contains any of the given terms.
+func containsAnyTerm(s string, terms []string) bool {
+	for _, t := range terms {
+		if t != "" && strings.Contains(s, t) {
+			return true
+		}
+	}
+	return false
+}
+
 func isSandboxHallucination(text string) bool {
 	return isWorkspaceToolMisjudgment(text)
+}
+
+// workspaceToolMisjudgmentScanLimit bounds the low-precision detection layers
+// (structural regexes, semantic co-occurrence, tool-aware) to the opening of an
+// assistant reply. Misjudgment claims almost always appear at the very start of
+// a reply ("目前仍无法继续修改：当前会话实际没有可调用的..."), because the
+// model refuses to proceed before doing anything else. Legitimate mid-reply
+// technical narration (permission errors, sandbox notes, command failures) can
+// contain the same denial/channel/scope vocabulary, so scanning only the
+// opening keeps recall for the real failure mode while cutting false positives
+// from long replies. The exact-phrase layer still scans the whole text: those
+// phrases are unambiguous misjudgments and cannot produce false positives.
+const workspaceToolMisjudgmentScanLimit = 300
+
+// workspaceToolMisjudgmentScanText returns the opening window of text used by
+// the structural/semantic/tool-aware layers. The whole text is returned when it
+// fits within the scan limit. The cut is moved back to a UTF-8 rune boundary so
+// a truncated multibyte character can never distort a pattern match.
+func workspaceToolMisjudgmentScanText(low string) string {
+	if len(low) <= workspaceToolMisjudgmentScanLimit {
+		return low
+	}
+	end := workspaceToolMisjudgmentScanLimit
+	for end > 0 && low[end]&0xC0 == 0x80 {
+		end--
+	}
+	return low[:end]
 }
 
 // isWorkspaceToolMisjudgment identifies explicit, incorrect claims that the
@@ -236,6 +342,16 @@ func isSandboxHallucination(text string) bool {
 // caller-provided tools, or cannot access the actual workspace. Ordinary
 // technical discussion of containers, sandboxes, /mnt/data, code interpreters,
 // or legitimate tool failures is intentionally not classified as pollution.
+//
+// Detection is layered so reworded denials are still caught:
+//  1. exact phrases (workspaceToolMisjudgmentPatterns) — fast, zero false
+//     positives, scanned over the whole text
+//  2. structural regexes (workspaceToolMisjudgmentRegexes) — common rephrasings
+//  3. semantic co-occurrence — availability denial + channel noun + session scope
+//
+// Layers 2 and 3 only examine the opening window
+// (workspaceToolMisjudgmentScanLimit), because misjudgments are opening claims
+// while legitimate denial-shaped narration usually appears later in a reply.
 func isWorkspaceToolMisjudgment(text string) bool {
 	low := strings.ToLower(strings.TrimSpace(text))
 	if low == "" {
@@ -246,22 +362,149 @@ func isWorkspaceToolMisjudgment(text string) bool {
 			return true
 		}
 	}
+	scan := workspaceToolMisjudgmentScanText(low)
+	for _, re := range workspaceToolMisjudgmentRegexes {
+		if re.MatchString(scan) {
+			return true
+		}
+	}
+	return containsAnyTerm(scan, workspaceToolAvailabilityDenials) &&
+		containsAnyTerm(scan, workspaceToolChannelNouns) &&
+		containsAnyTerm(scan, workspaceToolScopeNouns)
+}
+
+// workspaceToolWeakDenials are broader denial terms used only by the
+// tool-aware layer, where the text must additionally mention an actually
+// declared tool name and a channel noun inside the window, and must not carry
+// permission/access context.
+var workspaceToolWeakDenials = []string{
+	"don't have", "do not have", "doesn't have", "does not have",
+	"没有", "无法", "不能", "不具备", "缺少", "找不到", "没有提供",
+}
+
+// workspaceToolPermissionContext is legitimate permission/access phrasing that
+// must suppress a tool-aware match ("I don't have write access to that file").
+var workspaceToolPermissionContext = []string{
+	"access to", "permission", "permissions", "denied", "read-only", "locked",
+	"not allowed", "unauthorized", "权限", "拒绝", "只读", "锁定", "不允许", "无权",
+}
+
+// isWorkspaceToolMisjudgmentForTools is the tool-aware variant used at call
+// sites that know exactly which tools the caller declared. It is the most
+// robust layer: regardless of how the model rephrases the denial, if it names
+// one of the actually-declared tools and asserts that tool/interface is
+// unavailable, the response is treated as a misjudgment. This catches phrasings
+// no fixed list can anticipate (e.g. "当前会话实际没有可调用的 pwsh、read、
+// write、edit、glob 或 grep 文件操作接口").
+func isWorkspaceToolMisjudgmentForTools(text string, toolMaps []map[string]any) bool {
+	if isWorkspaceToolMisjudgment(text) {
+		return true
+	}
+	return toolAwareMisjudgment(text, toolMaps)
+}
+
+// toolAwareMisjudgment looks for an actually-declared tool name inside text,
+// then checks the window around it for an availability denial. Word boundaries
+// keep "read"/"write" from matching inside "already"/"rewrite", and
+// permission/access phrasing ("write access to that file") suppresses the
+// match so legitimate permission statements are not treated as pollution.
+// Like the structural/semantic layers, it only scans the opening window of the
+// reply: misjudgments are opening claims, while legitimate narration that
+// merely names a tool ("the read tool returned an error") usually comes later.
+func toolAwareMisjudgment(text string, toolMaps []map[string]any) bool {
+	declared := extractToolNames(toolMaps)
+	if len(declared) == 0 {
+		return false
+	}
+	low := strings.ToLower(strings.TrimSpace(text))
+	if low == "" {
+		return false
+	}
+	scan := workspaceToolMisjudgmentScanText(low)
+	for name := range declared {
+		lname := strings.ToLower(name)
+		for _, idx := range wordIndexes(scan, lname) {
+			start := idx - 80
+			if start < 0 {
+				start = 0
+			}
+			end := idx + len(lname) + 80
+			if end > len(scan) {
+				end = len(scan)
+			}
+			window := scan[start:end]
+			if containsAnyTerm(window, workspaceToolPermissionContext) {
+				continue
+			}
+			if containsAnyTerm(window, workspaceToolAvailabilityDenials) {
+				return true
+			}
+			if containsAnyTerm(window, workspaceToolWeakDenials) &&
+				containsAnyTerm(window, workspaceToolChannelNouns) {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// wordIndexes returns the byte offsets of every whole-word occurrence of term
+// in text. ASCII terms use \b boundaries (so "read" does not match inside
+// "already"/"thread"); non-ASCII terms fall back to substring positions.
+func wordIndexes(text, term string) []int {
+	var out []int
+	if term == "" {
+		return out
+	}
+	if isASCIIWord(term) {
+		re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(term) + `\b`)
+		if err == nil {
+			for _, loc := range re.FindAllStringIndex(text, -1) {
+				out = append(out, loc[0])
+			}
+			return out
+		}
+	}
+	for i := 0; ; {
+		j := strings.Index(text[i:], term)
+		if j < 0 {
+			break
+		}
+		out = append(out, i+j)
+		i += j + len(term)
+	}
+	return out
+}
+
+func isASCIIWord(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // cleanWorkspaceToolMisjudgments removes only previously persisted assistant
 // messages that contain a workspace/tool-availability misjudgment. User,
 // system, developer, and tool messages are always preserved, including genuine
 // discussions of /mnt/data, Linux containers, sandboxes, or Windows tooling.
-func cleanWorkspaceToolMisjudgments(messages []oaiMsg) []oaiMsg {
+// The caller's declared tools are used for the tool-aware layer; a nil or empty
+// tool list falls back to the generic detector.
+func cleanWorkspaceToolMisjudgments(messages []oaiMsg, toolMaps []map[string]any) []oaiMsg {
 	if len(messages) == 0 {
 		return nil
 	}
 	cleaned := make([]oaiMsg, 0, len(messages))
 	for _, msg := range messages {
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") &&
-			isWorkspaceToolMisjudgment(contentToString(msg.Content)) {
-			continue
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
+			text := contentToString(msg.Content)
+			if isWorkspaceToolMisjudgment(text) || toolAwareMisjudgment(text, toolMaps) {
+				continue
+			}
 		}
 		cleaned = append(cleaned, msg)
 	}

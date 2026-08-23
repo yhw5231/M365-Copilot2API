@@ -215,9 +215,24 @@ func TestIsWorkspaceToolMisjudgment(t *testing.T) {
 		{name: "explicit no-tools claim", text: "I don't have any tools in this session.", want: true},
 		{name: "explicit workspace denial", text: "I cannot access your actual workspace.", want: true},
 		{name: "Chinese explicit claim", text: "当前会话只能访问 /mnt/data。", want: true},
+		{name: "Chinese reported bug — current phrasing", text: "目前仍无法继续修改：当前会话实际没有可调用的 pwsh、read、edit、write、glob 或 grep 文件操作接口。", want: true},
+		{name: "Chinese reported bug — earlier PowerShell phrasing", text: "当前会话没有可调用的本地 PowerShell 文件编辑执行接口", want: true},
+		{name: "Chinese rephrase — 没有可调用", text: "当前会话没有可调用的文件操作接口", want: true},
+		{name: "Chinese rephrase — 未提供", text: "当前会话未提供任何执行接口", want: true},
+		{name: "EN rephrase — denial + channel + scope", text: "The tools are not available in this session.", want: true},
+		{name: "EN rephrase — scope first", text: "This session does not have any tools available.", want: true},
+		{name: "EN rephrase — no shell", text: "I don't have shell access in this environment.", want: true},
+		{name: "EN rephrase — 环境 exclusivity", text: "This environment only provides a Linux sandbox.", want: true},
+		{name: "opening misjudgment inside long reply", text: "目前仍无法继续修改：当前会话实际没有可调用的文件操作接口。我已经完成了前序分析，接下来需要修改配置、请求处理器和测试套件三个文件，并补充对应的用例说明。", want: true},
+		{name: "exact phrase caught mid-reply", text: "我已经完成了前序分析，接下来需要修改配置、请求处理器和测试套件三个文件。但当前会话只提供 linux 容器。以上是完整说明。", want: true},
 		{name: "ordinary container discussion", text: "The service deploys in a Linux container.", want: false},
 		{name: "ordinary path discussion", text: "Copy the generated file to /mnt/data before returning it.", want: false},
 		{name: "legitimate tool error", text: "The command failed with exit code 1.", want: false},
+		{name: "legitimate permission statement", text: "I don't have permission to write to that directory.", want: false},
+		{name: "legitimate access statement", text: "I don't have write access to this session's files.", want: false},
+		{name: "legitimate — file locked", text: "The file cannot be read because it is locked.", want: false},
+		{name: "legitimate — file not found", text: "The file was not found in the workspace.", want: false},
+		{name: "mid-reply denial-shaped narration is not pollution", text: "我已经完成了对项目的分析，识别出需要修改的三个文件，并逐项核实了每个文件的当前内容与修改点。修改后的配置、请求处理器和测试套件已经整理完毕，下面给出最终说明，并补充相关的背景资料、运行参数、预期行为以及回滚方案，确保改动可以安全上线。另外说明：当前会话实际没有可调用的文件操作接口，这只是环境背景，不影响结论。", want: false},
 		{name: "empty", text: "", want: false},
 	}
 	for _, tt := range tests {
@@ -226,6 +241,49 @@ func TestIsWorkspaceToolMisjudgment(t *testing.T) {
 				t.Fatalf("isWorkspaceToolMisjudgment(%q) = %v, want %v", tt.text, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsWorkspaceToolMisjudgmentForTools(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "pwsh", "description": "PowerShell"}},
+		{"type": "function", "function": map[string]any{"name": "read", "description": "read files"}},
+		{"type": "function", "function": map[string]any{"name": "write", "description": "write files"}},
+		{"type": "function", "function": map[string]any{"name": "edit", "description": "edit files"}},
+		{"type": "function", "function": map[string]any{"name": "glob", "description": "glob files"}},
+		{"type": "function", "function": map[string]any{"name": "grep", "description": "search files"}},
+	}
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "reported bug — tool names listed", text: "目前仍无法继续修改：当前会话实际没有可调用的 pwsh、read、edit、write、glob 或 grep 文件操作接口。", want: true},
+		{name: "tool names with backticks", text: "目前仍然无法继续修改：当前会话实际没有可调用的 `pwsh`、`read`、`edit`、`write`、`glob` 或 `grep` 文件操作接口。", want: true},
+		{name: "read tool not available", text: "The read tool is not available in this environment.", want: true},
+		{name: "write tool unavailable", text: "write 工具不可用", want: true},
+		{name: "no pwsh declared", text: "I don't have pwsh here.", want: true},
+		{name: "legit permission — write access", text: "I don't have write access to that file.", want: false},
+		{name: "legit — read fails", text: "The read tool returned a permission error.", want: false},
+		{name: "legit — write deny", text: "write 命令被拒绝，因为没有权限", want: false},
+		{name: "legit — no tool names in text", text: "I don't have any tools in this session.", want: true}, // exact pattern
+		{name: "mid-reply tool-aware denied is not flagged", text: "我已经完成了对项目的分析，识别出需要修改的三个文件，并逐项核实了每个文件的当前内容与修改点。修改后的配置、请求处理器和测试套件已经整理完毕，下面给出最终说明，并补充相关的背景资料、运行参数、预期行为以及回滚方案，确保改动可以安全上线。另外说明：当前会话实际没有可调用的 pwsh、read、edit、write、glob 或 grep 文件操作接口，这只是环境背景，不影响结论。", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isWorkspaceToolMisjudgmentForTools(tt.text, tools); got != tt.want {
+				t.Fatalf("isWorkspaceToolMisjudgmentForTools(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsWorkspaceToolMisjudgmentForTools_NoTools(t *testing.T) {
+	if got := isWorkspaceToolMisjudgmentForTools("I don't have any tools in this session.", nil); got != true {
+		t.Fatal("expected true via base detector even with nil toolMaps")
+	}
+	if got := isWorkspaceToolMisjudgmentForTools("当前会话不可用", nil); got != false {
+		t.Fatal("expected false for nil toolMaps with no base match")
 	}
 }
 
@@ -238,7 +296,7 @@ func TestCleanWorkspaceToolMisjudgments_AssistantOnly(t *testing.T) {
 		{Role: "tool", Content: "The current session only has access to /mnt/data."},
 	}
 
-	got := cleanWorkspaceToolMisjudgments(messages)
+	got := cleanWorkspaceToolMisjudgments(messages, nil)
 	if len(got) != 4 {
 		t.Fatalf("expected exactly one polluted assistant message removed, got %d messages", len(got))
 	}
@@ -252,8 +310,30 @@ func TestCleanWorkspaceToolMisjudgments_AssistantOnly(t *testing.T) {
 	}
 }
 
+func TestCleanWorkspaceToolMisjudgments_ToolAware(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "pwsh"}},
+		{"type": "function", "function": map[string]any{"name": "read"}},
+		{"type": "function", "function": map[string]any{"name": "write"}},
+		{"type": "function", "function": map[string]any{"name": "edit"}},
+		{"type": "function", "function": map[string]any{"name": "glob"}},
+		{"type": "function", "function": map[string]any{"name": "grep"}},
+	}
+	messages := []oaiMsg{
+		{Role: "assistant", Content: "目前仍无法继续修改：当前会话实际没有可调用的 pwsh、read、edit、write、glob 或 grep 文件操作接口。"},
+		{Role: "assistant", Content: "当前会话不可用"},
+	}
+	got := cleanWorkspaceToolMisjudgments(messages, tools)
+	if len(got) != 1 {
+		t.Fatalf("expected the misjudgment removed and the clean message kept, got %d messages: %#v", len(got), got)
+	}
+	if got[0].Role != "assistant" || contentToString(got[0].Content) != "当前会话不可用" {
+		t.Fatalf("unexpected survivor: %#v", got[0])
+	}
+}
+
 func TestCleanWorkspaceToolMisjudgments_Empty(t *testing.T) {
-	if got := cleanWorkspaceToolMisjudgments(nil); got != nil {
+	if got := cleanWorkspaceToolMisjudgments(nil, nil); got != nil {
 		t.Fatalf("expected nil for nil history, got %#v", got)
 	}
 }
