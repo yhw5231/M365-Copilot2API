@@ -1363,7 +1363,7 @@ function showPage(p){
   });
   $('pageTitle').textContent=pages[p];
   if(p==='dashboard'){loadStats();loadOnboarding();}
-  if(p==='usage'){loadUsage();loadTraceStatus();}
+  if(p==='usage'){loadUsage();loadTraceLogs(true);loadTraceStatus();}
   if(p==='accounts')loadAccounts();
   if(p==='apikeys')loadKeys();
   if(p==='conversations')loadConversations();
@@ -1541,7 +1541,7 @@ function renderAccounts(){
     const td=document.createElement('td');
     td.colSpan=10;
     td.className='empty';
-    td.textContent='No matching accounts';
+    td.textContent=translateText('No matching accounts');
     tr.appendChild(td);
     tbody.replaceChildren(tr);
     return;
@@ -1585,7 +1585,7 @@ function renderAccounts(){
     const callsTd=document.createElement('td');
     callsTd.style.cssText='font-size:12px;white-space:nowrap';
     callsTd.textContent=`${fmtNum(x.callCount||0)} / ${fmtTok(x.todayTokens||0)}`;
-    if(x.rateLimited)callsTd.title='Account is currently rate limited';
+    if(x.rateLimited)callsTd.title=translateText('Account is currently rate limited');
 
     const lastRequestTd=document.createElement('td');
     lastRequestTd.style.cssText='font-size:12px;color:var(--muted);white-space:nowrap';
@@ -1595,12 +1595,12 @@ function renderAccounts(){
     const status=document.createElement('span');
     status.className=x.status==='cooldown'?'status cooldown':x.status==='online'?'status online':'status offline';
     status.appendChild(document.createElement('i'));
-    status.appendChild(document.createTextNode(x.status==='cooldown'?'Cooldown':x.status==='online'?'Online':'Offline'));
+    status.appendChild(document.createTextNode(translateText(x.status==='cooldown'?'Cooldown':x.status==='online'?'Online':'Offline')));
     statusTd.appendChild(status);
     if(x.status==='cooldown'&&x.cooldownUntil){
       const cooldown=document.createElement('div');
       cooldown.style.cssText='font-size:11px;color:var(--muted);margin-top:3px';
-      cooldown.textContent='Cooldown until '+formatSystemTime(x.cooldownUntil);
+      cooldown.textContent=translateText('Cooldown until')+' '+formatSystemTime(x.cooldownUntil);
       statusTd.appendChild(cooldown);
     }
 
@@ -1611,7 +1611,7 @@ function renderAccounts(){
     scheduleButton.dataset.action='toggle-account-schedule';
     scheduleButton.dataset.accountId=String(x.id||'');
     scheduleButton.dataset.enabled=String(!scheduleEnabled);
-    scheduleButton.textContent=scheduleEnabled?'Enabled':'Disabled';
+    scheduleButton.textContent=translateText(scheduleEnabled?'Enabled':'Disabled');
     scheduleTd.appendChild(scheduleButton);
 
     const proxyTd=document.createElement('td');
@@ -1624,7 +1624,7 @@ function renderAccounts(){
     bindButton.dataset.action='bind-account-proxy';
     bindButton.dataset.accountId=String(x.id||'');
     bindButton.dataset.proxy=String(x.boundProxy||'');
-    bindButton.textContent='Bind';
+    bindButton.textContent=translateText('Bind');
     proxyTd.append(proxyLabel,document.createTextNode(' '),bindButton);
 
     const actionsTd=document.createElement('td');
@@ -1632,7 +1632,7 @@ function renderAccounts(){
     deleteButton.className='btn-sm btn danger';
     deleteButton.dataset.action='delete-account';
     deleteButton.dataset.accountId=String(x.id||'');
-    deleteButton.textContent='Delete';
+    deleteButton.textContent=translateText('Delete');
     actionsTd.appendChild(deleteButton);
 
     tr.append(identityTd,idTd,queueTd,concurrencyTd,callsTd,lastRequestTd,statusTd,scheduleTd,proxyTd,actionsTd);
@@ -2160,9 +2160,12 @@ function traceRowHTML(x){
     <td><div style="display:flex;gap:6px;white-space:nowrap"><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="current">查看本次响应</button><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="full">查看完整请求</button></div></td>
   </tr>`;
 }
-let traceLogsLoadPromise=null;
+let traceLogsLoadPromise=null,traceLogsForcePending=false;
 function loadTraceLogs(force=false){
-  if(traceLogsLoadPromise)return traceLogsLoadPromise;
+  if(traceLogsLoadPromise){
+    if(force)traceLogsForcePending=true;
+    return traceLogsLoadPromise;
+  }
   traceLogsLoadPromise=(async()=>{
   try{
     const d=await api('/api/admin/trace/status?limit='+TRACE_PAGE+'&offset='+(tracePageNo*TRACE_PAGE));
@@ -2208,12 +2211,18 @@ function loadTraceLogs(force=false){
   }catch(e){
     if(!$('traceLogRows').querySelector('tr:not(.empty)'))$('traceLogRows').innerHTML=`<tr><td colspan="10" class="empty">${esc(e.message)}</td></tr>`;
   }
-  })().finally(()=>{traceLogsLoadPromise=null;});
+  })().finally(()=>{
+    traceLogsLoadPromise=null;
+    if(traceLogsForcePending){
+      traceLogsForcePending=false;
+      loadTraceLogs(true);
+    }
+  });
   return traceLogsLoadPromise;
 }
 function tracePage(delta){
   tracePageNo=Math.max(0,tracePageNo+delta);
-  loadTraceLogs();
+  loadTraceLogs(true);
 }
 async function toggleTraceDetail(id,mode='current'){
   const row=document.getElementById('trd-'+id);
