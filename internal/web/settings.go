@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"m365-copilot2api/internal/outbound"
 )
@@ -270,6 +271,9 @@ type runtimeSettings struct {
 	// are "available-first" and "round-robin". Existing sessions remain sticky
 	// to their assigned account while that account is available.
 	AccountRoutingRule string `json:"accountRoutingRule"`
+	// TimeZone controls server-side calendar boundaries and frontend time display.
+	// It defaults to Asia/Shanghai and must be a valid IANA time zone name.
+	TimeZone string `json:"timeZone"`
 }
 
 type settingsStore struct {
@@ -299,6 +303,7 @@ func defaultRuntimeSettings() runtimeSettings {
 		TraceMaxRecords:    defaultTraceMaxRecords,
 		AccountConcurrency: envInt("M365_ACCOUNT_DEFAULT_CONCURRENCY", defaultAccountConcurrency),
 		AccountRoutingRule: "available-first",
+		TimeZone:           firstNonEmptySetting(os.Getenv("M365_TIME_ZONE"), "Asia/Shanghai"),
 	}
 }
 func settingsPath() string {
@@ -326,6 +331,9 @@ var openSettingsStore = sync.OnceValue(func() *settingsStore {
 	}
 	if s.v.AccountRoutingRule == "" {
 		s.v.AccountRoutingRule = "available-first"
+	}
+	if strings.TrimSpace(s.v.TimeZone) == "" {
+		s.v.TimeZone = "Asia/Shanghai"
 	}
 	if e := validateSettings(s.v); e != nil {
 		log.Printf("[settings] invalid persisted settings: %v", e)
@@ -381,6 +389,12 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.AccountRoutingRule != "available-first" && v.AccountRoutingRule != "round-robin" {
 		return fmt.Errorf("账号轮询规则必须为 available-first 或 round-robin")
+	}
+	if strings.TrimSpace(v.TimeZone) == "" {
+		return fmt.Errorf("时区不能为空")
+	}
+	if _, err := time.LoadLocation(strings.TrimSpace(v.TimeZone)); err != nil {
+		return fmt.Errorf("时区必须是有效的 IANA 时区名称: %w", err)
 	}
 	if raw := strings.ToLower(strings.TrimSpace(v.ProxyMode)); raw != "" && raw != outbound.ProxyModeDirect && raw != outbound.ProxyModeLoose && raw != outbound.ProxyModeStrict {
 		return fmt.Errorf("代理模式必须为 direct、loose 或 strict")

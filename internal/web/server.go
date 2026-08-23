@@ -634,43 +634,72 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list := s.tokens.List()
+	cfg := currentSettings()
+	loc, err := time.LoadLocation(strings.TrimSpace(cfg.TimeZone))
+	if err != nil {
+		loc, _ = time.LoadLocation("Asia/Shanghai")
+	}
+	usageStats := s.usage.accountStats(time.Now(), loc)
+	concurrency := s.accountConcurrency.Snapshot()
+	limit, _ := concurrency["limit"].(int)
+	inflight, _ := concurrency["inflight"].(map[string]int)
+	waiting, _ := concurrency["waiting"].(map[string]int)
+
 	type view struct {
-		ID              string     `json:"id"`
-		Email           string     `json:"email"`
-		DisplayName     string     `json:"displayName,omitempty"`
-		Status          string     `json:"status"`
-		ScheduleEnabled bool       `json:"scheduleEnabled"`
-		CallCount       uint64     `json:"callCount"`
-		RateLimited     bool       `json:"rateLimited"`
-		CooldownUntil   *time.Time `json:"cooldownUntil,omitempty"`
-		OID             string     `json:"oid,omitempty"`
-		TID             string     `json:"tid,omitempty"`
-		ExpiresAt       time.Time  `json:"expiresAt,omitempty"`
-		UpdatedAt       time.Time  `json:"updatedAt,omitempty"`
-		BoundProxy      string     `json:"boundProxy,omitempty"`
+		ID                 string     `json:"id"`
+		Email              string     `json:"email"`
+		DisplayName        string     `json:"displayName,omitempty"`
+		Status             string     `json:"status"`
+		ScheduleEnabled    bool       `json:"scheduleEnabled"`
+		CallCount          int64      `json:"callCount"`
+		TodayTokens        int64      `json:"todayTokens"`
+		LastRequestAt      *time.Time `json:"lastRequestAt,omitempty"`
+		CurrentConcurrency int        `json:"currentConcurrency"`
+		MaxConcurrency     int        `json:"maxConcurrency"`
+		QueuePosition      int        `json:"queuePosition"`
+		RateLimited        bool       `json:"rateLimited"`
+		CooldownUntil      *time.Time `json:"cooldownUntil,omitempty"`
+		OID                string     `json:"oid,omitempty"`
+		TID                string     `json:"tid,omitempty"`
+		ExpiresAt          time.Time  `json:"expiresAt,omitempty"`
+		UpdatedAt          time.Time  `json:"updatedAt,omitempty"`
+		BoundProxy         string     `json:"boundProxy,omitempty"`
 	}
 	out := make([]view, 0, len(list))
 	for _, a := range list {
 		status := a.Status
 		var cooldownUntil *time.Time
-		var callCount uint64
 		var rateLimited bool
+		var runtimeCallCount uint64
 		if s.accountPool != nil {
 			if until, ok := s.accountPool.CooldownUntil(a.ID); ok {
 				status = "cooldown"
 				cooldownUntil = &until
 			}
-			callCount = s.accountPool.CallCount(a.ID)
+			runtimeCallCount = s.accountPool.CallCount(a.ID)
 			rateLimited = s.accountPool.RateLimited(a.ID)
+		}
+
+		stat := usageStats[a.Email]
+		callCount := stat.Calls
+		if runtimeCalls := int64(runtimeCallCount); runtimeCalls > callCount {
+			callCount = runtimeCalls
+		}
+		var lastRequestAt *time.Time
+		if !stat.LastRequestAt.IsZero() {
+			value := stat.LastRequestAt
+			lastRequestAt = &value
 		}
 		out = append(out, view{
 			ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
-			Status: status, ScheduleEnabled: !a.ScheduleDisabled, CallCount: callCount, RateLimited: rateLimited,
-			CooldownUntil: cooldownUntil, OID: a.OID, TID: a.TID,
+			Status: status, ScheduleEnabled: !a.ScheduleDisabled,
+			CallCount: callCount, TodayTokens: stat.TodayTokens, LastRequestAt: lastRequestAt,
+			CurrentConcurrency: inflight[a.ID], MaxConcurrency: limit, QueuePosition: waiting[a.ID],
+			RateLimited: rateLimited, CooldownUntil: cooldownUntil, OID: a.OID, TID: a.TID,
 			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
 		})
 	}
-	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot()})
+	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot(), "accountConcurrency": concurrency, "timeZone": cfg.TimeZone})
 }
 
 func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {

@@ -19,11 +19,13 @@ import (
 const defaultAccountConcurrency = 1
 
 type accountConcurrency struct {
-	mu       sync.Mutex
-	limit    int
-	inflight map[string]int
-	sessions map[string]map[string]int // accountID -> upstream session ID -> active request references
-	changed  chan struct{}
+	mu         sync.Mutex
+	limit      int
+	inflight   map[string]int
+	sessions   map[string]map[string]int // accountID -> upstream session ID -> active request references
+	waiters    map[string][]uint64       // accountID -> FIFO waiter tickets
+	nextTicket uint64
+	changed    chan struct{}
 }
 
 func newAccountConcurrency() *accountConcurrency {
@@ -37,6 +39,7 @@ func newAccountConcurrency() *accountConcurrency {
 		limit:    limit,
 		inflight: map[string]int{},
 		sessions: map[string]map[string]int{},
+		waiters:  map[string][]uint64{},
 		changed:  make(chan struct{}),
 	}
 }
@@ -66,6 +69,37 @@ func (c *accountConcurrency) Available(accountID string) bool {
 	return c.inflight[accountID] < c.limit
 }
 
+func (c *accountConcurrency) enqueueWaiterLocked(accountID string) uint64 {
+	if c.waiters == nil {
+		c.waiters = map[string][]uint64{}
+	}
+	c.nextTicket++
+	ticket := c.nextTicket
+	c.waiters[accountID] = append(c.waiters[accountID], ticket)
+	return ticket
+}
+
+func (c *accountConcurrency) waiterIsFirstLocked(accountID string, ticket uint64) bool {
+	queue := c.waiters[accountID]
+	return len(queue) > 0 && queue[0] == ticket
+}
+
+func (c *accountConcurrency) removeWaiterLocked(accountID string, ticket uint64) {
+	queue := c.waiters[accountID]
+	for i, queuedTicket := range queue {
+		if queuedTicket != ticket {
+			continue
+		}
+		queue = append(queue[:i], queue[i+1:]...)
+		if len(queue) == 0 {
+			delete(c.waiters, accountID)
+		} else {
+			c.waiters[accountID] = queue
+		}
+		return
+	}
+}
+
 // Acquire blocks until the account has a free upstream-session slot (or ctx
 // is done). Calls without a session ID retain request-based behavior for
 // operations that have not created an upstream session yet.
@@ -81,9 +115,17 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 	// request-based accounting semantics. They must not all share the empty
 	// session key, because each such request may create a distinct session.
 	if sessionID == "" {
+		var ticket uint64
 		for {
 			c.mu.Lock()
-			if c.inflight[accountID] < c.limit {
+			if ticket == 0 && c.inflight[accountID] >= c.limit {
+				ticket = c.enqueueWaiterLocked(accountID)
+			}
+			canAcquire := c.inflight[accountID] < c.limit && (ticket == 0 || c.waiterIsFirstLocked(accountID, ticket))
+			if canAcquire {
+				if ticket != 0 {
+					c.removeWaiterLocked(accountID, ticket)
+				}
 				c.inflight[accountID]++
 				c.mu.Unlock()
 				var once sync.Once
@@ -105,6 +147,13 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 			c.mu.Unlock()
 			select {
 			case <-ctx.Done():
+				c.mu.Lock()
+				if ticket != 0 {
+					c.removeWaiterLocked(accountID, ticket)
+				}
+				close(c.changed)
+				c.changed = make(chan struct{})
+				c.mu.Unlock()
 				return nil, ctx.Err()
 			case <-changed:
 			}
@@ -168,7 +217,11 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 // admin console.
 func (c *accountConcurrency) Snapshot() map[string]any {
 	if c == nil {
-		return map[string]any{"limit": defaultAccountConcurrency, "inflight": map[string]int{}}
+		return map[string]any{
+			"limit":    defaultAccountConcurrency,
+			"inflight": map[string]int{},
+			"waiting":  map[string]int{},
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -176,7 +229,11 @@ func (c *accountConcurrency) Snapshot() map[string]any {
 	for accountID, count := range c.inflight {
 		inflight[accountID] = count
 	}
-	return map[string]any{"limit": c.limit, "inflight": inflight}
+	waiting := make(map[string]int, len(c.waiters))
+	for accountID, queue := range c.waiters {
+		waiting[accountID] = len(queue)
+	}
+	return map[string]any{"limit": c.limit, "inflight": inflight, "waiting": waiting}
 }
 
 // accountAvailable is the combined health gate: the account must be scheduled

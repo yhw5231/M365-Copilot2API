@@ -155,10 +155,15 @@ func (s *usageLog) snapshot(days int) map[string]any {
 	recs := append([]UsageRecord(nil), s.records...)
 	s.mu.Unlock()
 
-	cutoff := time.Now().AddDate(0, 0, -days)
-	loc := time.Now().Location()
-	today := time.Now().In(loc).Truncate(24 * time.Hour)
-	dayAgo := time.Now().Add(-24 * time.Hour)
+	now := time.Now()
+	cutoff := now.AddDate(0, 0, -days)
+	loc, err := time.LoadLocation(strings.TrimSpace(currentSettings().TimeZone))
+	if err != nil {
+		loc, _ = time.LoadLocation("Asia/Shanghai")
+	}
+	localNow := now.In(loc)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
+	dayAgo := now.Add(-24 * time.Hour)
 
 	var (
 		requests, in, out, cache, durationMs int64
@@ -386,6 +391,45 @@ func (s *usageLog) logs(limit, offset int, f usageLogFilter) map[string]any {
 		out = []UsageRecord{}
 	}
 	return map[string]any{"logs": out, "total": total}
+}
+
+type accountUsageStat struct {
+	Calls         int64
+	TodayTokens   int64
+	LastRequestAt time.Time
+}
+
+func (s *usageLog) accountStats(now time.Time, loc *time.Location) map[string]accountUsageStat {
+	if s == nil {
+		return map[string]accountUsageStat{}
+	}
+	if loc == nil {
+		loc, _ = time.LoadLocation("Asia/Shanghai")
+	}
+	localNow := now.In(loc)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
+
+	s.mu.Lock()
+	recs := append([]UsageRecord(nil), s.records...)
+	s.mu.Unlock()
+
+	stats := make(map[string]accountUsageStat)
+	for _, rec := range recs {
+		if strings.TrimSpace(rec.AccountEmail) == "" {
+			continue
+		}
+		rec.normalizeTokens()
+		stat := stats[rec.AccountEmail]
+		stat.Calls++
+		if rec.Time.After(stat.LastRequestAt) {
+			stat.LastRequestAt = rec.Time
+		}
+		if !rec.Time.Before(today) {
+			stat.TodayTokens += rec.TotalTokens
+		}
+		stats[rec.AccountEmail] = stat
+	}
+	return stats
 }
 
 type usageCountStat struct {

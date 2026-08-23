@@ -1,4 +1,4 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>M365 Copilot2API</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"><script src="/vendor/lucide.js"></script><style>
+﻿<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>M365 Copilot2API</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"><script src="/vendor/lucide.js"></script><style>
 :root{color-scheme:light dark;--bg:#f5f5f7;--surface:rgba(255,255,255,0.72);--surface-solid:#fff;--surface-border:rgba(255,255,255,0.5);--line:rgba(0,0,0,0.06);--line-strong:rgba(0,0,0,0.1);--text:#1d1d1f;--muted:#86868b;--accent:#0071e3;--accent-hover:#0077ed;--primary:#1d1d1f;--primary-hover:#000;--green:#34c759;--red:#ff3b30;--orange:#ff9f0a;--purple:#bf5af2;--sidebar-w:240px;--shadow-sm:0 2px 8px rgba(0,0,0,0.04);--shadow:0 8px 32px rgba(0,0,0,0.06);--shadow-lg:0 16px 48px rgba(0,0,0,0.1);--radius:14px;--radius-sm:10px;--ease-out:cubic-bezier(0.23,1,0.32,1);--ease-in-out:cubic-bezier(0.77,0,0.175,1);--ease-spring:cubic-bezier(0.32,0.72,0,1)}
 @media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--surface:rgba(44,44,46,0.75);--surface-solid:#2c2c2e;--surface-border:rgba(255,255,255,0.06);--line:rgba(255,255,255,0.06);--line-strong:rgba(255,255,255,0.12);--text:#f5f5f7;--muted:#98989d;--accent:#0a84ff;--accent-hover:#409cff;--primary:#f5f5f7;--primary-hover:#fff;--green:#30d158;--red:#ff453a;--orange:#ff9f0a;--purple:#bf5af2;--shadow-sm:0 2px 8px rgba(0,0,0,0.15);--shadow:0 8px 32px rgba(0,0,0,0.2);--shadow-lg:0 16px 48px rgba(0,0,0,0.3)}}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2046,7 +2046,7 @@ async function loadUsageLogs(){
       </td>
       <td><span class="token-stack"><span>新增 ${fmtTok(tokens.newInput)}</span><span>缓存 ${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span><span>输出 ${fmtTok(tokens.output)}</span></span></td>
       <td class="usage-cost" title="仅为本地估算，新增输入、缓存输入和输出分别计价">$${Number(x.estimated_cost_usd||0).toFixed(6)}</td>
-      <td class="usage-latency" title="耗时 / 首字耗时">${fmtDuration(x.duration_ms)} / ${fmtDuration(x.ttft_ms)}</td>
+      <td class="usage-latency" title="耗时 / 首字耗时"><span class="token-stack"><span>总耗时 ${fmtDuration(x.duration_ms)}</span><span>首字耗时 ${fmtDuration(x.ttft_ms)}</span></span></td>
       <td>${x.status>=400||x.error?'<span class="usage-status err" title="'+esc(x.error||'')+'">错误</span>':'<span class="usage-status">成功</span>'}</td>
     </tr>`;
     }).join('');
@@ -2820,3 +2820,4 @@ fetch('/api/admin/session').then(r=>r.json()).then(d=>{
 </script>
 </body>
 </html>
+
