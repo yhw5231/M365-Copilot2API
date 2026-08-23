@@ -52,6 +52,14 @@ func (p *pipeResponseWriter) Write(b []byte) (int, error) {
 }
 func (p *pipeResponseWriter) Flush() {}
 
+// innerStreamError captures an error event from the inner /v1/chat/completions
+// SSE stream so the Responses adapter can surface the real cause instead of
+// inferring failure from the absence of content.
+type innerStreamError struct {
+	Code    string
+	Message string
+}
+
 // streamResponsesAdapter converts the internal OpenAI SSE incrementally instead
 // of buffering the entire completion in httptest.ResponseRecorder.
 func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, o oaiReq, model string) {
@@ -95,6 +103,11 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		ItemID               string
 	}
 	calls := map[int]*tcState{}
+	// The inner /v1/chat/completions stream reports failures as
+	// data:{"error":{...}} chunks (upstream timeout, empty completion, repair
+	// failure, ...). Surface those instead of guessing from the absence of
+	// content, which currently produces a misleading empty_upstream_response.
+	var innerErr *innerStreamError
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
 	for scanner.Scan() {
@@ -107,6 +120,15 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		}
 		var chunk map[string]any
 		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk) != nil {
+			continue
+		}
+		if errObj, ok := chunk["error"].(map[string]any); ok {
+			code, _ := errObj["code"].(string)
+			msg, _ := errObj["message"].(string)
+			if code == "" {
+				code = "upstream_error"
+			}
+			innerErr = &innerStreamError{Code: code, Message: msg}
 			continue
 		}
 		choices, _ := chunk["choices"].([]any)
@@ -197,6 +219,20 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			"response": map[string]any{
 				"id": id, "object": "response", "status": "failed", "model": model,
 				"error": map[string]any{"code": status, "message": errorMessage(irw.body.Bytes(), "inner chat request failed")},
+			},
+		})
+		return
+	}
+	if innerErr != nil {
+		// The inner stream carried an error event (upstream timeout, empty
+		// completion, repair failure, ...). Report the real cause instead of
+		// guessing. Partial text already streamed is kept; the failed event
+		// tells the client the response is incomplete.
+		emit("response.failed", map[string]any{
+			"type": "response.failed",
+			"response": map[string]any{
+				"id": id, "object": "response", "status": "failed", "model": model,
+				"error": map[string]any{"code": innerErr.Code, "message": innerErr.Message},
 			},
 		})
 		return

@@ -2332,11 +2332,24 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			msg := upstreamError(err)
+			code := "upstream_error"
 			if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
+				code = "rate_limit"
+			} else if errors.Is(err, context.DeadlineExceeded) {
+				msg = "upstream timed out while generating the response"
+			} else if errors.Is(err, context.Canceled) {
+				msg = "upstream connection was interrupted"
 			}
 			msg = sanitizePublicInternalText(msg)
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
+			// Preserve whatever the upstream produced before failing: a long
+			// answer takes minutes to generate, and discarding the buffered text
+			// turns a retryable timeout into a user-visible total loss. The
+			// error event still follows so clients know the response is partial.
+			if text.Len() > 0 {
+				_ = emitText(text.String())
+			}
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
 		}
@@ -2352,9 +2365,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Some ChatHub updates contain no text event and place the completed
-		// answer only in the final Result. Recover it before deciding that the
-		// response is empty; this also preserves fenced-tool parsing.
-		if text.Len() == 0 && strings.TrimSpace(res.Text) != "" {
+		// answer only in the final Result, and long answers can lose text when
+		// ChatHub rewrites its answer buffer mid-stream (non-prefix snapshots
+		// are skipped to avoid duplicates). The result text is the
+		// authoritative complete answer, so whenever it is longer than the
+		// delta-assembled text, replace the buffer with it. This both recovers
+		// the empty case and prevents a truncated prefix from being emitted as
+		// a complete answer.
+		if len(res.Text) > text.Len() {
+			text.Reset()
 			text.WriteString(res.Text)
 		}
 		rawCalls := streamedTools

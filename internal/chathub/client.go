@@ -640,7 +640,14 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				}
 				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events))
 				text := streamed.String()
-				if text == "" {
+				// The visible text can be truncated when ChatHub rewrites the
+				// answer buffer: writeAtCursor snapshots that do not extend the
+				// already-streamed prefix are skipped to avoid duplicate output,
+				// so a long answer that gets restructured mid-stream can end up
+				// with only its opening streamed. The result frame's message is
+				// the authoritative complete answer, so prefer it whenever it is
+				// at least as complete as the delta-assembled text.
+				if final != "" && len(final) >= len(text) {
 					text = final
 				}
 				if text == "" {

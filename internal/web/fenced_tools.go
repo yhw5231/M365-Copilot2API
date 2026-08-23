@@ -22,7 +22,45 @@ func declaredShell(allowed map[string]bool) string {
 	return ""
 }
 
+// isToolCallShapedAnswer reports whether an assistant answer is dominated by
+// fenced code blocks — the shape models use when returning tool calls inside
+// the response text. A prose answer that merely *contains* code samples (an
+// essay, a tutorial, a generated script) is a text response and must never be
+// turned into tool invocations: doing so discards the answer and, when the
+// detected call fails validation, can fail the whole request.
+func isToolCallShapedAnswer(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	outside, inside := 0, 0
+	remaining := trimmed
+	for {
+		start := strings.Index(remaining, "```")
+		if start < 0 {
+			outside += len(remaining)
+			break
+		}
+		outside += start
+		rest := remaining[start+3:]
+		end := strings.Index(rest, "```")
+		if end < 0 {
+			outside += len(rest)
+			break
+		}
+		inside += end
+		remaining = rest[end+3:]
+	}
+	// A tool-call answer is essentially one or more fenced blocks with only a
+	// short preamble/trailer. Long prose around the blocks means this is an
+	// ordinary text answer that happens to show code.
+	return inside > 0 && outside <= 240
+}
+
 func fencedToolCalls(text string, tools []map[string]any, choice any) []detectedToolCall {
+	if !isToolCallShapedAnswer(text) {
+		return nil
+	}
 	allowed := allowedToolNames(tools)
 	shell := declaredShell(allowed)
 	var out []detectedToolCall
