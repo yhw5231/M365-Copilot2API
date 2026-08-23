@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -165,6 +166,41 @@ func TestAdminTraceStatusPaginationAndIDFilter(t *testing.T) {
 	}
 	if page.Total != 1 || len(page.Records) != 1 || page.Records[0].ID != target.ID {
 		t.Fatalf("id filter total=%d len=%d rec=%s want 1/1/%s", page.Total, len(page.Records), page.Records[0].ID, target.ID)
+	}
+}
+
+func TestUsageLogPersistsAndReloadsFromDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("M365_DATA_DIR", dataDir)
+	t.Setenv("M365_USAGE_LOG", "")
+
+	first := openUsageLog()
+	wantPath := filepath.Join(dataDir, "usage.jsonl")
+	if first.Path != wantPath {
+		t.Fatalf("usage path=%q want %q", first.Path, wantPath)
+	}
+
+	first.record(UsageRecord{
+		Time:         time.Now(),
+		APIKeyPrefix: "test-key",
+		AccountEmail: "persist@example.com",
+		Model:        "test-model",
+		Endpoint:     "/v1/chat/completions",
+		InputTokens:  11,
+		OutputTokens: 7,
+		Status:       200,
+	})
+	if err := first.persist.flushNowBlocking(); err != nil {
+		t.Fatalf("flush usage log: %v", err)
+	}
+
+	reloaded := openUsageLog()
+	if len(reloaded.records) != 1 {
+		t.Fatalf("reloaded records=%d want 1", len(reloaded.records))
+	}
+	got := reloaded.records[0]
+	if got.AccountEmail != "persist@example.com" || got.InputTokens != 11 || got.OutputTokens != 7 || got.Status != 200 {
+		t.Fatalf("reloaded record=%+v", got)
 	}
 }
 
