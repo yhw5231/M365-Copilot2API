@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -240,6 +241,24 @@ func (s *Server) runOpenAIAdapter(r *http.Request, o oaiReq) (map[string]any, []
 	return out, rr.Body.Bytes(), rr.Code, err
 }
 
+// dropSystemInstructions removes leading system/developer instruction messages
+// from a stored Responses history. OpenAI Responses semantics say
+// previous_response_id does NOT inherit the previous turn's instructions: every
+// request applies its own instructions afresh at top priority. The stored
+// history is normalized so the current request's instructions are the only ones
+// the model sees.
+func dropSystemInstructions(messages []oaiMsg) []oaiMsg {
+	out := messages[:0]
+	for _, m := range messages {
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if role == "system" || role == "developer" {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	startedAt := time.Now()
 	if r.Method != http.MethodPost {
@@ -253,6 +272,11 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	}
 	o, err := body.openAI()
 	if err != nil {
+		var unsupported *unsupportedParamError
+		if errors.As(err, &unsupported) {
+			writeResponsesError(w, 400, "unsupported_parameter", err.Error())
+			return
+		}
 		writeResponsesError(w, 400, "invalid_request_error", err.Error())
 		return
 	}
@@ -266,6 +290,13 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 			writeResponsesError(w, 400, "invalid_request_error", "unknown previous_response_id")
 			return
 		}
+		// Responses semantics: previous_response_id carries the conversation
+		// history, but the current request's `instructions` replace (not append
+		// to) the previous turn's instructions. The stored history still
+		// contains the prior system/developer instruction messages, so drop them
+		// before prepending; otherwise the model sees stale instructions twice
+		// per turn and the newest instructions lose their top priority.
+		messages = dropSystemInstructions(messages)
 		o.Messages = append(messages, o.Messages...)
 	}
 	if body.Stream {
@@ -296,6 +327,18 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, outputForUsage)
 	out["usage"] = estimate.Values
 	out["m365_usage_source"] = estimate.Source
+	if body.Store != nil {
+		out["store"] = *body.Store
+	}
+	if len(body.Metadata) > 0 {
+		out["metadata"] = body.Metadata
+	}
+	// Sampling controls are accepted for compatibility but cannot be applied by
+	// the M365 backend; surface them explicitly so nothing is silently ignored.
+	if params, ok := ignoredSamplingParams(&o); ok {
+		out["m365_ignored_parameters"] = params
+		out["m365_sampling_note"] = samplingNote
+	}
 	s.usage.record(UsageRecord{
 		Time:         time.Now(),
 		APIKeyPrefix: extractAPIKey(r),
@@ -307,50 +350,53 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		Status:       200,
 	})
 	// Retain the normalized history so a subsequent previous_response_id can
-	// validate its function_call_output against the original tool call.
-	if _, ok := out["id"].(string); ok {
-		// Use the same public response id that writeResponsesResult exposes.
-		publicID := "resp_" + uuid.NewString()
-		out["m365_response_id"] = publicID
-		stored := append([]oaiMsg(nil), o.Messages...)
-		if msg, _ := openAIChoice(out); msg != nil {
-			if calls, ok := msg["tool_calls"].([]any); ok && len(calls) > 0 {
-				converted := make([]map[string]any, 0, len(calls))
-				for _, call := range calls {
-					if m, ok := call.(map[string]any); ok {
-						converted = append(converted, m)
+	// validate its function_call_output against the original tool call. The
+	// Responses API `store` parameter opts the client out of history retention.
+	if shouldStoreResponsesHistory(body.Store) {
+		if _, ok := out["id"].(string); ok {
+			// Use the same public response id that writeResponsesResult exposes.
+			publicID := "resp_" + uuid.NewString()
+			out["m365_response_id"] = publicID
+			stored := append([]oaiMsg(nil), o.Messages...)
+			if msg, _ := openAIChoice(out); msg != nil {
+				if calls, ok := msg["tool_calls"].([]any); ok && len(calls) > 0 {
+					converted := make([]map[string]any, 0, len(calls))
+					for _, call := range calls {
+						if m, ok := call.(map[string]any); ok {
+							converted = append(converted, m)
+						}
+					}
+					stored = append(stored, oaiMsg{Role: "assistant", ToolCalls: converted})
+				} else {
+					if text, _ := msg["content"].(string); text != "" {
+						stored = append(stored, oaiMsg{Role: "assistant", Content: text})
 					}
 				}
-				stored = append(stored, oaiMsg{Role: "assistant", ToolCalls: converted})
-			} else {
-				if text, _ := msg["content"].(string); text != "" {
-					stored = append(stored, oaiMsg{Role: "assistant", Content: text})
-				}
 			}
-		}
-		s.responseMu.Lock()
-		bucket := s.responseMessages[tenant]
-		if bucket == nil {
-			bucket = map[string]respHistory{}
-			s.responseMessages[tenant] = bucket
-		}
-		for k, h := range bucket {
-			if time.Since(h.At) > time.Hour {
-				delete(bucket, k)
+			s.responseMu.Lock()
+			bucket := s.responseMessages[tenant]
+			if bucket == nil {
+				bucket = map[string]respHistory{}
+				s.responseMessages[tenant] = bucket
 			}
-		}
-		if len(bucket) >= maxResponsesPerTenant {
-			var oldestKey string
-			var oldestAt time.Time
 			for k, h := range bucket {
-				if oldestKey == "" || h.At.Before(oldestAt) {
-					oldestKey, oldestAt = k, h.At
+				if time.Since(h.At) > time.Hour {
+					delete(bucket, k)
 				}
 			}
-			delete(bucket, oldestKey)
+			if len(bucket) >= maxResponsesPerTenant {
+				var oldestKey string
+				var oldestAt time.Time
+				for k, h := range bucket {
+					if oldestKey == "" || h.At.Before(oldestAt) {
+						oldestKey, oldestAt = k, h.At
+					}
+				}
+				delete(bucket, oldestKey)
+			}
+			bucket[publicID] = respHistory{At: time.Now(), Messages: stored}
+			s.responseMu.Unlock()
 		}
-		bucket[publicID] = respHistory{At: time.Now(), Messages: stored}
-		s.responseMu.Unlock()
 	}
 	writeResponsesResult(w, firstNonEmpty(body.Model, "m365-copilot"), body.Stream, out)
 }

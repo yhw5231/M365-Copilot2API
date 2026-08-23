@@ -41,7 +41,30 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 	if usageSource == "" {
 		usageSource = usageSourceHeuristic
 	}
-	resp := map[string]any{"id": id, "object": "response", "created_at": time.Now().Unix(), "status": "completed", "model": model, "output": output, "usage": usage, "m365": localUsageMetadata(usageSource)}
+	m365meta := localUsageMetadata(usageSource)
+	if ignored, ok := src["m365_ignored_parameters"]; ok {
+		if list, ok := ignored.([]any); ok && len(list) > 0 {
+			m365meta["ignored_parameters"] = list
+			m365meta["sampling_note"] = samplingNote
+		} else if list, ok := ignored.([]string); ok && len(list) > 0 {
+			m365meta["ignored_parameters"] = list
+			m365meta["sampling_note"] = samplingNote
+		}
+	}
+	resp := map[string]any{"id": id, "object": "response", "created_at": time.Now().Unix(), "status": "completed", "model": model, "output": output, "usage": usage, "m365": m365meta}
+	if v, ok := src["store"].(bool); ok {
+		resp["store"] = v
+	}
+	switch md := src["metadata"].(type) {
+	case map[string]string:
+		if len(md) > 0 {
+			resp["metadata"] = md
+		}
+	case map[string]any:
+		if len(md) > 0 {
+			resp["metadata"] = md
+		}
+	}
 	if !stream {
 		jsonOut(w, resp)
 		return

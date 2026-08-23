@@ -330,22 +330,57 @@ func reasoningTone(model, effort string) (string, error) {
 		return "Gpt_5_5_Reasoning", nil
 	}
 }
+// compatibilityAliasModel reports whether a public model id is a compatibility
+// alias that funnels into an existing Microsoft 365 ChatHub tone rather than a
+// distinct upstream model with independent capabilities. gpt-5.6-sol (and the
+// sibling gpt-5.6-terra / gpt-5.6-luna names) all route to the same
+// Gpt_5_6_Reasoning tone; their advertised capabilities are exactly the M365
+// backend's, not the capabilities of any hypothetical OpenAI model with the
+// same name.
+func compatibilityAliasModel(id string) bool {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+		return true
+	}
+	return false
+}
+
 func modelCatalog() []map[string]any {
 	l := configuredModelLimits()
 	models := configuredModelSpecs(currentSettings().ModelMappings)
+	// Honesty over capability inflation: the Microsoft 365 backend only
+	// consumes the effective input budget this gateway actually manages, so the
+	// catalog advertises that budget — never a larger number the gateway cannot
+	// deliver (a claimed 1.05M window with ~96K of real handling is a lie).
+	eff := m365EffectiveContextWindow()
+	advertisedWindow := l.ContextWindow
+	if advertisedWindow > eff {
+		advertisedWindow = eff
+	}
+	advertisedInput := l.MaxInputTokens
+	if advertisedInput > eff {
+		advertisedInput = eff
+	}
 	out := make([]map[string]any, 0, len(models))
 	for _, m := range models {
 		// Keep capability fields both at the top level and under capabilities:
 		// different OpenAI-compatible clients inspect different locations.
+		alias := compatibilityAliasModel(m.ID)
 		features := []string{"tools", "function_calling", "streaming", "reasoning", "vision"}
+		if alias {
+			features = []string{"tools", "function_calling", "streaming", "reasoning"}
+		}
 		modalities := []string{"text", "image"}
+		if alias {
+			modalities = []string{"text"}
+		}
 		caps := map[string]any{
 			"chat_completions": true, "responses": true, "streaming": true,
 			"tools": true, "reasoning": true,
 			"reasoning_efforts": advertisedReasoningEfforts, "supported_reasoning_levels": advertisedReasoningEfforts,
 			"reasoning_mode": "gateway_tone_routing", "supports_tools": true, "tool_calls": true,
-			"function_calling": true, "supports_function_calling": true, "supports_vision": true,
-			"vision": true, "modalities": modalities, "input_modalities": modalities,
+			"function_calling": true, "supports_function_calling": true, "supports_vision": !alias,
+			"vision": !alias, "modalities": modalities, "input_modalities": modalities,
 			"output_modalities": []string{"text"}, "supported_features": features,
 		}
 		displayName := m.DisplayName
@@ -366,15 +401,18 @@ func modelCatalog() []map[string]any {
 			"supports_reasoning_summaries": true, "default_reasoning_summary": "none",
 			"support_verbosity": true, "default_verbosity": "low", "apply_patch_tool_type": "freeform",
 			"web_search_tool_type": "text_and_image", "truncation_policy": map[string]any{"mode": "tokens", "limit": 10000},
-			"supports_parallel_tool_calls": true, "supports_image_detail_original": true,
-			"max_context_window": l.ContextWindow, "effective_context_window_percent": 95,
+			"supports_parallel_tool_calls": true, "supports_image_detail_original": !alias,
+			// Explicit capability declaration: which backend actually serves this
+			// model and whether the id is a compatibility alias of that backend.
+			"backend": m.Owner, "compatibility_alias": alias,
+			"max_context_window": advertisedWindow, "effective_context_window": advertisedWindow, "effective_context_window_percent": 95,
 			"experimental_supported_tools": []any{}, "supports_search_tool": true, "use_responses_lite": false,
 			"tool_mode": "code_mode_only", "multi_agent_version": "v2",
-			"context_window": l.ContextWindow, "max_input_tokens": l.MaxInputTokens, "max_output_tokens": l.MaxOutputTokens,
+			"context_window": advertisedWindow, "max_input_tokens": advertisedInput, "max_output_tokens": l.MaxOutputTokens,
 			"capabilities": caps, "supports_tools": true, "tool_calls": true,
 			"supported_reasoning_levels": advertisedReasoningEfforts,
-			"function_calling":           true, "supports_function_calling": true, "supports_vision": true,
-			"vision": true, "modalities": modalities, "input_modalities": modalities,
+			"function_calling":           true, "supports_function_calling": true, "supports_vision": !alias,
+			"vision": !alias, "modalities": modalities, "input_modalities": modalities,
 			"output_modalities": []string{"text"}, "supported_features": features,
 		})
 	}

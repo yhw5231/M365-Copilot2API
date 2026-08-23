@@ -215,12 +215,12 @@ func TestValidAPIKeyRejectsJWTLikeGarbage(t *testing.T) {
 	}
 }
 
-func TestResponsesRouteRemoved(t *testing.T) {
+func TestResponsesRouteEnabled(t *testing.T) {
 	store := newAPIKeyStore(filepath.Join(t.TempDir(), "api-keys.json"))
-	validRaw := "sk-route-removal-test-key"
+	validRaw := "sk-route-enabled-test-key"
 	store.Keys = []apiKeyRecord{{
-		ID:        "key-route-removal",
-		Name:      "route removal test",
+		ID:        "key-route-enabled",
+		Name:      "route enabled test",
 		Prefix:    "sk-route",
 		Hash:      keyHash(validRaw),
 		CreatedAt: time.Now(),
@@ -233,8 +233,20 @@ func TestResponsesRouteRemoved(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	s.Routes().ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("POST /v1/responses status=%d, want %d after route removal; body=%q", rr.Code, http.StatusNotFound, rr.Body.String())
+	// The route is live: an empty body fails input validation with 400 and
+	// must never fall through to the 404 the rootPage would produce.
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/responses status=%d, want %d after route re-enabled; body=%q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+
+	// Without a valid key the /v1/ API-key guard must still reject the request
+	// before it reaches the handler.
+	reqNoKey := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hi"}`))
+	reqNoKey.Header.Set("Content-Type", "application/json")
+	rrNoKey := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rrNoKey, reqNoKey)
+	if rrNoKey.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /v1/responses without key status=%d, want %d; body=%q", rrNoKey.Code, http.StatusUnauthorized, rrNoKey.Body.String())
 	}
 }
 

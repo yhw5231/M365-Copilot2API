@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -316,6 +317,45 @@ func TestCatalogMatchesEnabledRoutesOnly(t *testing.T) {
 		if ids[id] != expect {
 			t.Fatalf("model %q advertised=%t want=%t (catalog=%v)", id, ids[id], expect, ids)
 		}
+	}
+}
+
+func TestCatalogMarksBackendAndCompatibilityAlias(t *testing.T) {
+	s := &Server{}
+	r := httptest.NewRequest("GET", "/v1/models", nil)
+	w := httptest.NewRecorder()
+	s.openaiModels(w, r)
+	var body struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]map[string]any{}
+	for _, m := range body.Data {
+		byID[strings.ToLower(fmt.Sprint(m["id"]))] = m
+	}
+	for _, id := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		m, ok := byID[id]
+		if !ok {
+			continue // model not enabled in this environment
+		}
+		if m["backend"] != "microsoft-365" {
+			t.Fatalf("%s backend=%v want microsoft-365", id, m["backend"])
+		}
+		if m["compatibility_alias"] != true {
+			t.Fatalf("%s must be flagged compatibility_alias=true: %#v", id, m)
+		}
+		if m["context_window"].(float64) > float64(m365EffectiveContextWindow()) {
+			t.Fatalf("%s advertises context_window=%v above the effective budget %d", id, m["context_window"], m365EffectiveContextWindow())
+		}
+		if m["max_context_window"] != m["context_window"] {
+			t.Fatalf("%s max_context_window != context_window: %#v", id, m)
+		}
+	}
+	// A genuine built-in model must NOT be flagged as a compatibility alias.
+	if m, ok := byID["gpt-5.2"]; ok && m["compatibility_alias"] == true {
+		t.Fatalf("gpt-5.2 is not a compatibility alias: %#v", m)
 	}
 }
 

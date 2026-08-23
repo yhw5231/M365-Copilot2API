@@ -9,36 +9,189 @@ import (
 )
 
 // responsesRequest is the OpenAI Responses API request subset supported by the gateway.
+//
+// Parameters the gateway genuinely honors are converted into the internal
+// request; parameters the gateway cannot honor are rejected with an explicit
+// unsupported_parameter error instead of being silently dropped, so a client
+// never believes a sampling/context option took effect when it did not.
 type responsesRequest struct {
-	Model              string           `json:"model"`
-	AccountID          string           `json:"accountId,omitempty"`
-	Instructions       string           `json:"instructions,omitempty"`
-	Input              any              `json:"input"`
+	Model        string `json:"model"`
+	AccountID    string `json:"accountId,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+	Input        any    `json:"input"`
+	// Text accepts both Responses API shapes: the output-text configuration
+	// object ({"format":{"type":"json_object"|"json_schema",...}}) honored via
+	// the same response_format path chat/completions uses, and the plain user
+	// prompt string some OpenAI-compatible clients send as a top-level alias.
+	Text               any              `json:"text,omitempty"`
 	Tools              []map[string]any `json:"tools,omitempty"`
 	ToolChoice         any              `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool            `json:"parallel_tool_calls,omitempty"`
 	Stream             bool             `json:"stream,omitempty"`
 	User               string           `json:"user,omitempty"`
 	Reasoning          *reasoningConfig `json:"reasoning,omitempty"`
+	Include            []string         `json:"include,omitempty"`
 	PreviousResponseID string           `json:"previous_response_id,omitempty"`
 	Conversation       string           `json:"conversation,omitempty"`
 	NewConversation    bool             `json:"new_conversation,omitempty"`
 	Temperature        *float64         `json:"temperature,omitempty"`
 	TopP               *float64         `json:"top_p,omitempty"`
 	MaxOutputTokens    *int             `json:"max_output_tokens,omitempty"`
+	// MaxTokens is the chat/completions-era alias some OpenAI-compatible
+	// clients still send to the Responses endpoint; it feeds the same budget.
+	MaxTokens         *int              `json:"max_tokens,omitempty"`
+	FrequencyPenalty  *float64          `json:"frequency_penalty,omitempty"`
+	PresencePenalty   *float64          `json:"presence_penalty,omitempty"`
+	ServiceTier       string            `json:"service_tier,omitempty"`
+	ContextManagement any               `json:"context_management,omitempty"`
+	Store             *bool             `json:"store,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+}
+
+// unsupportedParamError marks a request parameter the gateway cannot honor.
+// The Responses handler maps it to an explicit "unsupported_parameter" error
+// instead of silently ignoring the client's intent.
+type unsupportedParamError struct {
+	Param string
+	Value any
+}
+
+func (e *unsupportedParamError) Error() string {
+	return fmt.Sprintf("parameter %q is not supported by the Microsoft 365 backend", e.Param)
+}
+
+// ignoredSamplingParams lists sampling controls the Microsoft 365 ChatHub
+// backend cannot apply. They are accepted for client compatibility but are
+// reported back in the response metadata so the client never believes the
+// value took effect. Only non-default values are listed.
+func ignoredSamplingParams(body *oaiReq) ([]string, bool) {
+	if body == nil {
+		return nil, false
+	}
+	var ignored []string
+	if body.Temperature != nil && *body.Temperature != 1.0 {
+		ignored = append(ignored, "temperature")
+	}
+	if body.TopP != nil && *body.TopP != 1.0 {
+		ignored = append(ignored, "top_p")
+	}
+	if body.FrequencyPenalty != nil && *body.FrequencyPenalty != 0 {
+		ignored = append(ignored, "frequency_penalty")
+	}
+	if body.PresencePenalty != nil && *body.PresencePenalty != 0 {
+		ignored = append(ignored, "presence_penalty")
+	}
+	return ignored, len(ignored) > 0
+}
+
+const samplingNote = "Microsoft 365 ChatHub backend does not support sampling controls; the listed parameters were accepted for compatibility but have no effect"
+
+// supportedResponsesIncludes lists the `include` values the gateway can
+// actually produce in a Responses result. Anything else is rejected so the
+// client learns it must not expect that extra field.
+var supportedResponsesIncludes = map[string]bool{
+	"usage":                            true, // usage is always emitted
+	"reasoning":                        true, // reasoning_content is forwarded when present
+	"reasoning.summary":                true,
+	"reasoning.encrypted_content":      true,
+	"message.output_text.annotations":  true, // annotations are emitted as an empty list
+	"response.output_text.annotations": true,
+}
+
+func (r responsesRequest) validateSupportedParams() error {
+	for _, inc := range r.Include {
+		key := strings.ToLower(strings.TrimSpace(inc))
+		if key != "" && !supportedResponsesIncludes[key] {
+			return &unsupportedParamError{Param: "include", Value: inc}
+		}
+	}
+	tier := strings.ToLower(strings.TrimSpace(r.ServiceTier))
+	if tier != "" && tier != "auto" {
+		return &unsupportedParamError{Param: "service_tier", Value: r.ServiceTier}
+	}
+	if r.ContextManagement != nil {
+		cm := "auto"
+		switch v := r.ContextManagement.(type) {
+		case string:
+			cm = strings.ToLower(strings.TrimSpace(v))
+		case map[string]any:
+			if s, ok := v["type"].(string); ok {
+				cm = strings.ToLower(strings.TrimSpace(s))
+			}
+		}
+		if cm != "" && cm != "auto" {
+			return &unsupportedParamError{Param: "context_management", Value: r.ContextManagement}
+		}
+	}
+	return nil
+}
+
+// applyResponsesTextFormat honors the Responses API text.format output
+// configuration by converting it into the same response_format handling the
+// chat/completions endpoint applies (JSON prompt injection). text.format.type
+// values: "text" (default, no-op), "json_object", "json_schema".
+func applyResponsesTextFormat(o *oaiReq, text map[string]any) error {
+	raw, ok := text["format"]
+	if !ok || raw == nil {
+		return nil
+	}
+	format, ok := raw.(map[string]any)
+	if !ok {
+		return &unsupportedParamError{Param: "text.format", Value: raw}
+	}
+	typ, _ := format["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "", "text":
+		return nil
+	case "json_object":
+		o.ResponseFormat = &responseFormat{Type: "json_object"}
+		return nil
+	case "json_schema":
+		schema, _ := format["schema"].(map[string]any)
+		o.ResponseFormat = &responseFormat{Type: "json_schema", JSONSchema: map[string]any{"schema": schema}}
+		return nil
+	default:
+		return &unsupportedParamError{Param: "text.format", Value: typ}
+	}
+}
+
+// shouldStoreResponsesHistory reports whether a completed response should be
+// retained for previous_response_id continuation. The Responses API `store`
+// parameter opts a client out of history retention; absent or true retains it.
+func shouldStoreResponsesHistory(store *bool) bool {
+	return store == nil || *store
 }
 
 const customExecWorkspaceInstruction = `You are operating through the caller's local OpenCode execution bridge. Never use, request, or mention Microsoft 365/Copilot native tools. The only permitted execution tool is the caller-provided custom exec tool. Modify only files within the scope explicitly specified by the caller. Every file or directory path used for reading, writing, editing, deleting, or verification must be explicitly provided by the caller; never infer, guess, discover, or substitute a path. A caller-provided path may be either an absolute project path or a path relative to the caller-selected project workspace. Do not assume paths such as /root, /workspace, /tmp, or /mnt/data. Never claim a file was created, modified, or verified until custom exec returns a successful result. After every execution, use custom exec to verify the result.`
 
 func (r responsesRequest) openAI() (oaiReq, error) {
-	o := oaiReq{Model: r.Model, AccountID: r.AccountID, Stream: r.Stream, ToolChoice: r.ToolChoice, User: r.User}
+	o := oaiReq{Model: r.Model, AccountID: r.AccountID, Stream: r.Stream, ToolChoice: r.ToolChoice, User: r.User, ParallelToolCalls: r.ParallelToolCalls, Metadata: r.Metadata}
+	if err := r.validateSupportedParams(); err != nil {
+		return o, err
+	}
+	// Conversation continuity: `conversation` names the upstream conversation to
+	// resume (mirroring chat/completions conversation_id), while
+	// `new_conversation` forces a fresh conversation regardless of any stored
+	// session binding. Both were previously parsed but silently dropped.
+	switch {
+	case r.NewConversation:
+		o.NewConversation = true
+		o.ConversationID = ""
+	default:
+		o.ConversationID = r.Conversation
+	}
 	if r.Temperature != nil {
 		o.Temperature = r.Temperature
 	}
 	if r.TopP != nil {
 		o.TopP = r.TopP
 	}
+	o.FrequencyPenalty = r.FrequencyPenalty
+	o.PresencePenalty = r.PresencePenalty
 	if r.MaxOutputTokens != nil {
 		o.MaxCompletionTokens = r.MaxOutputTokens
+	} else if r.MaxTokens != nil {
+		o.MaxTokens = r.MaxTokens
 	}
 	if instructions := strings.TrimSpace(r.Instructions); instructions != "" {
 		o.Messages = append(o.Messages, oaiMsg{Role: "system", Content: instructions})
@@ -47,7 +200,23 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 		o.Reasoning = r.Reasoning
 		o.ReasoningEffort = r.Reasoning.Effort
 	}
-	switch v := r.Input.(type) {
+	// `text` has two accepted shapes. OpenAI Responses clients send it as the
+	// output-text configuration object (e.g. {"format":{"type":"json_object"}});
+	// some OpenAI-compatible clients send it as a plain user-prompt string. A
+	// string acts as an input alias when `input` is absent; an object is
+	// honored as the text.format output configuration (JSON mode / schema).
+	input := r.Input
+	switch t := r.Text.(type) {
+	case string:
+		if input == nil && strings.TrimSpace(t) != "" {
+			input = t
+		}
+	case map[string]any:
+		if err := applyResponsesTextFormat(&o, t); err != nil {
+			return o, err
+		}
+	}
+	switch v := input.(type) {
 	case string:
 		if v == "" {
 			return o, fmt.Errorf("input required")
@@ -107,6 +276,9 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 			}
 		}
 	default:
+		if input == nil {
+			return o, fmt.Errorf("input required")
+		}
 		return o, fmt.Errorf("input must be string or array")
 	}
 	hasCustomExec := false

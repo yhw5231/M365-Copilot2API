@@ -31,6 +31,10 @@ type sessionBinding struct {
 	// ContextHistory 鎸佷箙鍖栦繚瀛樻渶杩戜竴娆″崗璁殑瀹屾暣娑堟伅锛屼緵閲嶅惎鍚庣户缁仛
 	// 鍐呭鍓嶇紑鍖归厤锛岄伩鍏嶈繘绋嬮噸鍚鑷存墍鏈変細璇濋敭鍏ㄩ儴澶辨晥銆?
 	ContextHistory []oaiMsg `json:"contextHistory,omitempty"`
+	// Task is the persistent server-side task ledger for this downstream
+	// session. It survives context compaction and account switches, so a long
+	// task never restarts from scratch.
+	Task *taskLedger `json:"task,omitempty"`
 }
 
 type sessionResolver struct {
@@ -437,6 +441,14 @@ func toolCallEqual(x, y map[string]any) bool {
 }
 
 func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, body *oaiReq, assistantText string, r *http.Request) {
+	sr.BindWithTask(sessionID, conversationID, accountID, body, assistantText, r, nil)
+}
+
+// BindWithTask is Bind with a persistent task ledger attached to the session.
+// An existing binding keeps its ledger (the original goal must not be replaced
+// by a later turn), while an explicit task replaces the stored one so the task
+// state follows the session across account switches.
+func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID string, body *oaiReq, assistantText string, r *http.Request, task *taskLedger) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	sr.evictLocked()
@@ -469,6 +481,9 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 	// 而不是每次 Bind 都新建一条，避免 sessions.json 膨胀。
 	if sessionID != "" {
 		if sess, ok := sr.sessions[sessionID]; ok {
+			if task != nil {
+				sess.Task = task
+			}
 			sess.ConversationID = conversationID
 			sess.AccountID = accountID
 			sess.APIKey = key
@@ -487,6 +502,9 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 	if sessionID == "" {
 		for sid, sess := range sr.sessions {
 			if sess.ConversationID == conversationID {
+				if task != nil {
+					sess.Task = task
+				}
 				sess.LastUsedAt = now
 				sess.AccountID = accountID
 				sess.APIKey = key
@@ -515,10 +533,27 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 		UserField:      body.User,
 		ContextFinger:  contextFingerprint(history),
 		ContextHistory: history,
+		Task:           task,
 	}
 
 	sr.reindexLocked(sess)
 	sr.persist.markDirty()
+}
+
+// SetTask attaches a task ledger to an existing session binding. It is a no-op
+// when the session is unknown (the ledger is then attached by the next bind).
+func (sr *sessionResolver) SetTask(sessionID string, task *taskLedger) {
+	if sr == nil || sessionID == "" {
+		return
+	}
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	if sess, ok := sr.sessions[sessionID]; ok {
+		sess.Task = task
+		sess.LastUsedAt = time.Now().UTC()
+		sr.sessions[sessionID] = sess
+		sr.persist.markDirty()
+	}
 }
 
 // sessionOwnedBy reports whether a session recorded under one API key may be

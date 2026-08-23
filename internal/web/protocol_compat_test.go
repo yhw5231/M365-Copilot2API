@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -87,6 +88,96 @@ func TestResponsesCustomToolOutputToOpenAI(t *testing.T) {
 	}
 }
 
+func TestResponsesParallelToolCallsAndMetadata(t *testing.T) {
+	false_ := false
+	true_ := true
+	r := responsesRequest{
+		Model:             "m",
+		Input:             "hi",
+		ParallelToolCalls: &false_,
+		Store:             &true_,
+		Metadata:          map[string]string{"session": "s-1"},
+	}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.ParallelToolCalls == nil || *o.ParallelToolCalls {
+		t.Fatalf("parallel_tool_calls lost: %+v", o.ParallelToolCalls)
+	}
+	if len(o.Metadata) != 1 || o.Metadata["session"] != "s-1" {
+		t.Fatalf("metadata lost: %+v", o.Metadata)
+	}
+}
+
+func TestResponsesTextInputAlias(t *testing.T) {
+	r := responsesRequest{Model: "m", Text: "inspect this repo"}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Messages) != 1 || o.Messages[0].Role != "user" || o.Messages[0].Content != "inspect this repo" {
+		t.Fatalf("text alias not honored: %#v", o.Messages)
+	}
+}
+
+func TestResponsesRejectsUnsupportedParams(t *testing.T) {
+	cases := []responsesRequest{
+		{Model: "m", Input: "hi", ServiceTier: "flex"},
+		{Model: "m", Input: "hi", ContextManagement: "ephemeral"},
+		{Model: "m", Input: "hi", Include: []string{"file_search_call.results"}},
+	}
+	for _, r := range cases {
+		_, err := r.openAI()
+		if err == nil {
+			t.Fatalf("request %+v must be rejected", r)
+		}
+		var unsupported *unsupportedParamError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("expected unsupportedParamError, got %T: %v", err, err)
+		}
+	}
+}
+
+func TestResponsesAcceptsSupportedIncludeAndDefaults(t *testing.T) {
+	r := responsesRequest{
+		Model:             "m",
+		Input:             "hi",
+		Include:           []string{"usage", "reasoning.summary", "message.output_text.annotations"},
+		ServiceTier:       "auto",
+		ContextManagement: "auto",
+	}
+	if _, err := r.openAI(); err != nil {
+		t.Fatalf("supported include/defaults rejected: %v", err)
+	}
+}
+
+func TestDropSystemInstructionsReplacesPreviousTurn(t *testing.T) {
+	hist := []oaiMsg{
+		{Role: "system", Content: "OLD instructions that must not survive"},
+		{Role: "developer", Content: "OLD developer rule"},
+		{Role: "user", Content: "first question"},
+		{Role: "assistant", Content: "first answer"},
+		{Role: "user", Content: "I asked for a delay"},
+	}
+	hist = append(hist, oaiMsg{Role: "assistant", Content: "ok I have awaited and think about it"})
+	out := dropSystemInstructions(hist)
+	for _, m := range out {
+		if m.Role == "system" || m.Role == "developer" {
+			t.Fatalf("stale instruction survived: %#v", m)
+		}
+	}
+	if len(out) != 4 {
+		t.Fatalf("want 4 history messages, got %d: %#v", len(out), out)
+	}
+	if out[0].Role != "user" || out[0].Content != "first question" {
+		t.Fatalf("history order corrupted: %#v", out)
+	}
+	if out[2].Content != "I asked for a delay" {
+		t.Fatalf("history order corrupted: %#v", out)
+	}
+}
+
 func TestAnthropicToOpenAI(t *testing.T) {
 	r := anthropicRequest{Model: "m", System: any("be concise"), Messages: []anthropicMessage{{Role: "user", Content: any("weather")}}, Tools: []anthropicTool{{Name: "weather", InputSchema: map[string]any{"type": "object"}}}}
 	o, err := r.openAI()
@@ -100,5 +191,117 @@ func TestAnthropicToolResult(t *testing.T) {
 	o, err := r.openAI()
 	if err != nil || len(o.Messages) != 2 || o.Messages[1].ToolCallID != "x" {
 		t.Fatalf("%+v %v", o, err)
+	}
+}
+
+func TestResponsesConversationAndNewConversation(t *testing.T) {
+	base := responsesRequest{Model: "m", Input: "hi", Conversation: "conv-123"}
+	o, err := base.openAI()
+	if err != nil || o.ConversationID != "conv-123" || o.NewConversation {
+		t.Fatalf("conversation not honored: %+v err=%v", o, err)
+	}
+	fresh := responsesRequest{Model: "m", Input: "hi", Conversation: "conv-123", NewConversation: true}
+	o, err = fresh.openAI()
+	if err != nil || !o.NewConversation || o.ConversationID != "" {
+		t.Fatalf("new_conversation not honored: %+v err=%v", o, err)
+	}
+}
+
+func TestResponsesTextFormatJSONObject(t *testing.T) {
+	r := responsesRequest{Model: "m", Input: "hi", Text: map[string]any{"format": map[string]any{"type": "json_object"}}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.ResponseFormat == nil || o.ResponseFormat.Type != "json_object" {
+		t.Fatalf("json_object format lost: %+v", o.ResponseFormat)
+	}
+}
+
+func TestResponsesTextFormatJSONSchema(t *testing.T) {
+	r := responsesRequest{Model: "m", Input: "hi", Text: map[string]any{"format": map[string]any{"type": "json_schema", "schema": map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}}}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.ResponseFormat == nil || o.ResponseFormat.Type != "json_schema" {
+		t.Fatalf("json_schema format lost: %+v", o.ResponseFormat)
+	}
+	if _, ok := o.ResponseFormat.JSONSchema["schema"]; !ok {
+		t.Fatalf("json_schema payload lost: %+v", o.ResponseFormat.JSONSchema)
+	}
+}
+
+func TestResponsesTextFormatRejectsUnknown(t *testing.T) {
+	r := responsesRequest{Model: "m", Input: "hi", Text: map[string]any{"format": map[string]any{"type": "bogus"}}}
+	_, err := r.openAI()
+	if err == nil {
+		t.Fatal("unknown text.format.type must be rejected")
+	}
+	var unsupported *unsupportedParamError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected unsupportedParamError, got %T: %v", err, err)
+	}
+}
+
+func TestResponsesTextStringStillActsAsInputAlias(t *testing.T) {
+	// An object `text` config plus a string `input` must not clobber the prompt.
+	r := responsesRequest{Model: "m", Input: "real prompt", Text: map[string]any{"format": map[string]any{"type": "json_object"}}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Messages) != 1 || o.Messages[0].Content != "real prompt" {
+		t.Fatalf("object text replaced the input: %#v", o.Messages)
+	}
+	if o.ResponseFormat == nil {
+		t.Fatal("format must still apply alongside string input")
+	}
+}
+
+func TestResponsesMaxTokensAlias(t *testing.T) {
+	mt := 128
+	r := responsesRequest{Model: "m", Input: "hi", MaxTokens: &mt}
+	o, err := r.openAI()
+	if err != nil || o.MaxTokens == nil || *o.MaxTokens != 128 {
+		t.Fatalf("max_tokens alias lost: %+v err=%v", o.MaxTokens, err)
+	}
+	// max_output_tokens takes precedence over the max_tokens alias.
+	mo := 64
+	r2 := responsesRequest{Model: "m", Input: "hi", MaxTokens: &mt, MaxOutputTokens: &mo}
+	o2, err := r2.openAI()
+	if err != nil || o2.MaxCompletionTokens == nil || *o2.MaxCompletionTokens != 64 {
+		t.Fatalf("max_output_tokens precedence lost: %+v err=%v", o2.MaxCompletionTokens, err)
+	}
+}
+
+func TestResponsesSamplingPenaltiesAreNoted(t *testing.T) {
+	fp := 0.5
+	pp := 0.2
+	r := responsesRequest{Model: "m", Input: "hi", FrequencyPenalty: &fp, PresencePenalty: &pp}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.FrequencyPenalty == nil || *o.FrequencyPenalty != fp || o.PresencePenalty == nil || *o.PresencePenalty != pp {
+		t.Fatalf("penalties lost: %+v", o)
+	}
+	ignored, ok := ignoredSamplingParams(&o)
+	if !ok || len(ignored) != 2 {
+		t.Fatalf("expected both penalties reported as ignored, got %v", ignored)
+	}
+}
+
+func TestResponsesStoreHistoryGuard(t *testing.T) {
+	if !shouldStoreResponsesHistory(nil) {
+		t.Fatal("nil store must retain history")
+	}
+	tr := true
+	if !shouldStoreResponsesHistory(&tr) {
+		t.Fatal("store=true must retain history")
+	}
+	fa := false
+	if shouldStoreResponsesHistory(&fa) {
+		t.Fatal("store=false must not retain history")
 	}
 }

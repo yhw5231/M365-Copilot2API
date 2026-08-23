@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -139,18 +138,18 @@ func testAccountFiles(t *testing.T) *auth.Store {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "accounts.json")
-	toks := map[string]auth.TokenSet{
-		"u-1": {HomeOID: "u-1", Email: "one@example.com", AccessToken: "tok1", RefreshToken: "r1", ExpiresAt: time.Now().Add(time.Hour)},
-		"u-2": {HomeOID: "u-2", Email: "two@example.com", AccessToken: "tok2", RefreshToken: "r2", ExpiresAt: time.Now().Add(time.Hour)},
-		"u-3": {HomeOID: "u-3", Email: "three@example.com", AccessToken: "tok3", RefreshToken: "r3", ExpiresAt: time.Now().Add(time.Hour)},
+	// Insert in a fixed order (u-1, u-2, u-3): the configured account order is
+	// the scheduling order, and tests assert that order deterministically.
+	tokens := []auth.TokenSet{
+		{HomeOID: "u-1", Email: "one@example.com", AccessToken: "tok1", RefreshToken: "r1", ExpiresAt: time.Now().Add(time.Hour)},
+		{HomeOID: "u-2", Email: "two@example.com", AccessToken: "tok2", RefreshToken: "r2", ExpiresAt: time.Now().Add(time.Hour)},
+		{HomeOID: "u-3", Email: "three@example.com", AccessToken: "tok3", RefreshToken: "r3", ExpiresAt: time.Now().Add(time.Hour)},
 	}
-	b, _ := os.ReadFile(path)
-	_ = b
 	store, err := auth.OpenStore(path)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	for _, tok := range toks {
+	for _, tok := range tokens {
 		if _, err := store.Upsert(tok); err != nil {
 			t.Fatalf("upsert %s: %v", tok.HomeOID, err)
 		}
@@ -255,6 +254,58 @@ func TestNextHealthyAccount(t *testing.T) {
 	}
 	if _, err := s.nextHealthyAccount(""); err == nil {
 		t.Fatal("nextHealthyAccount must fail when no healthy account remains")
+	}
+}
+
+func TestResolveAccountAvailableFirstUsesFixedOrder(t *testing.T) {
+	store := testAccountFiles(t)
+	s := &Server{tokens: store, accountPool: newAccountHealth()}
+	// available-first must select the first healthy account in configured order
+	// (1 → 2 → 3), never random, and keep using it while it is available.
+	for i := 0; i < 3; i++ {
+		acc, err := s.resolveAccount("")
+		if err != nil {
+			t.Fatalf("resolveAccount: %v", err)
+		}
+		if acc.ID != "u-1" {
+			t.Fatalf("available-first must stick to u-1 while healthy, got %s", acc.ID)
+		}
+	}
+	// When u-1 cools down, the next request moves to u-2 (fixed order).
+	s.accountPool.MarkFailure("u-1", &UpstreamHTTPError{Status: 429}, 10*time.Minute)
+	acc, err := s.resolveAccount("")
+	if err != nil {
+		t.Fatalf("resolveAccount: %v", err)
+	}
+	if acc.ID != "u-2" {
+		t.Fatalf("expected failover to u-2, got %s", acc.ID)
+	}
+}
+
+func TestResolveAccountRoundRobinCyclesInOrder(t *testing.T) {
+	store := testAccountFiles(t)
+	prior := openSettingsStore().v.AccountRoutingRule
+	openSettingsStore().mu.Lock()
+	openSettingsStore().v.AccountRoutingRule = "round-robin"
+	openSettingsStore().mu.Unlock()
+	defer func() {
+		openSettingsStore().mu.Lock()
+		openSettingsStore().v.AccountRoutingRule = prior
+		openSettingsStore().mu.Unlock()
+	}()
+	// resolveAccount reads the routing rule from the server settings store.
+	s := &Server{tokens: store, accountPool: newAccountHealth(), settings: openSettingsStore()}
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		acc, err := s.resolveAccount("")
+		if err != nil {
+			t.Fatalf("resolveAccount: %v", err)
+		}
+		ids = append(ids, acc.ID)
+	}
+	if strings.Join(ids, ",") != "u-1,u-2,u-3" {
+		t.Fatalf("round-robin order=%v want u-1,u-2,u-3", ids)
 	}
 }
 

@@ -17,6 +17,41 @@ type persistStore struct {
 	registered bool
 }
 
+// Persist failure accounting: a failed session/conversation write must never
+// look like a silent success that then breaks the next turn (session missing,
+// conversation history lost). Every failure is logged at error level and
+// counted so operators can see the store degrade in the version/health output.
+var (
+	persistFailMu    sync.Mutex
+	persistFailCount int64
+	persistLastErr   string
+	persistLastAt    time.Time
+)
+
+func recordPersistFailure(storeName string, err error) {
+	if err == nil {
+		return
+	}
+	persistFailMu.Lock()
+	persistFailCount++
+	persistLastErr = storeName + ": " + err.Error()
+	persistLastAt = time.Now()
+	persistFailMu.Unlock()
+	log.Printf("[persist] CRITICAL flush failed for %s: %v — the next request may lose session/conversation continuity", storeName, err)
+}
+
+// PersistFailureStats returns the accumulated flush-failure accounting for the
+// version/health endpoints so a degraded data directory is visible.
+func PersistFailureStats() map[string]any {
+	persistFailMu.Lock()
+	defer persistFailMu.Unlock()
+	out := map[string]any{"count": persistFailCount, "last_error": persistLastErr}
+	if !persistLastAt.IsZero() {
+		out["last_at"] = persistLastAt
+	}
+	return out
+}
+
 func (p *persistStore) markDirty() {
 	p.dirtyMu.Lock()
 	p.dirty = true
@@ -38,7 +73,7 @@ func (p *persistStore) flushPending() {
 		p.dirtyMu.Lock()
 		p.dirty = true
 		p.dirtyMu.Unlock()
-		log.Printf("[persist] flush failed: %v", err)
+		recordPersistFailure("store", err)
 	}
 }
 
@@ -52,6 +87,7 @@ func (p *persistStore) flushNowBlocking() error {
 		p.dirtyMu.Lock()
 		p.dirty = true
 		p.dirtyMu.Unlock()
+		recordPersistFailure("store", err)
 		return err
 	}
 	return nil

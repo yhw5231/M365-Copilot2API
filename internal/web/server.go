@@ -353,6 +353,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/usage/logs", s.adminUsageLogs)
 	m.HandleFunc("/v1/models", s.openaiModels)
 	m.HandleFunc("/v1/chat/completions", s.openaiChat)
+	m.HandleFunc("/v1/responses", s.responses)
 	m.HandleFunc("/v1/mcp/sse", mcp.HandleSSE)
 	m.HandleFunc("/v1/mcp/message", mcp.HandleMessage)
 	m.HandleFunc("/v1/mcp/tools", mcp.HandleToolsList)
@@ -1655,32 +1656,39 @@ type oaiReq struct {
 	StreamOptions  *struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options,omitempty"`
-	MaxTokens           *int                 `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int                 `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64             `json:"temperature,omitempty"`
-	TopP                *float64             `json:"top_p,omitempty"`
-	FrequencyPenalty    *float64             `json:"frequency_penalty,omitempty"`
-	PresencePenalty     *float64             `json:"presence_penalty,omitempty"`
-	Stop                any                  `json:"stop,omitempty"`
-	N                   *int                 `json:"n,omitempty"`
-	Seed                *int64               `json:"seed,omitempty"`
-	Logprobs            *bool                `json:"logprobs,omitempty"`
-	TopLogprobs         *int                 `json:"top_logprobs,omitempty"`
-	User                string               `json:"user"`
-	AccountID           string               `json:"accountId"`
-	ConversationID      string               `json:"conversation_id"`
-	SessionID           string               `json:"session_id"`
-	SessionKey          string               `json:"session_key"`
-	ConversationIDC     string               `json:"conversationId,omitempty"`
-	SessionIDC          string               `json:"sessionId,omitempty"`
-	Attachments         []chathub.Attachment `json:"attachments,omitempty"`
-	Tools               []chathub.Tool       `json:"tools,omitempty"`
-	Functions           []json.RawMessage    `json:"functions,omitempty"`
-	ToolChoice          any                  `json:"tool_choice,omitempty"`
-	FunctionCall        any                  `json:"function_call,omitempty"`
-	ParallelToolCalls   *bool                `json:"parallel_tool_calls,omitempty"`
-	Reasoning           *reasoningConfig     `json:"reasoning,omitempty"`
-	ReasoningEffort     string               `json:"reasoning_effort,omitempty"`
+	MaxTokens           *int     `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int     `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	TopP                *float64 `json:"top_p,omitempty"`
+	FrequencyPenalty    *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64 `json:"presence_penalty,omitempty"`
+	Stop                any      `json:"stop,omitempty"`
+	N                   *int     `json:"n,omitempty"`
+	Seed                *int64   `json:"seed,omitempty"`
+	Logprobs            *bool    `json:"logprobs,omitempty"`
+	TopLogprobs         *int     `json:"top_logprobs,omitempty"`
+	User                string   `json:"user"`
+	AccountID           string   `json:"accountId"`
+	ConversationID      string   `json:"conversation_id"`
+	SessionID           string   `json:"session_id"`
+	SessionKey          string   `json:"session_key"`
+	ConversationIDC     string   `json:"conversationId,omitempty"`
+	SessionIDC          string   `json:"sessionId,omitempty"`
+	// NewConversation forces a fresh upstream conversation: the session
+	// resolver, user-session and conversation-cache reuse paths are all skipped
+	// so the full message history is submitted to a brand-new conversation.
+	NewConversation   bool                 `json:"new_conversation,omitempty"`
+	Attachments       []chathub.Attachment `json:"attachments,omitempty"`
+	Tools             []chathub.Tool       `json:"tools,omitempty"`
+	Functions         []json.RawMessage    `json:"functions,omitempty"`
+	ToolChoice        any                  `json:"tool_choice,omitempty"`
+	FunctionCall      any                  `json:"function_call,omitempty"`
+	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`
+	Reasoning         *reasoningConfig     `json:"reasoning,omitempty"`
+	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	// Metadata carries OpenAI-style client metadata through to the response so
+	// it is echoed back (chat completions) instead of being silently dropped.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 func (r *oaiReq) shouldSendStreamUsage() bool {
@@ -1925,6 +1933,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Preserve role boundaries when adapting OpenAI messages to ChatHub's
 	// single message.text field. This keeps system/developer instructions,
 	// history, and the current user turn distinguishable.
+	// Apply the three-tier context budget before flattening: tier 1
+	// (instructions) and tier 2 (tool evidence) survive, tier 3 (ordinary
+	// history) is trimmed oldest-first once the request exceeds the effective
+	// input budget the M365 backend can actually consume.
+	body.Messages = budgetMessages(body.Messages, m365EffectiveContextWindow())
 	var prompt string
 	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
@@ -1955,14 +1968,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.SessionKey != "" {
+	if body.SessionKey != "" && !body.NewConversation {
 		if v, ok := s.sessions.get(body.SessionKey); ok {
 			body.AccountID = firstNonEmpty(body.AccountID, v.AccountID)
 			body.ConversationID = firstNonEmpty(body.ConversationID, v.ConversationID)
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	if body.User != "" && body.ConversationID == "" {
+	if body.User != "" && body.ConversationID == "" && !body.NewConversation {
 		if us, ok := s.userSessions.Get(body.User); ok {
 			body.AccountID = firstNonEmpty(body.AccountID, us.AccountID)
 			body.ConversationID = us.ConversationID
@@ -1978,7 +1991,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// is lost when switching accounts.
 	answerPrompt := prompt
 	resolvedConversationID := ""
-	if body.ConversationID == "" && len(body.Messages) > 0 {
+	if body.ConversationID == "" && len(body.Messages) > 0 && !body.NewConversation {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			body.AccountID = firstNonEmpty(body.AccountID, resolved.AccountID)
@@ -2059,13 +2072,25 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Server-side task ledger: restore the persistent task for this downstream
+	// session (it survives context compaction and account switches), or seed a
+	// fresh ledger from this request when the session is new. The ledger is
+	// injected into every answer/router prompt so the model always knows the
+	// original goal, the constraints and how far the task has progressed.
+	task := s.sessionTaskLedger(r, &body)
+	if task == nil {
+		task = buildTaskLedger(&body)
+	}
+	answerPrompt = withTaskLedger(answerPrompt, task)
+	prompt = withTaskLedger(prompt, task)
+
 	// Conversation cache: reuse existing M365 conversation for same account+model
 	// to avoid re-processing full system prompt + history each request (latency
 	// drops from 3-5s to ~1s). Only kicks in when no explicit conversation ID
 	// was provided by client, session key, user session, or session resolver.
 	convReused := false
 	convCacheModel := firstNonEmpty(body.Model, "m365-copilot")
-	if body.ConversationID == "" && len(body.Messages) > 1 {
+	if body.ConversationID == "" && len(body.Messages) > 1 && !body.NewConversation {
 		sysHash := systemPromptHash(body.Messages)
 		if cached := s.convCache.Lookup(acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
 			if len(body.Messages) > cached.MessageCount {
@@ -2192,7 +2217,6 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var text strings.Builder
-		var pending strings.Builder
 		var streamedTools []detectedToolCall
 		first := true
 		identityFilter := newPublicIdentityStreamFilter(model)
@@ -2200,7 +2224,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if part == "" {
 				return nil
 			}
-			part = identityFilter.Push(part)
+			// The whole buffered response is emitted in one shot after validation,
+			// so drain the filter's pending tail as well; otherwise the last
+			// fragment (up to boundary/neutral-tail bytes) would be dropped.
+			part = identityFilter.Push(part) + identityFilter.Flush()
 			if part == "" {
 				return nil
 			}
@@ -2264,6 +2291,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					return nil
 				})
 				if err2 == nil {
+					task.recordSwitch(acc.ID, next.ID)
 					res = res2
 					acc = next
 					err = nil
@@ -2278,6 +2306,34 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 			if convReused {
 				s.invalidateConvCache(acc.ID, convCacheModel)
+			}
+			// Record the failed stream so the request log does not show a
+			// zero-token row: the input is known from the prompt, and the
+			// output reflects whatever the upstream produced before failing.
+			pt := EstimateTokens(answerPrompt)
+			ct := EstimateTokens(res.Text)
+			s.usage.record(UsageRecord{
+				Time:           time.Now(),
+				APIKeyPrefix:   apiKeyPrefix(r),
+				AccountEmail:   acc.Email,
+				Model:          firstNonEmpty(body.Model, "m365-copilot"),
+				ReasoningLevel: body.ReasoningEffort,
+				Endpoint:       "/v1/chat/completions",
+				Stream:         true,
+				InputTokens:    int64(pt),
+				OutputTokens:   int64(ct),
+				DurationMs:     time.Since(startedAt).Milliseconds(),
+				Status:         http.StatusBadGateway,
+				Error:          truncatedError(err),
+			})
+			if tr := traceFromRequest(r); tr != nil {
+				s.trace.update(tr.ID, func(rec *traceRecord) {
+					rec.Status = "error"
+					rec.StatusCode = http.StatusBadGateway
+					rec.InputTokens = int64(pt)
+					rec.OutputTokens = int64(ct)
+					rec.Error = truncatedError(err)
+				})
 			}
 			msg := upstreamError(err)
 			if IsRateLimited(err) {
@@ -2304,7 +2360,6 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// response is empty; this also preserves fenced-tool parsing.
 		if text.Len() == 0 && strings.TrimSpace(res.Text) != "" {
 			text.WriteString(res.Text)
-			pending.WriteString(res.Text)
 		}
 		rawCalls := streamedTools
 		if len(rawCalls) == 0 {
@@ -2322,6 +2377,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if repairErr == nil {
 				repaired, parsed := parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				if parsed {
+					repaired = filterCompletedCalls(repaired, ledger)
 					calls, _ = validateCalls("stream-repair", repaired)
 					if len(calls) > 0 {
 						toolResult = repairRes
@@ -2336,6 +2392,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		calls, _ = validateCalls("stream", calls)
+		calls = filterCompletedCalls(calls, ledger)
 		if len(calls) > 0 {
 			log.Printf("[req-trace] id=%s stage=tool_calls_detected count=%d names=%v", requestID, len(calls), func() []string {
 				var n []string
@@ -2352,11 +2409,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.User != "" && res.ConversationID != "" {
 				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
-			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
+			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task)
 			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 			return
 		}
-		if err := emitText(pending.String()); err != nil {
+		if err := emitText(text.String()); err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 			return
 		}
@@ -2366,7 +2423,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if body.User != "" && res.ConversationID != "" {
 			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
-		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
+		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task)
 		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
@@ -2383,6 +2440,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 					defer cancel2()
 					if res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments}); err2 == nil {
+						task.recordSwitch(acc.ID, next.ID)
 						routeRes, routeErr = res2, nil
 						acc = next
 						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
@@ -2528,6 +2586,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 				defer cancel2()
 				if res2, err2 := s.chatWithAccountReasoning(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
+					task.recordSwitch(acc.ID, next.ID)
 					res = res2
 					acc = next
 					err = nil
@@ -2644,6 +2703,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				defer cancel2()
 				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
 				if err2 == nil {
+					task.recordSwitch(acc.ID, next.ID)
 					res = res2
 					acc = next
 					err = nil
@@ -2656,6 +2716,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if err != nil {
 		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+		if task != nil {
+			task.recordFailure(err)
+		}
 		if convReused {
 			s.invalidateConvCache(acc.ID, convCacheModel)
 			log.Printf("[conv-cache] invalidated account=%s model=%s after error: %v", acc.ID, convCacheModel, err)
@@ -2744,6 +2807,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				}
 			}
 			calls, _ = validateCalls("native-recovery", calls)
+			calls = filterCompletedCalls(calls, ledger)
 			if parsed && len(calls) > 0 {
 				scope := fmt.Sprintf("%d:%v:native-recovery", len(body.Messages), completedCallIDs(ledger))
 				for i := range calls {
@@ -2763,6 +2827,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if len(toolMaps) > 0 && !completionEvidenceAllows(res.Text, ledger) {
 		res.Text = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
 	}
+	// Honor an explicit output cap on the final answer. Tool-call responses
+	// returned above are never truncated (capping JSON would corrupt the call).
+	res.Text = capOutputTokens(res.Text, effectiveMaxOutput(&body))
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
@@ -2781,7 +2848,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// content-policy handling, and completion-evidence normalization, but before
 	// either streaming or non-streaming client output.
 	if res.ConversationID != "" {
-		s.bindConversation(acc, &body, r, res, prompt, startedAt)
+		s.bindConversation(acc, &body, r, res, prompt, startedAt, task)
 		s.storeConvCache(acc.ID, convCacheModel, res, tone, cleanWorkspaceToolMisjudgments(body.Messages), convReused)
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
@@ -2843,7 +2910,12 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// OpenAI 要求的 usage 字段。
 	pt := EstimateTokens(prompt)
 	ct := EstimateTokens(res.Text)
-	jsonOut(w, map[string]any{
+	meta := compatM365Metadata(res)
+	if params, ok := ignoredSamplingParams(&body); ok {
+		meta["ignored_parameters"] = params
+		meta["sampling_note"] = samplingNote
+	}
+	completion := map[string]any{
 		"id":      id,
 		"object":  "chat.completion",
 		"created": created,
@@ -2853,13 +2925,17 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			"message":       assistant,
 			"finish_reason": "stop",
 		}},
-		"m365": compatM365Metadata(res),
+		"m365": meta,
 		"usage": map[string]any{
 			"prompt_tokens":     pt,
 			"completion_tokens": ct,
 			"total_tokens":      pt + ct,
 		},
-	})
+	}
+	if len(body.Metadata) > 0 {
+		completion["metadata"] = body.Metadata
+	}
+	jsonOut(w, completion)
 }
 
 func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.Request, body *oaiReq, prompt, answer string, startedAt time.Time) {
@@ -2929,9 +3005,15 @@ const sessionHeaderName = "X-M365-Session-Id"
 // bindConversation 在请求完成后登记会话解析器索引与缓存统计，流式与非流式
 // 路径共用。会话为内容键，云端的对话由 auto_cleanup 按 2h 闲置窗口回收，
 // 这里不再做"用完即删"，否则复用永远不可能命中。
-func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time) {
+func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time, task *taskLedger) {
 	if res.ConversationID == "" {
 		return
+	}
+	if task != nil {
+		// Fold this turn's tool evidence into the persistent ledger and pin it
+		// to the account/conversation that actually served the task.
+		task.mergeEvidence(buildAgentLedger(body.Messages))
+		task.bind(acc.ID, res.ConversationID, res.SessionID)
 	}
 	historyBody := *body
 	historyBody.Messages = append(cloneMessages(body.Messages), oaiMsg{
@@ -2939,7 +3021,7 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 		Content:          res.Text,
 		ReasoningContent: res.Reasoning,
 	})
-	s.sessionResolver.Bind(res.SessionID, res.ConversationID, acc.ID, &historyBody, "", r)
+	s.sessionResolver.BindWithTask(res.SessionID, res.ConversationID, acc.ID, &historyBody, "", r, task)
 	s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
 	if s.conversationManager.ShouldCleanup() {
 		if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {

@@ -20,7 +20,7 @@ var (
 )
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
-	jsonOut(w, map[string]any{"version": Version, "commit": Commit, "buildTime": BuildTime, "go": runtime.Version(), "uptimeSeconds": int(time.Since(startedAt).Seconds()), "accounts": len(s.tokens.List()), "proxyPool": len(outbound.ProxyPoolStatus())})
+	jsonOut(w, map[string]any{"version": Version, "commit": Commit, "buildTime": BuildTime, "go": runtime.Version(), "uptimeSeconds": int(time.Since(startedAt).Seconds()), "accounts": len(s.tokens.List()), "proxyPool": len(outbound.ProxyPoolStatus()), "persist": PersistFailureStats()})
 }
 
 const latestReleaseURL = "https://api.github.com/repos/yhw5231/m365-copilot2api/releases/latest"
