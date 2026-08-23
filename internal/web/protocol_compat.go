@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"m365-copilot2api/internal/chathub"
+
+	"github.com/google/uuid"
 )
 
 // responsesRequest is the OpenAI Responses API request subset supported by the gateway.
@@ -250,12 +252,24 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 				continue
 			case "function_call_output":
 				id, _ := m["call_id"].(string)
+				if id == "" {
+					id, _ = m["id"].(string)
+				}
 				o.Messages = append(o.Messages, oaiMsg{Role: "tool", ToolCallID: id, Content: m["output"]})
 			case "custom_tool_call_output":
 				id, _ := m["call_id"].(string)
+				if id == "" {
+					id, _ = m["id"].(string)
+				}
 				o.Messages = append(o.Messages, oaiMsg{Role: "tool", ToolCallID: id, Content: m["output"]})
 			case "function_call":
-				id, _ := m["call_id"].(string)
+				// Responses clients replay a prior tool call as a
+				// function_call item. The canonical pairing key is `call_id`,
+				// but some clients (e.g. the DSH harness) replay the item with
+				// only the item `id`. Falling back keeps the tool conversation
+				// valid instead of failing the whole request with a 400
+				// ("assistant tool call missing id").
+				id := responsesToolCallID(m)
 				name, _ := m["name"].(string)
 				args := m["arguments"]
 				if s, ok := args.(string); ok {
@@ -266,7 +280,7 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 				}
 				o.Messages = append(o.Messages, oaiMsg{Role: "assistant", ToolCalls: []map[string]any{{"id": id, "type": "function", "function": map[string]any{"name": name, "arguments": mustJSON(args)}}}})
 			case "custom_tool_call":
-				id, _ := m["call_id"].(string)
+				id := responsesToolCallID(m)
 				name, _ := m["name"].(string)
 				input, _ := m["input"].(string)
 				o.Messages = append(o.Messages, oaiMsg{Role: "assistant", ToolCalls: []map[string]any{{"id": id, "type": "custom", "function": map[string]any{"name": name, "arguments": mustJSON(map[string]any{"input": input})}}}})
@@ -437,4 +451,19 @@ func (r anthropicRequest) openAI() (oaiReq, error) {
 		}
 	}
 	return o, nil
+}
+
+// responsesToolCallID resolves the id used for a replayed Responses tool call.
+// The canonical pairing key is `call_id`; when a client replays the item
+// without one, fall back to the item's own `id`, and finally to a generated
+// id so the assistant tool call is never forwarded with an empty id (which
+// the tool-conversation validator rejects with a 400).
+func responsesToolCallID(m map[string]any) string {
+	if id, _ := m["call_id"].(string); id != "" {
+		return id
+	}
+	if id, _ := m["id"].(string); id != "" {
+		return id
+	}
+	return "call_" + uuid.NewString()
 }

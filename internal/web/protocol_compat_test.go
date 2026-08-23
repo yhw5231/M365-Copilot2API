@@ -88,6 +88,54 @@ func TestResponsesCustomToolOutputToOpenAI(t *testing.T) {
 	}
 }
 
+// TestResponsesFunctionCallWithoutCallIDFallsBackToItemID reproduces the
+// "assistant tool call missing id" 400: some Responses clients (e.g. the DSH
+// harness) replay an assistant tool call item carrying only the item `id` and
+// no `call_id`. The converter must fall back to the item id (and generate a
+// stable id as a last resort) so the tool conversation stays valid.
+func TestResponsesFunctionCallWithoutCallIDFallsBackToItemID(t *testing.T) {
+	r := responsesRequest{Model: "m", Input: []any{
+		map[string]any{"type": "function_call", "id": "fc_goal", "name": "create_goal", "arguments": `{"objective":"x"}`},
+		map[string]any{"type": "function_call_output", "id": "fo_1", "call_id": "fc_goal", "output": "created"},
+		map[string]any{"type": "message", "role": "user", "content": "continue"},
+	}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Messages) != 3 || o.Messages[0].Role != "assistant" || len(o.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("messages=%#v", o.Messages)
+	}
+	if id, _ := o.Messages[0].ToolCalls[0]["id"].(string); id == "" {
+		t.Fatalf("assistant tool call id must not be empty: %#v", o.Messages[0].ToolCalls[0])
+	}
+	if err := validateToolConversation(o.Messages); err != nil {
+		t.Fatalf("tool continuation rejected: %v", err)
+	}
+}
+
+// TestResponsesCustomToolCallWithoutCallIDFallsBackToItemID covers the same
+// replay scenario for custom_tool_call items (the custom exec bridge).
+func TestResponsesCustomToolCallWithoutCallIDFallsBackToItemID(t *testing.T) {
+	r := responsesRequest{Model: "m", Input: []any{
+		map[string]any{"type": "custom_tool_call", "id": "ctc_exec", "name": "exec", "input": "ls"},
+		map[string]any{"type": "custom_tool_call_output", "id": "cto_1", "call_id": "ctc_exec", "output": "file.txt"},
+	}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Messages) != 2 || o.Messages[0].Role != "assistant" || len(o.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("messages=%#v", o.Messages)
+	}
+	if id, _ := o.Messages[0].ToolCalls[0]["id"].(string); id == "" {
+		t.Fatalf("custom tool call id must not be empty: %#v", o.Messages[0].ToolCalls[0])
+	}
+	if err := validateToolConversation(o.Messages); err != nil {
+		t.Fatalf("custom tool continuation rejected: %v", err)
+	}
+}
+
 func TestResponsesParallelToolCallsAndMetadata(t *testing.T) {
 	false_ := false
 	true_ := true

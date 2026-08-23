@@ -149,6 +149,11 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 					st = &tcState{ItemID: prefix + uuid.NewString(), Type: typ}
 					calls[idx] = st
 					item["id"] = st.ItemID
+					// Give the in-progress item a non-empty call_id from the
+					// start: a client that replays this item before the
+					// completed event would otherwise forward an empty
+					// pairing key and hit the "tool call missing id" 400.
+					item["call_id"] = st.ItemID
 					emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": idx, "item": item})
 				}
 				if v, ok := tc["id"].(string); ok {
@@ -210,16 +215,25 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			if st == nil {
 				continue
 			}
+			// The upstream OpenAI-compatible stream normally carries a tool call
+			// id in its first delta. If it does not, fall back to the adapter's
+			// own item id so the completed item always exposes a non-empty
+			// call_id — clients replay it on the next turn and an empty id here
+			// would surface as a "tool call missing id" 400 later.
+			callID := st.ID
+			if callID == "" {
+				callID = st.ItemID
+			}
 			if st.Type == "custom" {
 				input := customToolInput(st.Args)
-				item := map[string]any{"type": "custom_tool_call", "id": st.ItemID, "call_id": st.ID, "name": st.Name, "input": input, "status": "completed"}
+				item := map[string]any{"type": "custom_tool_call", "id": st.ItemID, "call_id": callID, "name": st.Name, "input": input, "status": "completed"}
 				output = append(output, item)
 				emit("response.custom_tool_call_input.delta", map[string]any{"type": "response.custom_tool_call_input.delta", "output_index": i, "item_id": item["id"], "delta": input})
 				emit("response.custom_tool_call_input.done", map[string]any{"type": "response.custom_tool_call_input.done", "output_index": i, "item_id": item["id"], "input": input})
 				emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
 				continue
 			}
-			item := map[string]any{"type": "function_call", "id": st.ItemID, "call_id": st.ID, "name": st.Name, "arguments": st.Args, "status": "completed"}
+			item := map[string]any{"type": "function_call", "id": st.ItemID, "call_id": callID, "name": st.Name, "arguments": st.Args, "status": "completed"}
 			output = append(output, item)
 			emit("response.function_call_arguments.done", map[string]any{"type": "response.function_call_arguments.done", "output_index": i, "item_id": st.ItemID, "arguments": st.Args})
 			emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
