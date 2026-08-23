@@ -636,8 +636,11 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 	list := s.tokens.List()
 	cfg := currentSettings()
 	loc, err := time.LoadLocation(strings.TrimSpace(cfg.TimeZone))
-	if err != nil {
-		loc, _ = time.LoadLocation("Asia/Shanghai")
+	if err != nil || loc == nil {
+		// Minimal container images may not include the IANA time-zone database.
+		// Use a non-nil fixed UTC+08:00 fallback so account statistics cannot
+		// panic in Time.In when Asia/Shanghai is unavailable.
+		loc = time.FixedZone("Asia/Shanghai", 8*60*60)
 	}
 	usageStats := s.usage.accountStats(time.Now(), loc)
 	concurrency := s.accountConcurrency.Snapshot()
