@@ -1,1 +1,94 @@
-<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>M365 Copilot2API · 调试日志</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><script src="https://unpkg.com/lucide@latest"></script><style>:root{color-scheme:light dark;--bg:#f5f5f7;--surface:rgba(255,255,255,0.72);--surface-border:rgba(255,255,255,0.5);--line:rgba(0,0,0,0.06);--text:#1d1d1f;--muted:#86868b;--accent:#0071e3;--green:#34c759;--orange:#ff9f0a;--radius:12px;--radius-sm:8px;--shadow:0 8px 32px rgba(0,0,0,0.06);--ease-out:cubic-bezier(0.23,1,0.32,1)}@media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--surface:rgba(44,44,46,0.75);--surface-border:rgba(255,255,255,0.06);--line:rgba(255,255,255,0.06);--text:#f5f5f7;--muted:#98989d;--accent:#0a84ff;--shadow:0 8px 32px rgba(0,0,0,0.25)}}body{font-family:"Inter",-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;font-size:14px;margin:0;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;transition:background .3s ease,color .3s ease}main{max-width:1200px;margin:30px auto;padding:0 20px;animation:fadeIn .4s var(--ease-out)}@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}}h1{font-size:24px;font-weight:700;letter-spacing:-0.02em}.stats{display:flex;gap:12px;flex-wrap:wrap}.card{background:var(--surface);-webkit-backdrop-filter:blur(40px) saturate(180%);backdrop-filter:blur(40px) saturate(180%);border:1px solid var(--surface-border);border-radius:var(--radius);padding:16px;min-width:130px;flex:1;box-shadow:var(--shadow);transition:transform .2s var(--ease-out),box-shadow .2s ease}.card:hover{transform:translateY(-2px);box-shadow:0 12px 40px rgba(0,0,0,0.08)}@media(prefers-color-scheme:dark){.card:hover{box-shadow:0 12px 40px rgba(0,0,0,0.3)}}.value{font-size:24px;font-weight:700;letter-spacing:-0.02em;display:block;margin-top:4px}table{width:100%;border-collapse:collapse;margin-top:20px;background:var(--surface);-webkit-backdrop-filter:blur(40px) saturate(180%);backdrop-filter:blur(40px) saturate(180%);border:1px solid var(--surface-border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}th,td{padding:10px 14px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.05em}tr:hover td{background:rgba(0,113,227,0.03)}@media(prefers-color-scheme:dark){tr:hover td{background:rgba(10,132,255,0.04)}}tr:last-child td{border-bottom:0}.ok{color:var(--green)}.hit{color:var(--orange)}.muted{color:var(--muted)}pre{padding:16px;background:var(--surface);-webkit-backdrop-filter:blur(40px) saturate(180%);backdrop-filter:blur(40px) saturate(180%);border:1px solid var(--surface-border);border-radius:var(--radius-sm);white-space:pre-wrap;overflow:auto;max-height:520px;font-size:13px;line-height:1.5;font-family:SF Mono,SFMono-Regular,Menlo,Consolas,monospace;box-shadow:var(--shadow)}.hidden{display:none}.back{margin:15px 0;border:1px solid var(--line);background:var(--surface);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--text);border-radius:var(--radius-sm);padding:6px 14px;cursor:pointer;font:inherit;font-size:13px;font-weight:600;font-family:inherit;transition:background .15s ease,border-color .15s ease,transform .15s var(--ease-out);min-height:32px}.back:hover{background:var(--bg)}.back:active{transform:scale(0.97)}@media(max-width:600px){.stats{flex-direction:column}main{margin:15px auto;padding:0 12px}th,td{padding:8px 10px;font-size:12px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}}</style><main><h1>调试日志</h1><p class="muted">记录客户端请求、上游摘要与网关最终响应。token 为估算值。</p><section class="stats"><div class="card">请求数<span id="n" class="value">—</span></div><div class="card">输入 token<span id="in" class="value">—</span></div><div class="card">输出 token<span id="out" class="value">—</span></div><div class="card">缓存命中<span id="hit" class="value">—</span></div></section><section id="list"><table><thead><tr><th>时间</th><th>路径</th><th>状态</th><th>耗时</th><th>输入</th><th>输出</th><th>缓存</th><th>ID</th></tr></thead><tbody id="rows"></tbody></table></section><section id="detail" class="hidden"><button class="back" onclick="showList()"><i data-lucide="arrow-left" style="width:14px;height:14px"></i> 返回列表</button><h2 id="title"></h2><h3 style="font-size:13px;font-weight:600;margin:16px 0 8px">客户端发送的信息</h3><pre id="client"></pre><h3 style="font-size:13px;font-weight:600;margin:16px 0 8px">上游返回的信息</h3><pre id="upstream"></pre><h3 style="font-size:13px;font-weight:600;margin:16px 0 8px">网关处理后的信息</h3><pre id="gateway"></pre></section></main><script>try{lucide.createIcons()}catch(e){};const $=x=>document.getElementById(x);let data=[];function esc(x){return String(x??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}async function load(){let r=await fetch('/api/admin/debug/logs'),d=await r.json();data=d.records||[];$('n').textContent=data.length;$('in').textContent=data.reduce((a,x)=>a+x.inputTokens,0);$('out').textContent=data.reduce((a,x)=>a+x.outputTokens,0);$('hit').textContent=data.filter(x=>x.cacheHit).length;let t=$('rows');t.innerHTML=data.map(x=>'<tr onclick="showDetail('+data.indexOf(x)+')"><td class="muted">'+esc(x.at)+'</td><td><code>'+esc(x.method)+' '+esc(x.path)+'</code></td><td>'+esc(x.status)+'</td><td>'+esc(x.durationMs)+'ms</td><td>'+esc(x.inputTokens)+'</td><td>'+esc(x.outputTokens)+'</td><td class="'+(x.cacheHit?'hit':'muted')+'">'+(x.cacheHit?'命中':'—')+'</td><td class="muted"><code>'+esc(x.id)+'</code></td></tr>').join('')||'<tr><td colspan="8" class="muted" style="text-align:center;padding:40px">暂无记录</td></tr>'}function showDetail(i){let x=data[i];$('list').classList.add('hidden');$('detail').classList.remove('hidden');$('title').textContent=x.method+' '+x.path;$('client').textContent=x.clientPayload||'(无)';$('upstream').textContent=x.upstreamPayload||'(无)';$('gateway').textContent=x.gatewayPayload||'(无)'}function showList(){$('detail').classList.add('hidden');$('list').classList.remove('hidden')}load();</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>M365 Copilot2API · 调试日志</title>
+  <script src="/vendor/lucide.js"></script>
+  <style>
+    :root{color-scheme:light dark;--bg:#f5f5f7;--surface:#fff;--line:rgba(0,0,0,.08);--text:#1d1d1f;--muted:#6e6e73;--accent:#0071e3;--green:#248a3d;--orange:#c93400;--radius:12px}
+    @media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--surface:#2c2c2e;--line:rgba(255,255,255,.1);--text:#f5f5f7;--muted:#98989d;--accent:#0a84ff;--green:#30d158;--orange:#ff9f0a}}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1280px;margin:28px auto;padding:0 20px}h1{margin:0 0 18px;font-size:24px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}.card,.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}.card{padding:14px}.label{color:var(--muted);font-size:12px}.value{font-size:22px;font-weight:700;margin-top:4px}.panel{overflow:hidden}.toolbar,.pager{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}.pager{justify-content:flex-end;border-top:1px solid var(--line);border-bottom:0}.spacer{flex:1}button,select{border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);padding:7px 11px}button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;white-space:nowrap}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:12px}tbody tr{cursor:pointer}tbody tr:hover{background:color-mix(in srgb,var(--accent) 7%,transparent)}.tokens{display:flex;gap:8px}.token{font-variant-numeric:tabular-nums}.muted{color:var(--muted)}.error{color:var(--orange)}dialog{width:min(960px,calc(100vw - 32px));max-height:85vh;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--text);padding:0}dialog::backdrop{background:rgba(0,0,0,.45)}.dialog-head{display:flex;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}.dialog-body{padding:16px;overflow:auto}.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.detail{border:1px solid var(--line);border-radius:10px;padding:12px}.detail h3{margin:0 0 8px;font-size:14px}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace}.empty{text-align:center;color:var(--muted);padding:30px}.status{font-weight:600}.status-ok{color:var(--green)}.status-error{color:var(--orange)}
+    .trace-token-cell,.trace-latency-cell{font-size:12px;color:var(--muted);white-space:normal!important;min-width:0}.trace-token-cell{width:170px}.trace-latency-cell{width:105px}.trace-token-cell div,.trace-latency-cell div{display:flex;align-items:center;justify-content:flex-start;gap:6px;line-height:1.7;text-align:left}.trace-token-cell b,.trace-latency-cell b{font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap}.trace-token-cell span,.trace-latency-cell span{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:left}.latency-fast{color:var(--green)}.latency-warn{color:var(--orange)}.latency-slow{color:#ff453a}
+  </style>
+</head>
+<body>
+<main>
+  <h1>调试日志</h1>
+  <section class="stats" aria-label="当前页汇总">
+    <div class="card"><div class="label">记录总数</div><div class="value" id="total">0</div></div>
+    <div class="card"><div class="label">新增输入 Token</div><div class="value" id="sumInput">0</div></div>
+    <div class="card"><div class="label">缓存 Token</div><div class="value" id="sumCached">0</div></div>
+    <div class="card"><div class="label">输出 Token</div><div class="value" id="sumOutput">0</div></div>
+    <div class="card"><div class="label">缓存占输入总量</div><div class="value" id="cachePercent">-</div></div>
+  </section>
+  <section class="panel">
+    <div class="toolbar">
+      <strong>请求记录</strong><span class="muted" id="pageSummary"></span><span class="spacer"></span>
+      <label>每页 <select id="pageSize"><option>25</option><option selected>50</option><option>100</option><option>200</option></select></label>
+      <button id="refresh" type="button">刷新</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>时间</th><th>请求</th><th>状态</th><th>Token</th><th>耗时</th><th>账户</th></tr></thead>
+        <tbody id="records"><tr><td colspan="6" class="empty">正在加载…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="pager"><button id="prev" type="button">上一页</button><span id="pageLabel">第 1 页</span><button id="next" type="button">下一页</button></div>
+  </section>
+</main>
+<dialog id="detailDialog">
+  <div class="dialog-head"><strong id="detailTitle">请求详情</strong><span class="spacer"></span><button id="closeDetail" type="button">关闭</button></div>
+  <div class="dialog-body"><div class="detail-grid"><section class="detail"><h3>客户端请求</h3><pre id="clientDetail">-</pre></section><section class="detail"><h3>上游交互</h3><pre id="upstreamDetail">-</pre></section><section class="detail"><h3>网关响应</h3><pre id="gatewayDetail">-</pre></section></div></div>
+</dialog>
+<script>
+'use strict';
+const state={page:1,pageSize:50,total:0,totalPages:0};
+const $=id=>document.getElementById(id);
+const finiteNumber=value=>{const n=Number(value);return Number.isFinite(n)?n:null};
+const tokenNumber=value=>{const n=finiteNumber(value);return n===null?null:Math.max(0,n)};
+function formatToken(value){const n=tokenNumber(value);if(n===null)return '-';if(n>=1000000)return `${trim(n/1000000)}M`;if(n>=1000)return `${trim(n/1000)}K`;return String(Math.round(n))}
+function trim(value){return value>=100?value.toFixed(0):value>=10?value.toFixed(1).replace(/\.0$/,''):value.toFixed(2).replace(/0+$/,'').replace(/\.$/,'')}
+function formatLatency(value){const ms=finiteNumber(value);if(ms===null||ms<0)return '-';if(ms<1000)return `${Math.round(ms)} ms`;if(ms<60000)return `${trim(ms/1000)} 秒`;const minutes=Math.floor(ms/60000);const seconds=Math.round((ms%60000)/1000);return seconds?`${minutes} 分 ${seconds} 秒`:`${minutes} 分`}
+function escapeHTML(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
+function cacheRatio(record){const fresh=tokenNumber(record.inputTokens);const cached=tokenNumber(record.cachedTokens);if(fresh===null||cached===null)return null;const total=fresh+cached;return total>0?cached/total*100:null}
+function formatPercent(value){return Number.isFinite(value)?`${value.toFixed(1)}%`:'-'}
+function safeJSON(value){if(value===undefined||value===null)return '-';try{return JSON.stringify(value,null,2)}catch{return String(value)}}
+function latencyClass(value){const ms=finiteNumber(value)??0;if(ms>=15000)return 'latency-slow';if(ms>=5000)return 'latency-warn';return 'latency-fast'}
+function render(records){
+  const body=$('records');
+  if(!records.length){body.innerHTML='<tr><td colspan="6" class="empty">当前页暂无记录</td></tr>'}else{
+    body.innerHTML=records.map(record=>{
+      const status=finiteNumber(record.status)??0;
+      const ratio=cacheRatio(record);
+      const input=tokenNumber(record.inputTokens)??0;
+      const cached=tokenNumber(record.cachedTokens)??0;
+      const inputTotal=input+cached;
+      return `<tr data-id="${escapeHTML(record.id)}"><td>${escapeHTML(new Date(record.at).toLocaleString())}</td><td><strong>${escapeHTML(record.method)}</strong> ${escapeHTML(record.path)}</td><td class="status ${status>=400?'status-error':'status-ok'}">${status||'-'}</td><td class="trace-token-cell" title="缓存占输入总量 ${formatPercent(ratio)}"><div><b>总输入 / 输出</b><span>${formatToken(inputTotal)} / ${formatToken(record.outputTokens)}</span></div><div><b>新增</b><span>${formatToken(input)}</span></div><div><b>缓存</b><span>${formatToken(cached)} · ${formatPercent(ratio)}</span></div></td><td class="trace-latency-cell" title="绿色：小于 5 秒；黄色：5–15 秒；红色：15 秒以上"><div><b>延迟</b><span class="${latencyClass(record.durationMs)}">${formatLatency(record.durationMs)}</span></div><div><b>首字</b><span class="${latencyClass(record.ttftMs)}">${formatLatency(record.ttftMs)}</span></div></td><td>${escapeHTML(record.accountEmail||'-')}</td></tr>`
+    }).join('');
+  }
+  body.querySelectorAll('tr[data-id]').forEach(row=>row.addEventListener('click',()=>showDetail(row.dataset.id)));
+  const sums=records.reduce((acc,record)=>{const input=tokenNumber(record.inputTokens);const cached=tokenNumber(record.cachedTokens);const output=tokenNumber(record.outputTokens);if(input!==null)acc.input+=input;if(cached!==null)acc.cached+=cached;if(output!==null)acc.output+=output;return acc},{input:0,cached:0,output:0});
+  $('total').textContent=formatToken(state.total);
+  $('sumInput').textContent=formatToken(sums.input);
+  $('sumCached').textContent=formatToken(sums.cached);
+  $('sumOutput').textContent=formatToken(sums.output);
+  $('cachePercent').textContent=formatPercent(sums.input+sums.cached>0?sums.cached/(sums.input+sums.cached)*100:NaN);
+  $('pageLabel').textContent=`第 ${state.page} / ${Math.max(state.totalPages,1)} 页`;
+  $('pageSummary').textContent=`共 ${state.total} 条，汇总仅统计当前页`;
+  $('prev').disabled=state.page<=1;
+  $('next').disabled=state.totalPages===0||state.page>=state.totalPages;
+}
+async function load(){
+  $('records').innerHTML='<tr><td colspan="6" class="empty">正在加载…</td></tr>';
+  try{const response=await fetch(`/admin/debug?${new URLSearchParams({page:String(state.page),pageSize:String(state.pageSize)})}`,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();const records=Array.isArray(data.records)?data.records:[];state.total=tokenNumber(data.total)??records.length;state.totalPages=tokenNumber(data.totalPages)??Math.ceil(state.total/state.pageSize);if(state.totalPages>0&&state.page>state.totalPages){state.page=state.totalPages;return load()}render(records)}catch(error){$('records').innerHTML=`<tr><td colspan="6" class="empty error">加载失败：${escapeHTML(error.message)}</td></tr>`}
+}
+async function showDetail(id){
+  try{const response=await fetch(`/admin/debug/detail?id=${encodeURIComponent(id)}`,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const record=await response.json();$('detailTitle').textContent=`请求详情 · ${record.id||id}`;$('clientDetail').textContent=safeJSON(record.client);$('upstreamDetail').textContent=safeJSON(record.upstream);$('gatewayDetail').textContent=safeJSON(record.gateway);$('detailDialog').showModal()}catch(error){alert(`详情加载失败：${error.message}`)}
+}
+$('refresh').addEventListener('click',load);$('prev').addEventListener('click',()=>{if(state.page>1){state.page--;load()}});$('next').addEventListener('click',()=>{if(state.page<state.totalPages){state.page++;load()}});$('pageSize').addEventListener('change',event=>{state.pageSize=Number(event.target.value);state.page=1;load()});$('closeDetail').addEventListener('click',()=>$('detailDialog').close());
+if(window.lucide)window.lucide.createIcons();
+load();
+</script>
+</body>
+</html>
