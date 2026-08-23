@@ -637,7 +637,7 @@ if (response.output_text) {
               </div>
             </div>
           </div>
-          <table class="table"><thead><tr><th>Account</th><th>Calls</th><th>状态</th><th>Updated</th><th>Scheduling</th><th>Proxy</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody></table>
+          <div style="overflow-x:auto"><table class="table"><thead><tr><th>Account</th><th>Account ID</th><th>Queue position</th><th>Concurrency</th><th>Total calls / today tokens</th><th>Last request</th><th>Status</th><th>Enabled</th><th>Proxy</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="10" class="empty">加载中...</td></tr></tbody></table></div>
         </div>
       </section>
 
@@ -729,7 +729,7 @@ if (response.output_text) {
       <!-- Settings -->
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
-        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:9090"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" data-action="save-settings">Save settings</button></div></div></div>
+        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:9090"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="setTimeZone">Time zone</label><select class="form-input" id="setTimeZone"><option value="Asia/Shanghai">北京时间 (Asia/Shanghai, UTC+08:00)</option><option value="UTC">UTC</option><option value="Asia/Tokyo">Asia/Tokyo (UTC+09:00)</option><option value="Asia/Singapore">Asia/Singapore (UTC+08:00)</option><option value="Europe/London">Europe/London</option><option value="Europe/Berlin">Europe/Berlin</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Denver">America/Denver</option><option value="America/Los_Angeles">America/Los_Angeles</option></select><p class="form-hint">系统内所有日期、时间显示及每日统计边界均使用此时区，默认为北京时间。</p></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" data-action="save-settings">Save settings</button></div></div></div>
         <div class="card" style="margin-top:16px"><div class="card-head"><span class="card-title">Change administrator password</span></div><div class="card-body"><form id="changePasswordForm" data-action="change-admin-password" style="max-width:520px"><div class="form-group"><label class="form-label" for="currentAdminPassword">Current password</label><div class="password-wrap"><input class="form-input" id="currentAdminPassword" type="password" autocomplete="current-password" required><button type="button" class="password-toggle" data-action="toggle-admin-password" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><div class="form-group"><label class="form-label" for="newAdminPassword">New password (at least 6 characters)</label><div class="password-wrap"><input class="form-input" id="newAdminPassword" type="password" autocomplete="new-password" minlength="6" required><button type="button" class="password-toggle" data-action="toggle-admin-password" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><div class="form-group"><label class="form-label" for="confirmAdminPassword">Confirm new password</label><div class="password-wrap"><input class="form-input" id="confirmAdminPassword" type="password" autocomplete="new-password" minlength="6" required><button type="button" class="password-toggle" data-action="toggle-admin-password" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><button class="btn primary" id="changePasswordButton" type="submit"><i data-lucide="key-round" style="width:14px;height:14px"></i> Change password</button></form><p class="form-hint" style="margin-top:12px">Changing the password signs out all administrator sessions. You will be redirected to the login page.</p></div></div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
           <div><h2 style="font-size:18px;font-weight:700">Model routing</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Enable or disable model routes and set each model's default reasoning level. Disabled models are hidden from the model list and rejected at request time.</p></div>
@@ -806,6 +806,14 @@ if (response.output_text) {
 
 <script>
 const $=id=>document.getElementById(id);
+let systemTimeZone='Asia/Shanghai';
+function formatSystemTime(value){
+  if(!value)return '-';
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime()))return '-';
+  try{return date.toLocaleString(undefined,{timeZone:systemTimeZone});}
+  catch(_){return date.toLocaleString(undefined,{timeZone:'Asia/Shanghai'});}
+}
 const pages={dashboard:'Dashboard',usage:'Usage',accounts:'Accounts',apikeys:'API Keys',conversations:'Conversations',proxies:'Proxy Pool',modeltest:'Model Test',settings:'Settings'};
 const localeStorageKey='m365_locale';
 const localeSelectionKey='m365_locale_selected';
@@ -1486,7 +1494,7 @@ async function loadRecentRequests(){
       const tr=document.createElement('tr');
       const time=document.createElement('td');
       time.style.cssText='font-size:12px;color:var(--muted)';
-      time.textContent=new Date(x.time).toLocaleString();
+      time.textContent=formatSystemTime(x.time);
       const model=document.createElement('td');
       model.style.fontSize='12px';
       model.textContent=x.model||'-';
@@ -1531,7 +1539,7 @@ function renderAccounts(){
   if(!list.length){
     const tr=document.createElement('tr');
     const td=document.createElement('td');
-    td.colSpan=7;
+    td.colSpan=10;
     td.className='empty';
     td.textContent='No matching accounts';
     tr.appendChild(td);
@@ -1558,9 +1566,30 @@ function renderAccounts(){
     accountCell.append(avatar,identity);
     identityTd.appendChild(accountCell);
 
+    const idTd=document.createElement('td');
+    idTd.style.cssText='font-size:11px;color:var(--muted);max-width:180px;word-break:break-all';
+    idTd.textContent=x.id||'-';
+
+    const queueTd=document.createElement('td');
+    queueTd.style.cssText='font-size:12px;white-space:nowrap';
+    queueTd.textContent=Number(x.queuePosition)>0?String(x.queuePosition):'-';
+
+    const concurrencyTd=document.createElement('td');
+    const currentConcurrency=Math.max(0,Number(x.currentConcurrency)||0);
+    const maxConcurrency=Math.max(0,Number(x.maxConcurrency)||0);
+    const concurrencyBadge=document.createElement('span');
+    concurrencyBadge.style.cssText=currentConcurrency>0?'display:inline-flex;padding:3px 8px;border-radius:999px;background:rgba(255,159,10,.16);color:var(--orange);font-size:12px;font-weight:600;white-space:nowrap':'display:inline-flex;padding:3px 8px;border-radius:999px;background:rgba(134,134,139,.12);color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap';
+    concurrencyBadge.textContent=`${currentConcurrency}/${maxConcurrency}`;
+    concurrencyTd.appendChild(concurrencyBadge);
+
     const callsTd=document.createElement('td');
     callsTd.style.cssText='font-size:12px;white-space:nowrap';
-    callsTd.textContent=x.rateLimited?`Limited after ${x.callCount||0} calls`:`Called ${x.callCount||0} times`;
+    callsTd.textContent=`${fmtNum(x.callCount||0)} / ${fmtTok(x.todayTokens||0)}`;
+    if(x.rateLimited)callsTd.title='Account is currently rate limited';
+
+    const lastRequestTd=document.createElement('td');
+    lastRequestTd.style.cssText='font-size:12px;color:var(--muted);white-space:nowrap';
+    lastRequestTd.textContent=x.lastRequestAt?formatSystemTime(x.lastRequestAt):'-';
 
     const statusTd=document.createElement('td');
     const status=document.createElement('span');
@@ -1571,13 +1600,9 @@ function renderAccounts(){
     if(x.status==='cooldown'&&x.cooldownUntil){
       const cooldown=document.createElement('div');
       cooldown.style.cssText='font-size:11px;color:var(--muted);margin-top:3px';
-      cooldown.textContent='Cooldown until '+new Date(x.cooldownUntil).toLocaleString();
+      cooldown.textContent='Cooldown until '+formatSystemTime(x.cooldownUntil);
       statusTd.appendChild(cooldown);
     }
-
-    const updatedTd=document.createElement('td');
-    updatedTd.style.cssText='font-size:12px;color:var(--muted)';
-    updatedTd.textContent=x.updatedAt?new Date(x.updatedAt).toLocaleString():'-';
 
     const scheduleTd=document.createElement('td');
     const scheduleEnabled=x.scheduleEnabled!==false;
@@ -1610,7 +1635,7 @@ function renderAccounts(){
     deleteButton.textContent='Delete';
     actionsTd.appendChild(deleteButton);
 
-    tr.append(identityTd,callsTd,statusTd,updatedTd,scheduleTd,proxyTd,actionsTd);
+    tr.append(identityTd,idTd,queueTd,concurrencyTd,callsTd,lastRequestTd,statusTd,scheduleTd,proxyTd,actionsTd);
     fragment.appendChild(tr);
   });
   tbody.replaceChildren(fragment);
@@ -1667,7 +1692,7 @@ function loadAccounts(){
     }catch(e){
       const tr=document.createElement('tr');
       const td=document.createElement('td');
-      td.colSpan=7;
+      td.colSpan=10;
       td.className='empty';
       td.textContent=e.message;
       tr.appendChild(td);
@@ -1835,7 +1860,7 @@ async function loadKeys(){
   try{
     const d=await api('/api/admin/keys');
     const k=d.keys||[];
-    $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td style="max-width:340px"><code style="display:block;font-size:11px;word-break:break-all;white-space:pre-wrap">${x.raw||x.prefix}</code>${x.raw?`<button class="btn-sm btn" style="margin-top:4px" data-action="copy-key-text" data-key-text="${escAttr(x.raw)}">Copy</button>`:''}</td><td style="font-size:12px;color:var(--muted)">${new Date(x.createdAt).toLocaleString()}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?new Date(x.lastUsedAt).toLocaleString():'-'}</td><td style="text-align:right;white-space:nowrap">
+    $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td style="max-width:340px"><code style="display:block;font-size:11px;word-break:break-all;white-space:pre-wrap">${x.raw||x.prefix}</code>${x.raw?`<button class="btn-sm btn" style="margin-top:4px" data-action="copy-key-text" data-key-text="${escAttr(x.raw)}">Copy</button>`:''}</td><td style="font-size:12px;color:var(--muted)">${formatSystemTime(x.createdAt)}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?formatSystemTime(x.lastUsedAt):'-'}</td><td style="text-align:right;white-space:nowrap">
       <button class="btn-sm btn" data-action="open-use-key" data-key-id="${escAttr(x.id)}">Use key</button>
       <button class="btn-sm btn" data-action="edit-key" data-key-id="${escAttr(x.id)}" data-key-name="${escAttr(x.name)}">Edit</button>
       <button class="btn-sm btn ${x.revoked?'success':'danger'}" data-action="toggle-key" data-key-id="${escAttr(x.id)}" data-revoked="${x.revoked}">${x.revoked?'Enable':'Disable'}</button>
@@ -2037,16 +2062,23 @@ async function loadUsageLogs(){
     const rows=(d.logs||[]).map(x=>{
       const tokens=usageTokenParts(x);
       return `<tr>
-      <td style="font-size:12px;color:var(--muted);white-space:nowrap">${new Date(x.time).toLocaleString()}</td>
+      <td style="font-size:12px;color:var(--muted);white-space:nowrap">${formatSystemTime(x.time)}</td>
       <td class="usage-request-detail">
         <div><b>${esc(x.model||'-')}</b>${x.reasoning_level?' · '+esc(x.reasoning_level):''}</div>
         <div class="usage-detail-line"><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span>${x.stream?' <span class="usage-status">流式</span>':''}</div>
         <div class="usage-detail-line" title="${esc(x.account_email||'')}">${esc(x.account_email||'-')}</div>
         <div class="usage-detail-line"><code title="${esc(x.api_key_prefix||'')}">${esc(x.api_key_prefix||'-')}</code></div>
       </td>
-      <td><span class="token-stack"><span>新增 ${fmtTok(tokens.newInput)}</span><span>缓存 ${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span><span>输出 ${fmtTok(tokens.output)}</span></span></td>
+      <td class="trace-token-cell" title="缓存占输入总量 ${tokens.cachePercent.toFixed(1)}%">
+        <div><b>总输入 / 输出</b><span>${fmtTok(tokens.inputTotal)} / ${fmtTok(tokens.output)}</span></div>
+        <div><b>新增</b><span>${fmtTok(tokens.newInput)}</span></div>
+        <div><b>缓存</b><span>${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span></div>
+      </td>
       <td class="usage-cost" title="仅为本地估算，新增输入、缓存输入和输出分别计价">$${Number(x.estimated_cost_usd||0).toFixed(6)}</td>
-      <td class="usage-latency" title="耗时 / 首字耗时">${fmtDuration(x.duration_ms)} / ${fmtDuration(x.ttft_ms)}</td>
+      <td class="trace-latency-cell" title="绿色：小于 5 秒；黄色：5–15 秒；红色：15 秒以上">
+        <div><b>耗时</b><span class="${traceLatencyClass(x.duration_ms)}">${fmtDuration(x.duration_ms)}</span></div>
+        <div><b>首字耗时</b><span class="${traceLatencyClass(x.ttft_ms)}">${fmtDuration(x.ttft_ms)}</span></div>
+      </td>
       <td>${x.status>=400||x.error?'<span class="usage-status err" title="'+esc(x.error||'')+'">错误</span>':'<span class="usage-status">成功</span>'}</td>
     </tr>`;
     }).join('');
@@ -2430,7 +2462,7 @@ $('convRows').innerHTML=c.length?c.map(x=>{
         <td><button class="conv-link" type="button">${esc(x.chatName||'未命名对话')}</button><div class="conv-meta"><code>${esc(id)}</code></div></td>
         <td>${Number(x.messageCount||0)}</td>
         <td>${esc(x.accountEmail||x.accountId||'-')}</td>
-        <td style="font-size:12px;color:var(--muted)">${updated?new Date(updated).toLocaleString():'-'}</td>
+        <td style="font-size:12px;color:var(--muted)">${updated?formatSystemTime(updated):'-'}</td>
         <td><div style="display:flex;gap:6px"><button class="btn-sm btn" data-conv-action="view">查看</button><button class="btn-sm btn danger" data-conv-action="delete">Delete</button></div></td>
       </tr>`;
     }).join(''):'<tr><td colspan="5" class="empty">No conversations</td></tr>';
@@ -2491,7 +2523,7 @@ function proxyRow(x){
     <td>${badge}</td>
     <td style="font-size:12px;color:var(--muted)">${x.latencyMs>0?x.latencyMs+' ms':'-'}</td>
     <td style="font-size:12px;color:var(--muted)">${x.failures||0}</td>
-    <td style="font-size:12px;color:var(--muted)">${x.cooldownUntil?new Date(x.cooldownUntil).toLocaleString():'-'}</td>
+    <td style="font-size:12px;color:var(--muted)">${x.cooldownUntil?formatSystemTime(x.cooldownUntil):'-'}</td>
     <td style="text-align:right;white-space:nowrap">
       <button class="btn-sm btn" data-action="proxy-check-one" data-proxy-url="${escAttr(x.url)}">检测</button>
       <button class="btn-sm btn danger" data-action="proxy-remove" data-proxy-url="${escAttr(x.url)}">Delete</button>
@@ -2603,7 +2635,8 @@ async function saveSettings(){
   try{
     const listen=$('setListen').value.trim();
     const timeout=$('setTimeout').value.trim();
-    const body={};
+    const timeZone=$('setTimeZone').value.trim()||'Asia/Shanghai';
+    const body={timeZone};
     if(listen)body.listenAddress=listen;
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
@@ -2679,6 +2712,14 @@ async function loadSettings(){
     const s=d.settings||{};
     $('setListen').value=s.listenAddress||'';
     $('setTimeout').value=s.chatTimeoutSeconds!=null?s.chatTimeoutSeconds:'';
+    systemTimeZone=s.timeZone||'Asia/Shanghai';
+    const timeZoneSelect=$('setTimeZone');
+    if(timeZoneSelect){
+      if(![...timeZoneSelect.options].some(option=>option.value===systemTimeZone)){
+        timeZoneSelect.add(new Option(systemTimeZone,systemTimeZone));
+      }
+      timeZoneSelect.value=systemTimeZone;
+    }
     routeCodexModels=d.codexModels||[];
     routeMappings=(d.upstreamMappings&&d.upstreamMappings.length)?d.upstreamMappings:((d.upstreamTones||[]).map(t=>({name:t,tone:t,enabled:true})));
     routeLevels=(d.reasoningLevels||[]).map(x=>x&&x.effort).filter(Boolean);

@@ -45,6 +45,14 @@
 'use strict';
 const state={page:1,pageSize:50,total:0,totalPages:0};
 const $=id=>document.getElementById(id);
+let systemTimeZone='Asia/Shanghai';
+function formatSystemTime(value){
+  if(!value)return '-';
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime()))return '-';
+  try{return date.toLocaleString(undefined,{timeZone:systemTimeZone});}
+  catch(_){return date.toLocaleString(undefined,{timeZone:'Asia/Shanghai'});}
+}
 const finiteNumber=value=>{const n=Number(value);return Number.isFinite(n)?n:null};
 const tokenNumber=value=>{const n=finiteNumber(value);return n===null?null:Math.max(0,n)};
 function formatToken(value){const n=tokenNumber(value);if(n===null)return '-';if(n>=1000000)return `${trim(n/1000000)}M`;if(n>=1000)return `${trim(n/1000)}K`;return String(Math.round(n))}
@@ -64,7 +72,7 @@ function render(records){
       const input=tokenNumber(record.inputTokens)??0;
       const cached=tokenNumber(record.cachedTokens)??0;
       const inputTotal=input+cached;
-      return `<tr data-id="${escapeHTML(record.id)}"><td>${escapeHTML(new Date(record.at).toLocaleString())}</td><td><strong>${escapeHTML(record.method)}</strong> ${escapeHTML(record.path)}</td><td class="status ${status>=400?'status-error':'status-ok'}">${status||'-'}</td><td class="trace-token-cell" title="缓存占输入总量 ${formatPercent(ratio)}"><div><b>总输入 / 输出</b><span>${formatToken(inputTotal)} / ${formatToken(record.outputTokens)}</span></div><div><b>新增</b><span>${formatToken(input)}</span></div><div><b>缓存</b><span>${formatToken(cached)} · ${formatPercent(ratio)}</span></div></td><td class="trace-latency-cell" title="绿色：小于 5 秒；黄色：5–15 秒；红色：15 秒以上"><div><b>耗时</b><span class="${latencyClass(record.durationMs)}">${formatLatency(record.durationMs)}</span></div><div><b>首字耗时</b><span class="${latencyClass(record.ttftMs)}">${formatLatency(record.ttftMs)}</span></div></td><td>${escapeHTML(record.accountEmail||'-')}</td></tr>`
+      return `<tr data-id="${escapeHTML(record.id)}"><td>${escapeHTML(formatSystemTime(record.at))}</td><td><strong>${escapeHTML(record.method)}</strong> ${escapeHTML(record.path)}</td><td class="status ${status>=400?'status-error':'status-ok'}">${status||'-'}</td><td class="trace-token-cell" title="缓存占输入总量 ${formatPercent(ratio)}"><div><b>总输入 / 输出</b><span>${formatToken(inputTotal)} / ${formatToken(record.outputTokens)}</span></div><div><b>新增</b><span>${formatToken(input)}</span></div><div><b>缓存</b><span>${formatToken(cached)} · ${formatPercent(ratio)}</span></div></td><td class="trace-latency-cell" title="绿色：小于 5 秒；黄色：5–15 秒；红色：15 秒以上"><div><b>耗时</b><span class="${latencyClass(record.durationMs)}">${formatLatency(record.durationMs)}</span></div><div><b>首字耗时</b><span class="${latencyClass(record.ttftMs)}">${formatLatency(record.ttftMs)}</span></div></td><td>${escapeHTML(record.accountEmail||'-')}</td></tr>`
     }).join('');
   }
   body.querySelectorAll('tr[data-id]').forEach(row=>row.addEventListener('click',()=>showDetail(row.dataset.id)));
@@ -87,8 +95,17 @@ async function showDetail(id){
   try{const response=await fetch(`/admin/debug/detail?id=${encodeURIComponent(id)}`,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const record=await response.json();$('detailTitle').textContent=`请求详情 · ${record.id||id}`;$('clientDetail').textContent=safeJSON(record.client);$('upstreamDetail').textContent=safeJSON(record.upstream);$('gatewayDetail').textContent=safeJSON(record.gateway);$('detailDialog').showModal()}catch(error){alert(`详情加载失败：${error.message}`)}
 }
 $('refresh').addEventListener('click',load);$('prev').addEventListener('click',()=>{if(state.page>1){state.page--;load()}});$('next').addEventListener('click',()=>{if(state.page<state.totalPages){state.page++;load()}});$('pageSize').addEventListener('change',event=>{state.pageSize=Number(event.target.value);state.page=1;load()});$('closeDetail').addEventListener('click',()=>$('detailDialog').close());
+async function loadSystemTimeZone(){
+  try{
+    const response=await fetch('/api/admin/settings',{credentials:'same-origin',cache:'no-store'});
+    if(response.ok){
+      const data=await response.json();
+      systemTimeZone=data.settings?.timeZone||'Asia/Shanghai';
+    }
+  }catch(_){systemTimeZone='Asia/Shanghai';}
+}
 if(window.lucide)window.lucide.createIcons();
-load();
+(async()=>{await loadSystemTimeZone();await load();})();
 </script>
 </body>
 </html>

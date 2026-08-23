@@ -106,7 +106,9 @@ const state={data:null,view:'conversation'};
 const $=id=>document.getElementById(id);
 
 function escapeHTML(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
-function formatDate(value){if(!value)return '-';const date=new Date(value);return Number.isNaN(date.getTime())?'-':date.toLocaleString();}
+let systemTimeZone='Asia/Shanghai';
+function formatDate(value){if(!value)return '-';const date=new Date(value);if(Number.isNaN(date.getTime()))return '-';try{return date.toLocaleString(undefined,{timeZone:systemTimeZone});}catch(_){return date.toLocaleString(undefined,{timeZone:'Asia/Shanghai'});}}
+async function loadSystemTimeZone(){try{const response=await fetch('/api/admin/settings',{credentials:'same-origin'});if(response.ok){const data=await response.json();systemTimeZone=data.settings?.timeZone||'Asia/Shanghai';}}catch(_){systemTimeZone='Asia/Shanghai';}}
 function pretty(value){if(typeof value==='string'){try{return JSON.stringify(JSON.parse(value),null,2)}catch(_){return value}}return JSON.stringify(value,null,2);}
 function roleMeta(role){
   if(role==='user')return{name:'用户',icon:'user'};
@@ -187,7 +189,7 @@ function setView(view){state.view=view==='json'?'json':'conversation';$('convers
 async function copyJSON(){if(!state.data)return;try{await navigator.clipboard.writeText(JSON.stringify(state.data,null,2));}catch(_){}}
 function goBack(){if(history.length>1)history.back();else location.href='/?page=conversations';}
 lucide.createIcons();
-loadConversation();
+(async()=>{await loadSystemTimeZone();await loadConversation();})();
 </script>
 </body>
 </html>
