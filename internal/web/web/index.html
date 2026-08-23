@@ -496,7 +496,7 @@ if (response.output_text) {
           <div class="stat"><span class="stat-label">请求总数</span><span class="stat-value" id="ug-req">0</span><span class="stat-sub" id="ug-req-sub"></span></div>
           <div class="stat"><span class="stat-label">Token 总数</span><span class="stat-value" id="ug-tok">0</span><span class="stat-sub" id="ug-tok-sub"></span></div>
           <div class="stat"><span class="stat-label">缓存 Token</span><span class="stat-value" id="ug-cache">0</span><span class="stat-unit">Token</span></div>
-          <div class="stat"><span class="stat-label">平均延迟</span><span class="stat-value" id="ug-ms">0</span><span class="stat-unit">ms</span></div>
+          <div class="stat"><span class="stat-label">平均耗时</span><span class="stat-value" id="ug-ms">0</span><span class="stat-unit">ms</span></div>
           <div class="stat"><span class="stat-label">预估费用</span><span class="stat-value" id="ug-cost">$0.000000</span><span class="stat-sub">本地估算</span></div>
         </div>
         <div class="chart-grid">
@@ -532,7 +532,7 @@ if (response.output_text) {
             </div>
           </div>
           <p style="font-size:11px;color:var(--muted);padding:8px 12px 0">启用后，将保留最近 <b id="traceMaxLabel">50</b> 个请求的完整下游请求、上游 ChatHub 请求、上游响应和下游响应，并实时显示状态（处理中、成功或错误）。更早的记录会自动删除。</p>
-          <table class="table"><thead><tr><th>时间</th><th>模型</th><th>推理等级</th><th>端点</th><th>状态</th><th>Token<br><small>总输入与输出 / 新增 / 缓存</small></th><th>延迟 / 首字延迟</th><th>详情</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>时间</th><th>模型</th><th>推理等级</th><th>端点</th><th>状态</th><th>Token<br><small>总输入与输出 / 新增 / 缓存</small></th><th>耗时 / 首字耗时</th><th>详情</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody></table>
           <div class="pagination"><span id="tracePageInfo"></span><button class="btn btn-sm" id="tracePrev" data-action="trace-page" data-direction="-1">上一页</button><button class="btn btn-sm" id="traceNext" data-action="trace-page" data-direction="1">下一页</button></div>
         </div>
         <div class="card" style="margin-top:16px">
@@ -552,7 +552,7 @@ if (response.output_text) {
             <button class="btn btn-sm" data-action="apply-usage-filters"><i data-lucide="filter" style="width:13px;height:13px"></i> 筛选</button>
             <button class="btn btn-sm" data-action="reset-usage-filters"><i data-lucide="x" style="width:13px;height:13px"></i> 重置</button>
           </div>
-          <div class="usage-table-wrap"><table class="table usage-table"><thead><tr><th>时间</th><th>请求明细</th><th>Token<br><small>新增输入 / 缓存 / 输出</small></th><th>预估费用</th><th>延迟 / 首字延迟</th><th>状态</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="6" class="empty">加载中...</td></tr></tbody></table></div>
+          <div class="usage-table-wrap"><table class="table usage-table"><thead><tr><th>时间</th><th>请求明细</th><th>Token<br><small>新增输入 / 缓存 / 输出</small></th><th>预估费用</th><th>耗时 / 首字耗时</th><th>状态</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="6" class="empty">加载中...</td></tr></tbody></table></div>
           <div class="pagination"><span id="ugPageInfo"></span><button class="btn btn-sm" id="ugPrev" data-action="usage-page" data-direction="-1">上一页</button><button class="btn btn-sm" id="ugNext" data-action="usage-page" data-direction="1">下一页</button></div>
         </div>
       </section>
@@ -887,7 +887,7 @@ const localeText={
   '请求总数': {'zh-CN':'总请求数','zh-TW':'總要求數','ja':'リクエスト総数','ko':'총 요청 수','es':'Solicitudes totales','fr':'Requêtes totales','de':'Anfragen gesamt','pt-BR':'Solicitações totais','ru':'Всего запросов','ar':'إجمالي الطلبات'},
   'Token 总数': {'zh-CN':'总 Token','zh-TW':'總 Token','ja':'トークン総数','ko':'총 토큰','es':'Tokens totales','fr':'Tokens totaux','de':'Tokens gesamt','pt-BR':'Tokens totais','ru':'Всего токенов','ar':'إجمالي الرموز'},
   '缓存 Token': {'zh-CN':'缓存命中','zh-TW':'快取命中','ja':'キャッシュされたトークン','ko':'캐시된 토큰','es':'Tokens en caché','fr':'Tokens en cache','de':'Gecachte Tokens','pt-BR':'Tokens em cache','ru':'Токены из кэша','ar':'الرموز المخزنة مؤقتًا'},
-  '平均延迟': {'zh-CN':'平均耗时','zh-TW':'平均耗時','ja':'平均レイテンシ','ko':'평균 지연 시간','es':'Latencia media','fr':'Latence moyenne','de':'Durchschnittliche Latenz','pt-BR':'Latência média','ru':'Средняя задержка','ar':'متوسط زمن الاستجابة'},
+  '平均耗时': {'zh-CN':'平均耗时','zh-TW':'平均耗時','ja':'平均レイテンシ','ko':'평균 지연 시간','es':'Latencia media','fr':'Latence moyenne','de':'Durchschnittliche Latenz','pt-BR':'Latência média','ru':'Средняя задержка','ar':'متوسط زمن الاستجابة'},
   'Token 用量趋势': {'zh-CN':'Token 使用趋势','zh-TW':'Token 使用趨勢','ja':'トークン使用量の傾向','ko':'토큰 사용 추세','es':'Tendencia de uso de tokens','fr':'Tendance d\'utilisation des tokens','de':'Token-Nutzungstrend','pt-BR':'Tendência de uso de tokens','ru':'Тенденция использования токенов','ar':'اتجاه استخدام الرموز'},
   '每日 Token 消耗': {'zh-CN':'按天汇总的 Token 消耗','zh-TW':'按天彙總的 Token 消耗','ja':'日別トークン消費量','ko':'일별 토큰 소비','es':'Consumo diario de tokens','fr':'Consommation quotidienne de tokens','de':'Täglicher Token-Verbrauch','pt-BR':'Consumo diário de tokens','ru':'Ежедневный расход токенов','ar':'الاستهلاك اليومي للرموز'},
   '模型分布': {'zh-CN':'模型分布','zh-TW':'模型分佈','ja':'モデル分布','ko':'모델 분포','es':'Distribución de modelos','fr':'Répartition des modèles','de':'Modellverteilung','pt-BR':'Distribuição de modelos','ru':'Распределение моделей','ar':'توزيع النماذج'},
@@ -2046,7 +2046,7 @@ async function loadUsageLogs(){
       </td>
       <td><span class="token-stack"><span>新增 ${fmtTok(tokens.newInput)}</span><span>缓存 ${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span><span>输出 ${fmtTok(tokens.output)}</span></span></td>
       <td class="usage-cost" title="仅为本地估算，新增输入、缓存输入和输出分别计价">$${Number(x.estimated_cost_usd||0).toFixed(6)}</td>
-      <td class="usage-latency" title="延迟 / 首字延迟">${fmtDuration(x.duration_ms)} / ${fmtDuration(x.ttft_ms)}</td>
+      <td class="usage-latency" title="耗时 / 首字耗时">${fmtDuration(x.duration_ms)} / ${fmtDuration(x.ttft_ms)}</td>
       <td>${x.status>=400||x.error?'<span class="usage-status err" title="'+esc(x.error||'')+'">错误</span>':'<span class="usage-status">成功</span>'}</td>
     </tr>`;
     }).join('');
@@ -2122,8 +2122,8 @@ function traceRowHTML(x){
       <div><b>缓存</b><span>${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span></div>
     </td>
     <td class="trace-latency-cell" title="绿色：小于 5 秒；黄色：5–15 秒；红色：15 秒以上">
-      <div><b>延迟</b><span class="${traceLatencyClass(x.durationMs)}">${fmtDuration(x.durationMs)}</span></div>
-      <div><b>首字</b><span class="${traceLatencyClass(x.ttftMs)}">${fmtDuration(x.ttftMs)}</span></div>
+      <div><b>耗时</b><span class="${traceLatencyClass(x.durationMs)}">${fmtDuration(x.durationMs)}</span></div>
+      <div><b>首字耗时</b><span class="${traceLatencyClass(x.ttftMs)}">${fmtDuration(x.ttftMs)}</span></div>
     </td>
     <td><div style="display:flex;gap:6px;white-space:nowrap"><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="current">查看本次内容</button><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="full">查看完整请求</button></div></td>
   </tr>`;
