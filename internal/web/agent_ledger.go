@@ -86,6 +86,14 @@ func buildAgentLedger(messages []oaiMsg) agentLedger {
 	for _, id := range order {
 		e := calls[id]
 		l.ToolRounds++
+		// An empty tool name is a transport-level corruption (the client saw
+		// "unknown tool" and never executed it), not a model strategy loop.
+		// Exclude it from repetition/pending accounting so a corrupted call
+		// cannot 409 the whole turn.
+		if e.Name == "" {
+			l.Completed = append(l.Completed, e)
+			continue
+		}
 		sig := e.Name + "\x00" + e.Arguments
 		seenCall[sig]++
 		if seenCall[sig] >= 2 {

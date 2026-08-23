@@ -154,6 +154,17 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 					// completed event would otherwise forward an empty
 					// pairing key and hit the "tool call missing id" 400.
 					item["call_id"] = st.ItemID
+					// The first delta of a tool call normally carries the
+					// function name. Surface it on the in-progress item too:
+					// a client that acts on output_item.added without waiting
+					// for output_item.done would otherwise see an empty name
+					// and fail with "unknown tool". Only touch the item here —
+					// st.Name is accumulated by the shared delta handling below.
+					if fn, ok := tc["function"].(map[string]any); ok {
+						if v, ok := fn["name"].(string); ok && v != "" {
+							item["name"] = v
+						}
+					}
 					emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": idx, "item": item})
 				}
 				if v, ok := tc["id"].(string); ok {
@@ -223,6 +234,22 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			callID := st.ID
 			if callID == "" {
 				callID = st.ItemID
+			}
+			if st.Name == "" {
+				// Never emit a completed tool call with an empty name: the
+				// client resolves the tool by name and would fail with
+				// "unknown tool", then replay the broken call until the
+				// tool-conversation guard 409s. Surface the upstream anomaly
+				// as a failed response instead.
+				log.Printf("[responses] dropping tool call with empty name at output_index=%d", i)
+				emit("response.failed", map[string]any{
+					"type": "response.failed",
+					"response": map[string]any{
+						"id": id, "object": "response", "status": "failed", "model": model,
+						"error": map[string]any{"code": "invalid_tool_call", "message": "upstream tool call missing name"},
+					},
+				})
+				return
 			}
 			if st.Type == "custom" {
 				input := customToolInput(st.Args)

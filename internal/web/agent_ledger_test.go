@@ -14,7 +14,7 @@ func TestCompactToolResultKeepsHeadTailAndError(t *testing.T) {
 	}
 }
 
-func TestAgentLedgerDetectsRepeatedFailure(t *testing.T) {
+func TestAgentLedgerRepeatedFailureBlocksContinuation(t *testing.T) {
 	msgs := []oaiMsg{
 		{Role: "assistant", ToolCalls: []map[string]any{{"id": "c1", "type": "function", "function": map[string]any{"name": "run", "arguments": "{\"cmd\":\"build\"}"}}}},
 		{Role: "tool", ToolCallID: "c1", Content: "exit code 1: failed"},
@@ -25,8 +25,34 @@ func TestAgentLedgerDetectsRepeatedFailure(t *testing.T) {
 	if !l.RepeatedFailure {
 		t.Fatalf("expected repeated failure: %+v", l)
 	}
-	if !strings.Contains(l.RouterContext(), "change strategy") {
-		t.Fatal(l.RouterContext())
+	if err := l.CanContinue(32); err == nil || !strings.Contains(err.Error(), "repeated tool failure") {
+		t.Fatalf("expected repeated failure error, got: %v", err)
+	}
+}
+
+// TestAgentLedgerSkipsEmptyNameCall ensures a tool call with an empty name
+// (transport-level corruption, not a model strategy loop) does not contribute
+// to repeated-failure or stuck-loop detection, and does not leave a pending
+// entry that blocks continuation.
+func TestAgentLedgerSkipsEmptyNameCall(t *testing.T) {
+	msgs := []oaiMsg{
+		{Role: "assistant", ToolCalls: []map[string]any{{"id": "c1", "type": "function", "function": map[string]any{"name": "", "arguments": "{\"command\":\"x\"}"}}}},
+		{Role: "tool", ToolCallID: "c1", Content: "error: unknown tool"},
+		{Role: "assistant", ToolCalls: []map[string]any{{"id": "c2", "type": "function", "function": map[string]any{"name": "", "arguments": "{\"command\":\"x\"}"}}}},
+		{Role: "tool", ToolCallID: "c2", Content: "error: unknown tool"},
+	}
+	l := buildAgentLedger(msgs)
+	if l.RepeatedFailure {
+		t.Fatalf("empty-name call must not trigger repeated failure: %+v", l)
+	}
+	if l.RepeatedCall {
+		t.Fatalf("empty-name call must not trigger repeated call: %+v", l)
+	}
+	if len(l.Pending) > 0 {
+		t.Fatalf("empty-name call must not leave pending: %+v", l)
+	}
+	if err := l.CanContinue(32); err != nil {
+		t.Fatalf("empty-name call must not block continuation: %v", err)
 	}
 }
 
