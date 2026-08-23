@@ -2125,7 +2125,7 @@ function traceRowHTML(x){
       <div><b>耗时</b><span class="${traceLatencyClass(x.durationMs)}">${fmtDuration(x.durationMs)}</span></div>
       <div><b>首字耗时</b><span class="${traceLatencyClass(x.ttftMs)}">${fmtDuration(x.ttftMs)}</span></div>
     </td>
-    <td><div style="display:flex;gap:6px;white-space:nowrap"><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="current">查看本次内容</button><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="full">查看完整请求</button></div></td>
+    <td><div style="display:flex;gap:6px;white-space:nowrap"><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="current">查看本次响应</button><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="full">查看完整请求</button></div></td>
   </tr>`;
 }
 let traceLogsLoadPromise=null;
@@ -2240,18 +2240,18 @@ async function insertTraceDetailRow(id){
       ${rec.error?`<div style="color:var(--red)"><b>错误：</b> ${esc(rec.error)}</div>`:''}
       ${rec.upstreamError?`<div style="color:var(--orange)"><b>上游错误：</b> ${esc(rec.upstreamError)}</div>`:''}
       <div class="trace-detail-modes" style="display:flex;gap:8px;margin:10px 0">
-        <button type="button" class="btn btn-sm primary" data-trace-mode="current">本次请求</button>
+        <button type="button" class="btn btn-sm primary" data-trace-mode="current">本次响应</button>
         <button type="button" class="btn btn-sm" data-trace-mode="full">完整请求</button>
       </div>
       <div data-trace-panel="current">
-        <details${o(0)?' open':''}><summary>本次请求</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
-        <details${o(1)?' open':''}><summary>本次响应</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+        <details${o(0)?' open':''}><summary><span>上游响应</span><button type="button" class="btn btn-sm" data-copy-trace="upstreamResp">复制</button></summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
+        <details${o(1)?' open':''}><summary><span>下游响应</span><button type="button" class="btn btn-sm" data-copy-trace="downstreamResp">复制</button></summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
       </div>
       <div data-trace-panel="full" hidden>
-        <details${o(2)?' open':''}><summary>下游请求</summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
-        <details${o(3)?' open':''}><summary>上游请求</summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
-        <details${o(4)?' open':''}><summary>上游响应</summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
-        <details${o(5)?' open':''}><summary>下游响应</summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+        <details${o(2)?' open':''}><summary><span>下游请求</span><button type="button" class="btn btn-sm" data-copy-trace="downstreamReq">复制</button></summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
+        <details${o(3)?' open':''}><summary><span>上游请求</span><button type="button" class="btn btn-sm" data-copy-trace="upstreamReq">复制</button></summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
+        <details${o(4)?' open':''}><summary><span>上游响应</span><button type="button" class="btn btn-sm" data-copy-trace="upstreamResp">复制</button></summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
+        <details${o(5)?' open':''}><summary><span>下游响应</span><button type="button" class="btn btn-sm" data-copy-trace="downstreamResp">复制</button></summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
       </div>
     </div></td>`;
   anchor.insertAdjacentElement('afterend',tr);
@@ -2266,6 +2266,20 @@ async function insertTraceDetailRow(id){
   };
   tr.querySelectorAll('[data-trace-mode]').forEach(button=>{
     button.addEventListener('click',()=>setTraceMode(button.dataset.traceMode));
+  });
+  tr.querySelectorAll('[data-copy-trace]').forEach(button=>{
+    button.addEventListener('click',async event=>{
+      event.preventDefault();
+      event.stopPropagation();
+      const value=rec[button.dataset.copyTrace];
+      const text=JSON.stringify(value,null,2)||'—';
+      try{
+        await navigator.clipboard.writeText(text);
+        showNotice('已复制','success');
+      }catch(e){
+        showNotice('复制失败','error');
+      }
+    });
   });
   setTraceMode(rec._mode||'current');
   // Persist each section's explicit open/closed state so the 3-second trace
