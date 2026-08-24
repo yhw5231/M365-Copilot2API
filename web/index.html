@@ -313,9 +313,9 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .usage-table th,.usage-table td{padding-left:10px;padding-right:10px;vertical-align:middle}
 .usage-table th:nth-child(1),.usage-table td:nth-child(1){width:170px;text-align:left}
 .usage-table th:nth-child(2),.usage-table td:nth-child(2){width:300px;text-align:left}
-.usage-table th:nth-child(3),.usage-table td:nth-child(3){width:230px;text-align:left}
-.usage-table th:nth-child(4),.usage-table td:nth-child(4){width:145px;text-align:right}
-.usage-table th:nth-child(5),.usage-table td:nth-child(5){width:190px;text-align:right}
+.usage-table th:nth-child(3),.usage-table td:nth-child(3){width:230px;text-align:center}
+.usage-table th:nth-child(4),.usage-table td:nth-child(4){width:145px;text-align:center}
+.usage-table th:nth-child(5),.usage-table td:nth-child(5){width:190px;text-align:center}
 .usage-table th:nth-child(6),.usage-table td:nth-child(6){width:90px;text-align:right}
 .usage-table th:nth-child(7),.usage-table td:nth-child(7){width:90px;text-align:center}
 .usage-table .usage-latency,.usage-table .usage-ttft,.usage-table .usage-cost{white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -1608,7 +1608,10 @@ function setAccountFilter(f){_accountFilter=f;document.querySelectorAll('#accoun
 function accountSearchText(x){return [x.displayName,x.email,x.id,x.boundProxy].map(v=>String(v||'').toLowerCase()).join(' ');}
 function accountSortValue(x,key){
   switch(key){
-    case 'importOrder':return Number(x._importOrder)||0;
+    case 'importOrder':{
+      const importedAt=new Date(x.importedAt||x.updatedAt||0).getTime();
+      return Number.isFinite(importedAt)?importedAt:0;
+    }
     case 'identity':return String(x.displayName||x.email||'').toLowerCase();
     case 'id':return String(x.id||'').toLowerCase();
     case 'queuePosition':return Number(x.queuePosition)||0;
@@ -1626,7 +1629,8 @@ function compareAccounts(a,b){
   let result=0;
   if(typeof av==='number'&&typeof bv==='number')result=av-bv;
   else result=String(av).localeCompare(String(bv),'zh-CN',{numeric:true,sensitivity:'base'});
-  if(result===0)result=(Number(a.queuePosition)||0)-(Number(b.queuePosition)||0);
+  if(result===0)result=String(a.displayName||a.email||a.id||'').localeCompare(String(b.displayName||b.email||b.id||''),'zh-CN',{numeric:true,sensitivity:'base'});
+  if(result===0)result=String(a.id||'').localeCompare(String(b.id||''),'zh-CN',{numeric:true,sensitivity:'base'});
   return _accountSort.direction==='desc'?-result:result;
 }
 function sortAccounts(key){
