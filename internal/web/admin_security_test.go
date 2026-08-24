@@ -194,17 +194,17 @@ func TestRootPageServesLoginPageForLoginPath(t *testing.T) {
 	}
 }
 
-func TestRootPageServesIndexForRootPath(t *testing.T) {
+func TestRootPageRedirectsUnauthenticatedRootToLogin(t *testing.T) {
 	chdirRepoRoot(t)
 	s := &Server{}
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	s.rootPage(w, r)
-	if w.Code != 200 {
-		t.Fatalf("/ status=%d", w.Code)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("/ status=%d, want %d", w.Code, http.StatusSeeOther)
 	}
-	if !strings.Contains(w.Body.String(), "pageTitle") {
-		t.Fatal("/ did not serve index.html dashboard shell")
+	if got := w.Header().Get("Location"); got != "/login" {
+		t.Fatalf("/ Location=%q, want /login", got)
 	}
 }
 

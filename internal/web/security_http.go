@@ -71,6 +71,15 @@ func (s *Server) rootPage(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
+	// Do not rely on the dashboard's JavaScript session check to reveal the
+	// login form. If scripts fail, are delayed, or the large dashboard document
+	// is still loading, an unauthenticated browser would otherwise appear stuck.
+	// Route unauthenticated root requests directly to the dedicated login page.
+	if r.URL.Path == "/" && !s.validAdminSession(r) {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
 	name := "index.html"
 	if r.URL.Path == "/login" {
 		name = "login.html"
