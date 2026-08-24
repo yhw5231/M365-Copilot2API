@@ -1,4 +1,4 @@
-﻿<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>M365 Copilot2API</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"><script src="/vendor/lucide.js"></script><style>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>M365 Copilot2API</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"><script src="/vendor/lucide.js"></script><style>
 :root{color-scheme:light dark;--bg:#f5f5f7;--surface:rgba(255,255,255,0.72);--surface-solid:#fff;--surface-border:rgba(255,255,255,0.5);--line:rgba(0,0,0,0.06);--line-strong:rgba(0,0,0,0.1);--text:#1d1d1f;--muted:#86868b;--accent:#0071e3;--accent-hover:#0077ed;--primary:#1d1d1f;--primary-hover:#000;--green:#34c759;--red:#ff3b30;--orange:#ff9f0a;--purple:#bf5af2;--sidebar-w:240px;--shadow-sm:0 2px 8px rgba(0,0,0,0.04);--shadow:0 8px 32px rgba(0,0,0,0.06);--shadow-lg:0 16px 48px rgba(0,0,0,0.1);--radius:14px;--radius-sm:10px;--ease-out:cubic-bezier(0.23,1,0.32,1);--ease-in-out:cubic-bezier(0.77,0,0.175,1);--ease-spring:cubic-bezier(0.32,0.72,0,1)}
 @media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--surface:rgba(44,44,46,0.75);--surface-solid:#2c2c2e;--surface-border:rgba(255,255,255,0.06);--line:rgba(255,255,255,0.06);--line-strong:rgba(255,255,255,0.12);--text:#f5f5f7;--muted:#98989d;--accent:#0a84ff;--accent-hover:#409cff;--primary:#f5f5f7;--primary-hover:#fff;--green:#30d158;--red:#ff453a;--orange:#ff9f0a;--purple:#bf5af2;--shadow-sm:0 2px 8px rgba(0,0,0,0.15);--shadow:0 8px 32px rgba(0,0,0,0.2);--shadow-lg:0 16px 48px rgba(0,0,0,0.3)}}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -123,6 +123,19 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .trace-latency-fast{color:var(--green)}
 .trace-latency-warn{color:var(--orange)}
 .trace-latency-slow{color:var(--red)}
+@keyframes refreshSpin{to{transform:rotate(360deg)}}
+.switch-control{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+.switch-control input{position:absolute;opacity:0;pointer-events:none}
+.switch-track{position:relative;width:34px;height:20px;border-radius:999px;background:var(--line-strong);box-shadow:inset 0 0 0 1px var(--line-strong);transition:background .18s ease,box-shadow .18s ease}
+.switch-thumb{position:absolute;left:2px;top:2px;width:16px;height:16px;border-radius:50%;background:var(--surface-solid);box-shadow:0 1px 4px rgba(0,0,0,.22);transition:transform .18s var(--ease-spring)}
+.switch-control input:checked+.switch-track{background:var(--green);box-shadow:inset 0 0 0 1px var(--green)}
+.switch-control input:checked+.switch-track .switch-thumb{transform:translateX(14px)}
+.switch-control input:focus-visible+.switch-track{outline:2px solid var(--accent);outline-offset:2px}
+.dynamic-refresh{min-width:86px;transition:color .18s ease,border-color .18s ease,background .18s ease}
+.dynamic-refresh.is-loading{color:var(--accent);border-color:var(--accent)}
+.dynamic-refresh.is-loading i{animation:refreshSpin .8s linear infinite}
+.dynamic-refresh.is-success{color:var(--green);border-color:var(--green)}
+.dynamic-refresh.is-error{color:var(--red);border-color:var(--red)}
 .conv-row{cursor:pointer}
 .conv-link{display:block;max-width:360px;padding:0;border:0;background:transparent;color:var(--accent);font:inherit;font-weight:600;text-align:left;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
 .conv-meta{font-size:11px;color:var(--muted);margin-top:3px}
@@ -483,7 +496,7 @@ if (response.output_text) {
         <div class="page-head">
           <div><h2 class="page-title">用量统计</h2><p class="page-sub">Token 用量统计与请求明细</p></div>
           <div style="display:flex;align-items:center;gap:10px">
-            <button class="btn" data-action="usage-refresh"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> <span>刷新</span></button>
+            <button class="btn dynamic-refresh" id="usageRefreshBtn" data-action="usage-refresh"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> <span>刷新</span></button>
             <div class="seg" id="usageRange">
               <button data-days="1" data-action="set-usage-range">24h</button>
               <button data-days="7" class="active" data-action="set-usage-range">7 天</button>
@@ -523,11 +536,20 @@ if (response.output_text) {
         </div>
         <div class="card" id="traceCard">
           <div class="card-head">
-            <span class="card-title">调试模式</span>
-            <div style="display:flex;align-items:center;gap:8px">
-              <label class="checkbox-inline" style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="traceEnabled" data-action="save-trace-config"> 已启用</label>
-              <input class="form-input" id="traceMax" type="number" min="1" max="2000" style="width:80px" title="保留记录数" data-action="save-trace-config">
-              <button class="btn btn-sm" data-action="load-trace-logs"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> 刷新</button>
+            <div><span class="card-title">调试模式</span><span id="traceViewState" class="usage-status" style="margin-left:8px">实时</span></div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+              <label class="switch-control" title="开启或关闭调试记录采集">
+                <input type="checkbox" id="traceEnabled" data-action="save-trace-config">
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                <span id="traceEnabledLabel">记录已关闭</span>
+              </label>
+              <label class="switch-control" title="锁定后暂停自动刷新，保持当前页和已展开内容不变">
+                <input type="checkbox" id="traceViewLocked" data-action="toggle-trace-lock">
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                <span id="traceLockLabel">页面未锁定</span>
+              </label>
+              <input class="form-input" id="traceMax" type="number" min="1" max="2000" style="width:86px" title="服务端最多保留的调试记录数" data-action="save-trace-config">
+              <button class="btn btn-sm dynamic-refresh" id="traceRefreshBtn" data-action="load-trace-logs" title="立即刷新当前分页"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> <span>刷新</span></button>
               <button class="btn btn-sm" data-action="clear-trace-logs"><i data-lucide="trash-2" style="width:13px;height:13px"></i> 清空</button>
             </div>
           </div>
@@ -637,7 +659,7 @@ if (response.output_text) {
               </div>
             </div>
           </div>
-          <table class="table"><thead><tr><th>Account</th><th>Calls</th><th>状态</th><th>Updated</th><th>Scheduling</th><th>Proxy</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody></table>
+          <div style="overflow-x:auto"><table class="table"><thead><tr><th>Account</th><th>Account ID</th><th>Queue position</th><th>Concurrency</th><th>Total calls / today tokens</th><th>Last request</th><th>Status</th><th>Enabled</th><th>Proxy</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="10" class="empty">加载中...</td></tr></tbody></table></div>
         </div>
       </section>
 
@@ -729,7 +751,7 @@ if (response.output_text) {
       <!-- Settings -->
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
-        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:9090"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" data-action="save-settings">Save settings</button></div></div></div>
+        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:9090"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="setTimeZone">Time zone</label><select class="form-input" id="setTimeZone"><option value="Asia/Shanghai">北京时间 (Asia/Shanghai, UTC+08:00)</option><option value="UTC">UTC</option><option value="Asia/Tokyo">Asia/Tokyo (UTC+09:00)</option><option value="Asia/Singapore">Asia/Singapore (UTC+08:00)</option><option value="Europe/London">Europe/London</option><option value="Europe/Berlin">Europe/Berlin</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Denver">America/Denver</option><option value="America/Los_Angeles">America/Los_Angeles</option></select><p class="form-hint">系统内所有日期、时间显示及每日统计边界均使用此时区，默认为北京时间。</p></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" data-action="save-settings">Save settings</button></div></div></div>
         <div class="card" style="margin-top:16px"><div class="card-head"><span class="card-title">Change administrator password</span></div><div class="card-body"><form id="changePasswordForm" data-action="change-admin-password" style="max-width:520px"><div class="form-group"><label class="form-label" for="currentAdminPassword">Current password</label><div class="password-wrap"><input class="form-input" id="currentAdminPassword" type="password" autocomplete="current-password" required><button type="button" class="password-toggle" data-action="toggle-admin-password" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><div class="form-group"><label class="form-label" for="newAdminPassword">New password (at least 6 characters)</label><div class="password-wrap"><input class="form-input" id="newAdminPassword" type="password" autocomplete="new-password" minlength="6" required><button type="button" class="password-toggle" data-action="toggle-admin-password" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><div class="form-group"><label class="form-label" for="confirmAdminPassword">Confirm new password</label><div class="password-wrap"><input class="form-input" id="confirmAdminPassword" type="password" autocomplete="new-password" minlength="6" required><button type="button" class="password-toggle" data-action="toggle-admin-password" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><button class="btn primary" id="changePasswordButton" type="submit"><i data-lucide="key-round" style="width:14px;height:14px"></i> Change password</button></form><p class="form-hint" style="margin-top:12px">Changing the password signs out all administrator sessions. You will be redirected to the login page.</p></div></div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
           <div><h2 style="font-size:18px;font-weight:700">Model routing</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Enable or disable model routes and set each model's default reasoning level. Disabled models are hidden from the model list and rejected at request time.</p></div>
@@ -806,10 +828,30 @@ if (response.output_text) {
 
 <script>
 const $=id=>document.getElementById(id);
+let systemTimeZone='Asia/Shanghai';
+function formatSystemTime(value){
+  if(!value)return '-';
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime()))return '-';
+  try{return date.toLocaleString(undefined,{timeZone:systemTimeZone});}
+  catch(_){return date.toLocaleString(undefined,{timeZone:'Asia/Shanghai'});}
+}
 const pages={dashboard:'Dashboard',usage:'Usage',accounts:'Accounts',apikeys:'API Keys',conversations:'Conversations',proxies:'Proxy Pool',modeltest:'Model Test',settings:'Settings'};
 const localeStorageKey='m365_locale';
 const localeSelectionKey='m365_locale_selected';
 const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
+const timeZoneNames={
+  'Asia/Shanghai':{'en':'China Standard Time','zh-CN':'北京时间','zh-TW':'中國標準時間','ja':'中国標準時','ko':'중국 표준시','es':'Hora estándar de China','fr':'Heure normale de Chine','de':'Chinesische Normalzeit','pt-BR':'Horário padrão da China','ru':'Китайское стандартное время','ar':'توقيت الصين الرسمي'},
+  'UTC':{'en':'Coordinated Universal Time','zh-CN':'协调世界时','zh-TW':'世界協調時間','ja':'協定世界時','ko':'협정 세계시','es':'Tiempo universal coordinado','fr':'Temps universel coordonné','de':'Koordinierte Weltzeit','pt-BR':'Tempo Universal Coordenado','ru':'Всемирное координированное время','ar':'التوقيت العالمي المنسق'},
+  'Asia/Tokyo':{'en':'Japan Standard Time','zh-CN':'日本标准时间','zh-TW':'日本標準時間','ja':'日本標準時','ko':'일본 표준시','es':'Hora estándar de Japón','fr':'Heure normale du Japon','de':'Japanische Normalzeit','pt-BR':'Horário padrão do Japão','ru':'Японское стандартное время','ar':'توقيت اليابان الرسمي'},
+  'Asia/Singapore':{'en':'Singapore Standard Time','zh-CN':'新加坡标准时间','zh-TW':'新加坡標準時間','ja':'シンガポール標準時','ko':'싱가포르 표준시','es':'Hora estándar de Singapur','fr':'Heure normale de Singapour','de':'Singapur-Normalzeit','pt-BR':'Horário padrão de Singapura','ru':'Сингапурское стандартное время','ar':'توقيت سنغافورة الرسمي'},
+  'Europe/London':{'en':'London Time','zh-CN':'伦敦时间','zh-TW':'倫敦時間','ja':'ロンドン時間','ko':'런던 시간','es':'Hora de Londres','fr':'Heure de Londres','de':'Londoner Zeit','pt-BR':'Horário de Londres','ru':'Лондонское время','ar':'توقيت لندن'},
+  'Europe/Berlin':{'en':'Berlin Time','zh-CN':'柏林时间','zh-TW':'柏林時間','ja':'ベルリン時間','ko':'베를린 시간','es':'Hora de Berlín','fr':'Heure de Berlin','de':'Berliner Zeit','pt-BR':'Horário de Berlim','ru':'Берлинское время','ar':'توقيت برلين'},
+  'America/New_York':{'en':'New York Time','zh-CN':'纽约时间','zh-TW':'紐約時間','ja':'ニューヨーク時間','ko':'뉴욕 시간','es':'Hora de Nueva York','fr':'Heure de New York','de':'New Yorker Zeit','pt-BR':'Horário de Nova York','ru':'Нью-Йоркское время','ar':'توقيت نيويورك'},
+  'America/Chicago':{'en':'Chicago Time','zh-CN':'芝加哥时间','zh-TW':'芝加哥時間','ja':'シカゴ時間','ko':'시카고 시간','es':'Hora de Chicago','fr':'Heure de Chicago','de':'Chicagoer Zeit','pt-BR':'Horário de Chicago','ru':'Чикагское время','ar':'توقيت شيكاغو'},
+  'America/Denver':{'en':'Denver Time','zh-CN':'丹佛时间','zh-TW':'丹佛時間','ja':'デンバー時間','ko':'덴버 시간','es':'Hora de Denver','fr':'Heure de Denver','de':'Denver-Zeit','pt-BR':'Horário de Denver','ru':'Денверское время','ar':'توقيت دنفر'},
+  'America/Los_Angeles':{'en':'Los Angeles Time','zh-CN':'洛杉矶时间','zh-TW':'洛杉磯時間','ja':'ロサンゼルス時間','ko':'로스앤젤레스 시간','es':'Hora de Los Ángeles','fr':'Heure de Los Angeles','de':'Los-Angeles-Zeit','pt-BR':'Horário de Los Angeles','ru':'Лос-Анджелесское время','ar':'توقيت لوس أنجلوس'}
+};
 const localeText={
   'Administrator Login': {'zh-CN':'管理员登录','zh-TW':'管理員登入','ja':'管理者ログイン','ko':'관리자 로그인','es':'Inicio de sesión de administrador','fr':'Connexion administrateur','de':'Administrator-Anmeldung','pt-BR':'Login de administrador','ru':'Вход администратора','ar':'تسجيل دخول المسؤول'},
   'Password': {'zh-CN':'密码','zh-TW':'密碼','ja':'パスワード','ko':'비밀번호','es':'Contraseña','fr':'Mot de passe','de':'Passwort','pt-BR':'Senha','ru':'Пароль','ar':'كلمة المرور'},
@@ -1221,12 +1263,13 @@ function translateDynamic(value,locale){
 function translateText(value){
   const trimmed=value.trim();
   if(!trimmed)return value;
+  const source=localeTextReverse[trimmed]||trimmed;
   let translated;
   if(currentLocale==='en'){
-    translated=localeTextReverse[trimmed]||translateDynamic(trimmed,'en');
+    translated=source!==trimmed?source:translateDynamic(trimmed,'en');
   }else{
-    const entry=localeText[trimmed];
-    translated=(entry&&entry[currentLocale])||translateDynamic(trimmed,currentLocale)||localeText[trimmed]?.['en'];
+    const entry=localeText[source];
+    translated=(entry&&entry[currentLocale])||translateDynamic(source,currentLocale)||(entry&&entry.en);
   }
   if(!translated||translated===trimmed)return value;
   return value.replace(trimmed,translated);
@@ -1238,8 +1281,23 @@ function translatePage(){
   nodes.forEach(n=>{const translated=translateText(n.nodeValue);if(translated!==n.nodeValue)n.nodeValue=translated;});
   document.querySelectorAll('[placeholder],[title],[aria-label]').forEach(el=>['placeholder','title','aria-label'].forEach(attr=>{if(el.hasAttribute(attr))el.setAttribute(attr,translateText(el.getAttribute(attr)));}));
   const selector=$('languageSelect');if(selector)selector.value=currentLocale;
+  renderTimeZoneOptions();
   document.documentElement.lang=currentLocale;
   document.documentElement.dir=currentLocale==='ar'?'rtl':'ltr';
+}
+function renderTimeZoneOptions(){
+  const selector=$('setTimeZone');
+  if(!selector)return;
+  const selectedValue=selector.value||systemTimeZone||'Asia/Shanghai';
+  [...selector.options].forEach(option=>{
+    const zone=option.value;
+    const names=timeZoneNames[zone];
+    if(!names)return;
+    const localizedName=names[currentLocale]||names.en||zone;
+    const offset=zone==='Asia/Shanghai'||zone==='Asia/Singapore'?'UTC+08:00':zone==='Asia/Tokyo'?'UTC+09:00':zone==='UTC'?'UTC':'';
+    option.textContent=localizedName+' ('+zone+(offset?', '+offset:'')+')';
+  });
+  selector.value=selectedValue;
 }
 function applyLocale(locale){
   if(!SUPPORTED_LOCALES.includes(locale))locale='en';
@@ -1275,7 +1333,8 @@ document.addEventListener('click',e=>{
     case 'show-page': showPage(target.dataset.page); break;
     case 'usage-refresh': ugRefresh(); break;
     case 'set-usage-range': setUsageRange(Number(target.dataset.days)); break;
-    case 'load-trace-logs': loadTraceLogs(); break;
+    case 'load-trace-logs': loadTraceLogs(true,{manual:true}); break;
+    case 'toggle-trace-lock': toggleTraceViewLock(target.checked); break;
     case 'clear-trace-logs': clearTraceLogs(); break;
     case 'trace-page': tracePage(Number(target.dataset.direction)); break;
     case 'load-usage-logs': loadUsageLogs(); break;
@@ -1355,7 +1414,7 @@ function showPage(p){
   });
   $('pageTitle').textContent=pages[p];
   if(p==='dashboard'){loadStats();loadOnboarding();}
-  if(p==='usage'){loadUsage();loadTraceStatus();}
+  if(p==='usage'){loadUsage();loadTraceLogs(true);loadTraceStatus();}
   if(p==='accounts')loadAccounts();
   if(p==='apikeys')loadKeys();
   if(p==='conversations')loadConversations();
@@ -1486,7 +1545,7 @@ async function loadRecentRequests(){
       const tr=document.createElement('tr');
       const time=document.createElement('td');
       time.style.cssText='font-size:12px;color:var(--muted)';
-      time.textContent=new Date(x.time).toLocaleString();
+      time.textContent=formatSystemTime(x.time);
       const model=document.createElement('td');
       model.style.fontSize='12px';
       model.textContent=x.model||'-';
@@ -1531,9 +1590,9 @@ function renderAccounts(){
   if(!list.length){
     const tr=document.createElement('tr');
     const td=document.createElement('td');
-    td.colSpan=7;
+    td.colSpan=10;
     td.className='empty';
-    td.textContent='No matching accounts';
+    td.textContent=translateText('No matching accounts');
     tr.appendChild(td);
     tbody.replaceChildren(tr);
     return;
@@ -1558,26 +1617,43 @@ function renderAccounts(){
     accountCell.append(avatar,identity);
     identityTd.appendChild(accountCell);
 
+    const idTd=document.createElement('td');
+    idTd.style.cssText='font-size:11px;color:var(--muted);max-width:180px;word-break:break-all';
+    idTd.textContent=x.id||'-';
+
+    const queueTd=document.createElement('td');
+    queueTd.style.cssText='font-size:12px;white-space:nowrap';
+    queueTd.textContent=Number(x.queuePosition)>0?String(x.queuePosition):'-';
+
+    const concurrencyTd=document.createElement('td');
+    const currentConcurrency=Math.max(0,Number(x.currentConcurrency)||0);
+    const maxConcurrency=Math.max(0,Number(x.maxConcurrency)||0);
+    const concurrencyBadge=document.createElement('span');
+    concurrencyBadge.style.cssText=currentConcurrency>0?'display:inline-flex;padding:3px 8px;border-radius:999px;background:rgba(255,159,10,.16);color:var(--orange);font-size:12px;font-weight:600;white-space:nowrap':'display:inline-flex;padding:3px 8px;border-radius:999px;background:rgba(134,134,139,.12);color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap';
+    concurrencyBadge.textContent=`${currentConcurrency}/${maxConcurrency}`;
+    concurrencyTd.appendChild(concurrencyBadge);
+
     const callsTd=document.createElement('td');
     callsTd.style.cssText='font-size:12px;white-space:nowrap';
-    callsTd.textContent=x.rateLimited?`Limited after ${x.callCount||0} calls`:`Called ${x.callCount||0} times`;
+    callsTd.textContent=`${fmtNum(x.callCount||0)} / ${fmtTok(x.todayTokens||0)}`;
+    if(x.rateLimited)callsTd.title=translateText('Account is currently rate limited');
+
+    const lastRequestTd=document.createElement('td');
+    lastRequestTd.style.cssText='font-size:12px;color:var(--muted);white-space:nowrap';
+    lastRequestTd.textContent=x.lastRequestAt?formatSystemTime(x.lastRequestAt):'-';
 
     const statusTd=document.createElement('td');
     const status=document.createElement('span');
     status.className=x.status==='cooldown'?'status cooldown':x.status==='online'?'status online':'status offline';
     status.appendChild(document.createElement('i'));
-    status.appendChild(document.createTextNode(x.status==='cooldown'?'Cooldown':x.status==='online'?'Online':'Offline'));
+    status.appendChild(document.createTextNode(translateText(x.status==='cooldown'?'Cooldown':x.status==='online'?'Online':'Offline')));
     statusTd.appendChild(status);
     if(x.status==='cooldown'&&x.cooldownUntil){
       const cooldown=document.createElement('div');
       cooldown.style.cssText='font-size:11px;color:var(--muted);margin-top:3px';
-      cooldown.textContent='Cooldown until '+new Date(x.cooldownUntil).toLocaleString();
+      cooldown.textContent=translateText('Cooldown until')+' '+formatSystemTime(x.cooldownUntil);
       statusTd.appendChild(cooldown);
     }
-
-    const updatedTd=document.createElement('td');
-    updatedTd.style.cssText='font-size:12px;color:var(--muted)';
-    updatedTd.textContent=x.updatedAt?new Date(x.updatedAt).toLocaleString():'-';
 
     const scheduleTd=document.createElement('td');
     const scheduleEnabled=x.scheduleEnabled!==false;
@@ -1586,7 +1662,7 @@ function renderAccounts(){
     scheduleButton.dataset.action='toggle-account-schedule';
     scheduleButton.dataset.accountId=String(x.id||'');
     scheduleButton.dataset.enabled=String(!scheduleEnabled);
-    scheduleButton.textContent=scheduleEnabled?'Enabled':'Disabled';
+    scheduleButton.textContent=translateText(scheduleEnabled?'Enabled':'Disabled');
     scheduleTd.appendChild(scheduleButton);
 
     const proxyTd=document.createElement('td');
@@ -1599,7 +1675,7 @@ function renderAccounts(){
     bindButton.dataset.action='bind-account-proxy';
     bindButton.dataset.accountId=String(x.id||'');
     bindButton.dataset.proxy=String(x.boundProxy||'');
-    bindButton.textContent='Bind';
+    bindButton.textContent=translateText('Bind');
     proxyTd.append(proxyLabel,document.createTextNode(' '),bindButton);
 
     const actionsTd=document.createElement('td');
@@ -1607,10 +1683,10 @@ function renderAccounts(){
     deleteButton.className='btn-sm btn danger';
     deleteButton.dataset.action='delete-account';
     deleteButton.dataset.accountId=String(x.id||'');
-    deleteButton.textContent='Delete';
+    deleteButton.textContent=translateText('Delete');
     actionsTd.appendChild(deleteButton);
 
-    tr.append(identityTd,callsTd,statusTd,updatedTd,scheduleTd,proxyTd,actionsTd);
+    tr.append(identityTd,idTd,queueTd,concurrencyTd,callsTd,lastRequestTd,statusTd,scheduleTd,proxyTd,actionsTd);
     fragment.appendChild(tr);
   });
   tbody.replaceChildren(fragment);
@@ -1667,7 +1743,7 @@ function loadAccounts(){
     }catch(e){
       const tr=document.createElement('tr');
       const td=document.createElement('td');
-      td.colSpan=7;
+      td.colSpan=10;
       td.className='empty';
       td.textContent=e.message;
       tr.appendChild(td);
@@ -1835,7 +1911,7 @@ async function loadKeys(){
   try{
     const d=await api('/api/admin/keys');
     const k=d.keys||[];
-    $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td style="max-width:340px"><code style="display:block;font-size:11px;word-break:break-all;white-space:pre-wrap">${x.raw||x.prefix}</code>${x.raw?`<button class="btn-sm btn" style="margin-top:4px" data-action="copy-key-text" data-key-text="${escAttr(x.raw)}">Copy</button>`:''}</td><td style="font-size:12px;color:var(--muted)">${new Date(x.createdAt).toLocaleString()}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?new Date(x.lastUsedAt).toLocaleString():'-'}</td><td style="text-align:right;white-space:nowrap">
+    $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td style="max-width:340px"><code style="display:block;font-size:11px;word-break:break-all;white-space:pre-wrap">${x.raw||x.prefix}</code>${x.raw?`<button class="btn-sm btn" style="margin-top:4px" data-action="copy-key-text" data-key-text="${escAttr(x.raw)}">Copy</button>`:''}</td><td style="font-size:12px;color:var(--muted)">${formatSystemTime(x.createdAt)}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?formatSystemTime(x.lastUsedAt):'-'}</td><td style="text-align:right;white-space:nowrap">
       <button class="btn-sm btn" data-action="open-use-key" data-key-id="${escAttr(x.id)}">Use key</button>
       <button class="btn-sm btn" data-action="edit-key" data-key-id="${escAttr(x.id)}" data-key-name="${escAttr(x.name)}">Edit</button>
       <button class="btn-sm btn ${x.revoked?'success':'danger'}" data-action="toggle-key" data-key-id="${escAttr(x.id)}" data-revoked="${x.revoked}">${x.revoked?'Enable':'Disable'}</button>
@@ -2037,16 +2113,23 @@ async function loadUsageLogs(){
     const rows=(d.logs||[]).map(x=>{
       const tokens=usageTokenParts(x);
       return `<tr>
-      <td style="font-size:12px;color:var(--muted);white-space:nowrap">${new Date(x.time).toLocaleString()}</td>
+      <td style="font-size:12px;color:var(--muted);white-space:nowrap">${formatSystemTime(x.time)}</td>
       <td class="usage-request-detail">
         <div><b>${esc(x.model||'-')}</b>${x.reasoning_level?' · '+esc(x.reasoning_level):''}</div>
         <div class="usage-detail-line"><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span>${x.stream?' <span class="usage-status">流式</span>':''}</div>
         <div class="usage-detail-line" title="${esc(x.account_email||'')}">${esc(x.account_email||'-')}</div>
         <div class="usage-detail-line"><code title="${esc(x.api_key_prefix||'')}">${esc(x.api_key_prefix||'-')}</code></div>
       </td>
-      <td><span class="token-stack"><span>新增 ${fmtTok(tokens.newInput)}</span><span>缓存 ${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span><span>输出 ${fmtTok(tokens.output)}</span></span></td>
+      <td class="trace-token-cell" title="缓存占输入总量 ${tokens.cachePercent.toFixed(1)}%">
+        <div><b>总输入 / 输出</b><span>${fmtTok(tokens.inputTotal)} / ${fmtTok(tokens.output)}</span></div>
+        <div><b>新增</b><span>${fmtTok(tokens.newInput)}</span></div>
+        <div><b>缓存</b><span>${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span></div>
+      </td>
       <td class="usage-cost" title="仅为本地估算，新增输入、缓存输入和输出分别计价">$${Number(x.estimated_cost_usd||0).toFixed(6)}</td>
-      <td class="usage-latency" title="耗时 / 首字耗时"><span class="token-stack"><span>总耗时 ${fmtDuration(x.duration_ms)}</span><span>首字耗时 ${fmtDuration(x.ttft_ms)}</span></span></td>
+      <td class="trace-latency-cell" title="绿色：小于 5 秒；黄色：5–15 秒；红色：15 秒以上">
+        <div><b>耗时</b><span class="${traceLatencyClass(x.duration_ms)}">${fmtDuration(x.duration_ms)}</span></div>
+        <div><b>首字耗时</b><span class="${traceLatencyClass(x.ttft_ms)}">${fmtDuration(x.ttft_ms)}</span></div>
+      </td>
       <td>${x.status>=400||x.error?'<span class="usage-status err" title="'+esc(x.error||'')+'">错误</span>':'<span class="usage-status">成功</span>'}</td>
     </tr>`;
     }).join('');
@@ -2062,7 +2145,40 @@ async function loadUsageLogs(){
   return usageLogsLoadPromise;
 }
 
-function ugRefresh(){loadUsageLogs();}
+async function ugRefresh(){
+  const button=$('usageRefreshBtn');
+  const label=button?.querySelector('span');
+  if(button){
+    button.classList.remove('is-success','is-error');
+    button.classList.add('is-loading');
+    button.disabled=true;
+  }
+  if(label)label.textContent='刷新中';
+  try{
+    await Promise.all([loadUsage(),loadUsageLogs(),loadTraceLogs(true)]);
+    if(button){
+      button.classList.remove('is-loading');
+      button.classList.add('is-success');
+    }
+    if(label)label.textContent='已刷新';
+    setTimeout(()=>{
+      button?.classList.remove('is-success');
+      if(button)button.disabled=false;
+      if(label)label.textContent='刷新';
+    },1200);
+  }catch(e){
+    if(button){
+      button.classList.remove('is-loading');
+      button.classList.add('is-error');
+      button.disabled=false;
+    }
+    if(label)label.textContent='刷新失败';
+    setTimeout(()=>{
+      button?.classList.remove('is-error');
+      if(label)label.textContent='刷新';
+    },1800);
+  }
+}
 function applyUsageFilters(){ugPageNo=0;loadUsageLogs();}
 function resetUsageFilters(){
   ['ugFKey','ugFAccount','ugFModel','ugFEndpoint','ugFMinTokens','ugFMaxTokens','ugFFrom','ugFTo','ugFStatus','ugFStream','ugFQ'].forEach(id=>{if($(id))$(id).value='';});
@@ -2070,9 +2186,37 @@ function resetUsageFilters(){
 }
 
 // ===== Usage debug (trace) mode =====
-let tracePageNo=0, traceTotal=0;
+let tracePageNo=0, traceTotal=0, traceViewLocked=false, tracePendingCount=0;
 const TRACE_PAGE=10;
 const traceExpanded=new Set(), traceDetailCache={};
+function updateTraceControls(enabled){
+  if($('traceEnabledLabel'))$('traceEnabledLabel').textContent=enabled?'记录已开启':'记录已关闭';
+  if($('traceViewState')){
+    $('traceViewState').textContent=traceViewLocked?(tracePendingCount>0?`已锁定 · ${tracePendingCount} 条待刷新`:'已锁定'):'实时';
+    $('traceViewState').classList.toggle('warn',traceViewLocked);
+  }
+  if($('traceLockLabel'))$('traceLockLabel').textContent=traceViewLocked?'页面已锁定':'页面未锁定';
+  if($('traceViewLocked'))$('traceViewLocked').checked=traceViewLocked;
+}
+function toggleTraceViewLock(locked){
+  traceViewLocked=!!locked;
+  if(!traceViewLocked){
+    tracePendingCount=0;
+    updateTraceControls($('traceEnabled')?.checked);
+    loadTraceLogs(true,{manual:true});
+    return;
+  }
+  updateTraceControls($('traceEnabled')?.checked);
+}
+function setTraceRefreshState(state,message){
+  const button=$('traceRefreshBtn');
+  if(!button)return;
+  button.classList.remove('is-loading','is-success','is-error');
+  if(state)button.classList.add('is-'+state);
+  const label=button.querySelector('span');
+  if(label)label.textContent=message||'刷新';
+  button.disabled=state==='loading';
+}
 async function loadTraceStatus(){
   try{
     const d=await api('/api/admin/trace');
@@ -2128,15 +2272,26 @@ function traceRowHTML(x){
     <td><div style="display:flex;gap:6px;white-space:nowrap"><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="current">查看本次响应</button><button class="btn btn-sm" data-action="toggle-trace-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="full">查看完整请求</button></div></td>
   </tr>`;
 }
-let traceLogsLoadPromise=null;
-function loadTraceLogs(force=false){
-  if(traceLogsLoadPromise)return traceLogsLoadPromise;
+let traceLogsLoadPromise=null,traceLogsForcePending=false;
+function loadTraceLogs(force=false,options={}){
+  const manual=!!options.manual;
+  if(traceViewLocked&&!manual){
+    tracePendingCount++;
+    updateTraceControls($('traceEnabled')?.checked);
+    return Promise.resolve();
+  }
+  if(manual)setTraceRefreshState('loading','刷新中');
+  if(traceLogsLoadPromise){
+    if(force)traceLogsForcePending=true;
+    return traceLogsLoadPromise;
+  }
   traceLogsLoadPromise=(async()=>{
   try{
     const d=await api('/api/admin/trace/status?limit='+TRACE_PAGE+'&offset='+(tracePageNo*TRACE_PAGE));
     if($('traceEnabled'))$('traceEnabled').checked=!!d.enabled;
     if($('traceMax'))$('traceMax').value=d.max||50;
     if($('traceMaxLabel'))$('traceMaxLabel').textContent=d.max||50;
+    updateTraceControls(!!d.enabled);
     traceTotal=d.total||0;
     const records=d.records||[];
     const tbody=$('traceLogRows');
@@ -2168,6 +2323,28 @@ function loadTraceLogs(force=false){
         if(wasExpanded)await insertTraceDetailRow(x.id);
       }
     }
+    // 自动轮询可以加入最新记录，但当前分页始终只保留服务端返回的
+    // TRACE_PAGE 条主记录；被挤出当前页的记录及其详情行一并移除。
+    // 这样列表不会从 10 条持续增长到 20、30 条。
+    const pageRecordIds=new Set(records.map(x=>String(x.id)));
+    const visibleRows=Array.from(tbody.querySelectorAll('tr[id^="tr-"]:not([id^="trd-"])'));
+    for(const row of visibleRows){
+      const id=row.id.slice(3);
+      if(pageRecordIds.has(id))continue;
+      document.getElementById('trd-'+id)?.remove();
+      row.remove();
+      traceExpanded.delete(id);
+      delete traceDetailCache[id];
+    }
+    // 双重兜底：即使接口或增量合并出现异常，主记录也绝不超过每页上限。
+    const boundedRows=Array.from(tbody.querySelectorAll('tr[id^="tr-"]:not([id^="trd-"])'));
+    for(const row of boundedRows.slice(TRACE_PAGE)){
+      const id=row.id.slice(3);
+      document.getElementById('trd-'+id)?.remove();
+      row.remove();
+      traceExpanded.delete(id);
+      delete traceDetailCache[id];
+    }
     if(!records.length&&!tbody.querySelector('tr'))tbody.innerHTML='<tr><td colspan="10" class="empty">Tracing disabled or no requests yet</td></tr>';
     const totalPages=Math.max(1,Math.ceil(traceTotal/TRACE_PAGE));
     $('tracePageInfo').textContent=`Page ${tracePageNo+1} / ${totalPages} · ${traceTotal} total`;
@@ -2175,13 +2352,31 @@ function loadTraceLogs(force=false){
     $('traceNext').disabled=tracePageNo>=totalPages-1;
   }catch(e){
     if(!$('traceLogRows').querySelector('tr:not(.empty)'))$('traceLogRows').innerHTML=`<tr><td colspan="10" class="empty">${esc(e.message)}</td></tr>`;
+    if(manual){
+      setTraceRefreshState('error','刷新失败');
+      setTimeout(()=>setTraceRefreshState(null,'刷新'),1800);
+    }
+    throw e;
   }
-  })().finally(()=>{traceLogsLoadPromise=null;});
+  })().then(()=>{
+    if(manual){
+      tracePendingCount=0;
+      updateTraceControls($('traceEnabled')?.checked);
+      setTraceRefreshState('success','已刷新');
+      setTimeout(()=>setTraceRefreshState(null,'刷新'),1200);
+    }
+  }).finally(()=>{
+    traceLogsLoadPromise=null;
+    if(traceLogsForcePending){
+      traceLogsForcePending=false;
+      loadTraceLogs(true);
+    }
+  });
   return traceLogsLoadPromise;
 }
 function tracePage(delta){
   tracePageNo=Math.max(0,tracePageNo+delta);
-  loadTraceLogs();
+  loadTraceLogs(true);
 }
 async function toggleTraceDetail(id,mode='current'){
   const row=document.getElementById('trd-'+id);
@@ -2430,7 +2625,7 @@ $('convRows').innerHTML=c.length?c.map(x=>{
         <td><button class="conv-link" type="button">${esc(x.chatName||'未命名对话')}</button><div class="conv-meta"><code>${esc(id)}</code></div></td>
         <td>${Number(x.messageCount||0)}</td>
         <td>${esc(x.accountEmail||x.accountId||'-')}</td>
-        <td style="font-size:12px;color:var(--muted)">${updated?new Date(updated).toLocaleString():'-'}</td>
+        <td style="font-size:12px;color:var(--muted)">${updated?formatSystemTime(updated):'-'}</td>
         <td><div style="display:flex;gap:6px"><button class="btn-sm btn" data-conv-action="view">查看</button><button class="btn-sm btn danger" data-conv-action="delete">Delete</button></div></td>
       </tr>`;
     }).join(''):'<tr><td colspan="5" class="empty">No conversations</td></tr>';
@@ -2491,7 +2686,7 @@ function proxyRow(x){
     <td>${badge}</td>
     <td style="font-size:12px;color:var(--muted)">${x.latencyMs>0?x.latencyMs+' ms':'-'}</td>
     <td style="font-size:12px;color:var(--muted)">${x.failures||0}</td>
-    <td style="font-size:12px;color:var(--muted)">${x.cooldownUntil?new Date(x.cooldownUntil).toLocaleString():'-'}</td>
+    <td style="font-size:12px;color:var(--muted)">${x.cooldownUntil?formatSystemTime(x.cooldownUntil):'-'}</td>
     <td style="text-align:right;white-space:nowrap">
       <button class="btn-sm btn" data-action="proxy-check-one" data-proxy-url="${escAttr(x.url)}">检测</button>
       <button class="btn-sm btn danger" data-action="proxy-remove" data-proxy-url="${escAttr(x.url)}">Delete</button>
@@ -2603,7 +2798,8 @@ async function saveSettings(){
   try{
     const listen=$('setListen').value.trim();
     const timeout=$('setTimeout').value.trim();
-    const body={};
+    const timeZone=$('setTimeZone').value.trim()||'Asia/Shanghai';
+    const body={timeZone};
     if(listen)body.listenAddress=listen;
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
@@ -2679,6 +2875,14 @@ async function loadSettings(){
     const s=d.settings||{};
     $('setListen').value=s.listenAddress||'';
     $('setTimeout').value=s.chatTimeoutSeconds!=null?s.chatTimeoutSeconds:'';
+    systemTimeZone=s.timeZone||'Asia/Shanghai';
+    const timeZoneSelect=$('setTimeZone');
+    if(timeZoneSelect){
+      if(![...timeZoneSelect.options].some(option=>option.value===systemTimeZone)){
+        timeZoneSelect.add(new Option(systemTimeZone,systemTimeZone));
+      }
+      timeZoneSelect.value=systemTimeZone;
+    }
     routeCodexModels=d.codexModels||[];
     routeMappings=(d.upstreamMappings&&d.upstreamMappings.length)?d.upstreamMappings:((d.upstreamTones||[]).map(t=>({name:t,tone:t,enabled:true})));
     routeLevels=(d.reasoningLevels||[]).map(x=>x&&x.effort).filter(Boolean);
@@ -2820,4 +3024,3 @@ fetch('/api/admin/session').then(r=>r.json()).then(d=>{
 </script>
 </body>
 </html>
-

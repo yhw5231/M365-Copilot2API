@@ -34,6 +34,26 @@ func TestAdminSettingsPartialPutMerges(t *testing.T) {
 	}
 }
 
+func TestAdminSettingsPartialPutAcceptsStandardTimeZone(t *testing.T) {
+	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
+	s := &Server{settings: st}
+
+	body := `{"timeZone":"Asia/Shanghai","chatTimeoutSeconds":600}`
+	r := httptest.NewRequest(http.MethodPut, "/api/admin/settings", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	s.adminSettings(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("timezone partial PUT=%d %s", w.Code, w.Body.String())
+	}
+	got := st.get()
+	if got.TimeZone != "Asia/Shanghai" {
+		t.Fatalf("timeZone not updated: %q", got.TimeZone)
+	}
+	if got.ChatTimeoutSeconds != 600 {
+		t.Fatalf("chatTimeoutSeconds=%d, want 600", got.ChatTimeoutSeconds)
+	}
+}
+
 func TestAdminSettingsDuplicateKeysDoNotPanic(t *testing.T) {
 	// JSON 重复键是前端不该产生但可能出现的输入（如日志里错拼的字段）。
 	// 修复的 bug 是部分 PUT 零值覆盖，这里只验证这类脏输入不 panic。

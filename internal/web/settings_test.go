@@ -39,6 +39,32 @@ func TestSettingsPersistAndValidate(t *testing.T) {
 	}
 }
 
+func TestDefaultRuntimeSettings(t *testing.T) {
+	t.Setenv("M365_CHAT_TIMEOUT_SECONDS", "")
+	v := defaultRuntimeSettings()
+	if v.ChatTimeoutSeconds != 600 {
+		t.Fatalf("default chat timeout = %d, want 600", v.ChatTimeoutSeconds)
+	}
+	if v.TimeZone != "Asia/Shanghai" {
+		t.Fatalf("default time zone = %q, want Asia/Shanghai", v.TimeZone)
+	}
+	if err := validateSettings(v); err != nil {
+		t.Fatalf("default settings failed validation: %v", err)
+	}
+}
+
+func TestTimeZoneValidation(t *testing.T) {
+	v := defaultRuntimeSettings()
+	v.TimeZone = "Asia/Shanghai"
+	if err := validateSettings(v); err != nil {
+		t.Fatalf("valid IANA time zone rejected: %v", err)
+	}
+	v.TimeZone = "not/a-time-zone"
+	if err := validateSettings(v); err == nil {
+		t.Fatal("invalid IANA time zone accepted")
+	}
+}
+
 func TestSettingsFileOverrideWinsOverDataDir(t *testing.T) {
 	dataDir := t.TempDir()
 	explicit := filepath.Join(t.TempDir(), "settings.json")

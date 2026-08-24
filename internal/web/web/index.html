@@ -123,6 +123,19 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .trace-latency-fast{color:var(--green)}
 .trace-latency-warn{color:var(--orange)}
 .trace-latency-slow{color:var(--red)}
+@keyframes refreshSpin{to{transform:rotate(360deg)}}
+.switch-control{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+.switch-control input{position:absolute;opacity:0;pointer-events:none}
+.switch-track{position:relative;width:34px;height:20px;border-radius:999px;background:var(--line-strong);box-shadow:inset 0 0 0 1px var(--line-strong);transition:background .18s ease,box-shadow .18s ease}
+.switch-thumb{position:absolute;left:2px;top:2px;width:16px;height:16px;border-radius:50%;background:var(--surface-solid);box-shadow:0 1px 4px rgba(0,0,0,.22);transition:transform .18s var(--ease-spring)}
+.switch-control input:checked+.switch-track{background:var(--green);box-shadow:inset 0 0 0 1px var(--green)}
+.switch-control input:checked+.switch-track .switch-thumb{transform:translateX(14px)}
+.switch-control input:focus-visible+.switch-track{outline:2px solid var(--accent);outline-offset:2px}
+.dynamic-refresh{min-width:86px;transition:color .18s ease,border-color .18s ease,background .18s ease}
+.dynamic-refresh.is-loading{color:var(--accent);border-color:var(--accent)}
+.dynamic-refresh.is-loading i{animation:refreshSpin .8s linear infinite}
+.dynamic-refresh.is-success{color:var(--green);border-color:var(--green)}
+.dynamic-refresh.is-error{color:var(--red);border-color:var(--red)}
 .conv-row{cursor:pointer}
 .conv-link{display:block;max-width:360px;padding:0;border:0;background:transparent;color:var(--accent);font:inherit;font-weight:600;text-align:left;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
 .conv-meta{font-size:11px;color:var(--muted);margin-top:3px}
@@ -483,7 +496,7 @@ if (response.output_text) {
         <div class="page-head">
           <div><h2 class="page-title">用量统计</h2><p class="page-sub">Token 用量统计与请求明细</p></div>
           <div style="display:flex;align-items:center;gap:10px">
-            <button class="btn" data-action="usage-refresh"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> <span>刷新</span></button>
+            <button class="btn dynamic-refresh" id="usageRefreshBtn" data-action="usage-refresh"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> <span>刷新</span></button>
             <div class="seg" id="usageRange">
               <button data-days="1" data-action="set-usage-range">24h</button>
               <button data-days="7" class="active" data-action="set-usage-range">7 天</button>
@@ -523,11 +536,20 @@ if (response.output_text) {
         </div>
         <div class="card" id="traceCard">
           <div class="card-head">
-            <span class="card-title">调试模式</span>
-            <div style="display:flex;align-items:center;gap:8px">
-              <label class="checkbox-inline" style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="traceEnabled" data-action="save-trace-config"> 已启用</label>
-              <input class="form-input" id="traceMax" type="number" min="1" max="2000" style="width:80px" title="保留记录数" data-action="save-trace-config">
-              <button class="btn btn-sm" data-action="load-trace-logs"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> 刷新</button>
+            <div><span class="card-title">调试模式</span><span id="traceViewState" class="usage-status" style="margin-left:8px">实时</span></div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+              <label class="switch-control" title="开启或关闭调试记录采集">
+                <input type="checkbox" id="traceEnabled" data-action="save-trace-config">
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                <span id="traceEnabledLabel">记录已关闭</span>
+              </label>
+              <label class="switch-control" title="锁定后暂停自动刷新，保持当前页和已展开内容不变">
+                <input type="checkbox" id="traceViewLocked" data-action="toggle-trace-lock">
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                <span id="traceLockLabel">页面未锁定</span>
+              </label>
+              <input class="form-input" id="traceMax" type="number" min="1" max="2000" style="width:86px" title="服务端最多保留的调试记录数" data-action="save-trace-config">
+              <button class="btn btn-sm dynamic-refresh" id="traceRefreshBtn" data-action="load-trace-logs" title="立即刷新当前分页"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> <span>刷新</span></button>
               <button class="btn btn-sm" data-action="clear-trace-logs"><i data-lucide="trash-2" style="width:13px;height:13px"></i> 清空</button>
             </div>
           </div>
@@ -818,6 +840,18 @@ const pages={dashboard:'Dashboard',usage:'Usage',accounts:'Accounts',apikeys:'AP
 const localeStorageKey='m365_locale';
 const localeSelectionKey='m365_locale_selected';
 const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
+const timeZoneNames={
+  'Asia/Shanghai':{'en':'China Standard Time','zh-CN':'北京时间','zh-TW':'中國標準時間','ja':'中国標準時','ko':'중국 표준시','es':'Hora estándar de China','fr':'Heure normale de Chine','de':'Chinesische Normalzeit','pt-BR':'Horário padrão da China','ru':'Китайское стандартное время','ar':'توقيت الصين الرسمي'},
+  'UTC':{'en':'Coordinated Universal Time','zh-CN':'协调世界时','zh-TW':'世界協調時間','ja':'協定世界時','ko':'협정 세계시','es':'Tiempo universal coordinado','fr':'Temps universel coordonné','de':'Koordinierte Weltzeit','pt-BR':'Tempo Universal Coordenado','ru':'Всемирное координированное время','ar':'التوقيت العالمي المنسق'},
+  'Asia/Tokyo':{'en':'Japan Standard Time','zh-CN':'日本标准时间','zh-TW':'日本標準時間','ja':'日本標準時','ko':'일본 표준시','es':'Hora estándar de Japón','fr':'Heure normale du Japon','de':'Japanische Normalzeit','pt-BR':'Horário padrão do Japão','ru':'Японское стандартное время','ar':'توقيت اليابان الرسمي'},
+  'Asia/Singapore':{'en':'Singapore Standard Time','zh-CN':'新加坡标准时间','zh-TW':'新加坡標準時間','ja':'シンガポール標準時','ko':'싱가포르 표준시','es':'Hora estándar de Singapur','fr':'Heure normale de Singapour','de':'Singapur-Normalzeit','pt-BR':'Horário padrão de Singapura','ru':'Сингапурское стандартное время','ar':'توقيت سنغافورة الرسمي'},
+  'Europe/London':{'en':'London Time','zh-CN':'伦敦时间','zh-TW':'倫敦時間','ja':'ロンドン時間','ko':'런던 시간','es':'Hora de Londres','fr':'Heure de Londres','de':'Londoner Zeit','pt-BR':'Horário de Londres','ru':'Лондонское время','ar':'توقيت لندن'},
+  'Europe/Berlin':{'en':'Berlin Time','zh-CN':'柏林时间','zh-TW':'柏林時間','ja':'ベルリン時間','ko':'베를린 시간','es':'Hora de Berlín','fr':'Heure de Berlin','de':'Berliner Zeit','pt-BR':'Horário de Berlim','ru':'Берлинское время','ar':'توقيت برلين'},
+  'America/New_York':{'en':'New York Time','zh-CN':'纽约时间','zh-TW':'紐約時間','ja':'ニューヨーク時間','ko':'뉴욕 시간','es':'Hora de Nueva York','fr':'Heure de New York','de':'New Yorker Zeit','pt-BR':'Horário de Nova York','ru':'Нью-Йоркское время','ar':'توقيت نيويورك'},
+  'America/Chicago':{'en':'Chicago Time','zh-CN':'芝加哥时间','zh-TW':'芝加哥時間','ja':'シカゴ時間','ko':'시카고 시간','es':'Hora de Chicago','fr':'Heure de Chicago','de':'Chicagoer Zeit','pt-BR':'Horário de Chicago','ru':'Чикагское время','ar':'توقيت شيكاغو'},
+  'America/Denver':{'en':'Denver Time','zh-CN':'丹佛时间','zh-TW':'丹佛時間','ja':'デンバー時間','ko':'덴버 시간','es':'Hora de Denver','fr':'Heure de Denver','de':'Denver-Zeit','pt-BR':'Horário de Denver','ru':'Денверское время','ar':'توقيت دنفر'},
+  'America/Los_Angeles':{'en':'Los Angeles Time','zh-CN':'洛杉矶时间','zh-TW':'洛杉磯時間','ja':'ロサンゼルス時間','ko':'로스앤젤레스 시간','es':'Hora de Los Ángeles','fr':'Heure de Los Angeles','de':'Los-Angeles-Zeit','pt-BR':'Horário de Los Angeles','ru':'Лос-Анджелесское время','ar':'توقيت لوس أنجلوس'}
+};
 const localeText={
   'Administrator Login': {'zh-CN':'管理员登录','zh-TW':'管理員登入','ja':'管理者ログイン','ko':'관리자 로그인','es':'Inicio de sesión de administrador','fr':'Connexion administrateur','de':'Administrator-Anmeldung','pt-BR':'Login de administrador','ru':'Вход администратора','ar':'تسجيل دخول المسؤول'},
   'Password': {'zh-CN':'密码','zh-TW':'密碼','ja':'パスワード','ko':'비밀번호','es':'Contraseña','fr':'Mot de passe','de':'Passwort','pt-BR':'Senha','ru':'Пароль','ar':'كلمة المرور'},
@@ -1229,12 +1263,13 @@ function translateDynamic(value,locale){
 function translateText(value){
   const trimmed=value.trim();
   if(!trimmed)return value;
+  const source=localeTextReverse[trimmed]||trimmed;
   let translated;
   if(currentLocale==='en'){
-    translated=localeTextReverse[trimmed]||translateDynamic(trimmed,'en');
+    translated=source!==trimmed?source:translateDynamic(trimmed,'en');
   }else{
-    const entry=localeText[trimmed];
-    translated=(entry&&entry[currentLocale])||translateDynamic(trimmed,currentLocale)||localeText[trimmed]?.['en'];
+    const entry=localeText[source];
+    translated=(entry&&entry[currentLocale])||translateDynamic(source,currentLocale)||(entry&&entry.en);
   }
   if(!translated||translated===trimmed)return value;
   return value.replace(trimmed,translated);
@@ -1246,8 +1281,23 @@ function translatePage(){
   nodes.forEach(n=>{const translated=translateText(n.nodeValue);if(translated!==n.nodeValue)n.nodeValue=translated;});
   document.querySelectorAll('[placeholder],[title],[aria-label]').forEach(el=>['placeholder','title','aria-label'].forEach(attr=>{if(el.hasAttribute(attr))el.setAttribute(attr,translateText(el.getAttribute(attr)));}));
   const selector=$('languageSelect');if(selector)selector.value=currentLocale;
+  renderTimeZoneOptions();
   document.documentElement.lang=currentLocale;
   document.documentElement.dir=currentLocale==='ar'?'rtl':'ltr';
+}
+function renderTimeZoneOptions(){
+  const selector=$('setTimeZone');
+  if(!selector)return;
+  const selectedValue=selector.value||systemTimeZone||'Asia/Shanghai';
+  [...selector.options].forEach(option=>{
+    const zone=option.value;
+    const names=timeZoneNames[zone];
+    if(!names)return;
+    const localizedName=names[currentLocale]||names.en||zone;
+    const offset=zone==='Asia/Shanghai'||zone==='Asia/Singapore'?'UTC+08:00':zone==='Asia/Tokyo'?'UTC+09:00':zone==='UTC'?'UTC':'';
+    option.textContent=localizedName+' ('+zone+(offset?', '+offset:'')+')';
+  });
+  selector.value=selectedValue;
 }
 function applyLocale(locale){
   if(!SUPPORTED_LOCALES.includes(locale))locale='en';
@@ -1283,7 +1333,8 @@ document.addEventListener('click',e=>{
     case 'show-page': showPage(target.dataset.page); break;
     case 'usage-refresh': ugRefresh(); break;
     case 'set-usage-range': setUsageRange(Number(target.dataset.days)); break;
-    case 'load-trace-logs': loadTraceLogs(); break;
+    case 'load-trace-logs': loadTraceLogs(true,{manual:true}); break;
+    case 'toggle-trace-lock': toggleTraceViewLock(target.checked); break;
     case 'clear-trace-logs': clearTraceLogs(); break;
     case 'trace-page': tracePage(Number(target.dataset.direction)); break;
     case 'load-usage-logs': loadUsageLogs(); break;
@@ -2094,7 +2145,40 @@ async function loadUsageLogs(){
   return usageLogsLoadPromise;
 }
 
-function ugRefresh(){loadUsageLogs();}
+async function ugRefresh(){
+  const button=$('usageRefreshBtn');
+  const label=button?.querySelector('span');
+  if(button){
+    button.classList.remove('is-success','is-error');
+    button.classList.add('is-loading');
+    button.disabled=true;
+  }
+  if(label)label.textContent='刷新中';
+  try{
+    await Promise.all([loadUsage(),loadUsageLogs(),loadTraceLogs(true)]);
+    if(button){
+      button.classList.remove('is-loading');
+      button.classList.add('is-success');
+    }
+    if(label)label.textContent='已刷新';
+    setTimeout(()=>{
+      button?.classList.remove('is-success');
+      if(button)button.disabled=false;
+      if(label)label.textContent='刷新';
+    },1200);
+  }catch(e){
+    if(button){
+      button.classList.remove('is-loading');
+      button.classList.add('is-error');
+      button.disabled=false;
+    }
+    if(label)label.textContent='刷新失败';
+    setTimeout(()=>{
+      button?.classList.remove('is-error');
+      if(label)label.textContent='刷新';
+    },1800);
+  }
+}
 function applyUsageFilters(){ugPageNo=0;loadUsageLogs();}
 function resetUsageFilters(){
   ['ugFKey','ugFAccount','ugFModel','ugFEndpoint','ugFMinTokens','ugFMaxTokens','ugFFrom','ugFTo','ugFStatus','ugFStream','ugFQ'].forEach(id=>{if($(id))$(id).value='';});
@@ -2102,9 +2186,37 @@ function resetUsageFilters(){
 }
 
 // ===== Usage debug (trace) mode =====
-let tracePageNo=0, traceTotal=0;
+let tracePageNo=0, traceTotal=0, traceViewLocked=false, tracePendingCount=0;
 const TRACE_PAGE=10;
 const traceExpanded=new Set(), traceDetailCache={};
+function updateTraceControls(enabled){
+  if($('traceEnabledLabel'))$('traceEnabledLabel').textContent=enabled?'记录已开启':'记录已关闭';
+  if($('traceViewState')){
+    $('traceViewState').textContent=traceViewLocked?(tracePendingCount>0?`已锁定 · ${tracePendingCount} 条待刷新`:'已锁定'):'实时';
+    $('traceViewState').classList.toggle('warn',traceViewLocked);
+  }
+  if($('traceLockLabel'))$('traceLockLabel').textContent=traceViewLocked?'页面已锁定':'页面未锁定';
+  if($('traceViewLocked'))$('traceViewLocked').checked=traceViewLocked;
+}
+function toggleTraceViewLock(locked){
+  traceViewLocked=!!locked;
+  if(!traceViewLocked){
+    tracePendingCount=0;
+    updateTraceControls($('traceEnabled')?.checked);
+    loadTraceLogs(true,{manual:true});
+    return;
+  }
+  updateTraceControls($('traceEnabled')?.checked);
+}
+function setTraceRefreshState(state,message){
+  const button=$('traceRefreshBtn');
+  if(!button)return;
+  button.classList.remove('is-loading','is-success','is-error');
+  if(state)button.classList.add('is-'+state);
+  const label=button.querySelector('span');
+  if(label)label.textContent=message||'刷新';
+  button.disabled=state==='loading';
+}
 async function loadTraceStatus(){
   try{
     const d=await api('/api/admin/trace');
@@ -2161,7 +2273,14 @@ function traceRowHTML(x){
   </tr>`;
 }
 let traceLogsLoadPromise=null,traceLogsForcePending=false;
-function loadTraceLogs(force=false){
+function loadTraceLogs(force=false,options={}){
+  const manual=!!options.manual;
+  if(traceViewLocked&&!manual){
+    tracePendingCount++;
+    updateTraceControls($('traceEnabled')?.checked);
+    return Promise.resolve();
+  }
+  if(manual)setTraceRefreshState('loading','刷新中');
   if(traceLogsLoadPromise){
     if(force)traceLogsForcePending=true;
     return traceLogsLoadPromise;
@@ -2172,6 +2291,7 @@ function loadTraceLogs(force=false){
     if($('traceEnabled'))$('traceEnabled').checked=!!d.enabled;
     if($('traceMax'))$('traceMax').value=d.max||50;
     if($('traceMaxLabel'))$('traceMaxLabel').textContent=d.max||50;
+    updateTraceControls(!!d.enabled);
     traceTotal=d.total||0;
     const records=d.records||[];
     const tbody=$('traceLogRows');
@@ -2203,6 +2323,28 @@ function loadTraceLogs(force=false){
         if(wasExpanded)await insertTraceDetailRow(x.id);
       }
     }
+    // 自动轮询可以加入最新记录，但当前分页始终只保留服务端返回的
+    // TRACE_PAGE 条主记录；被挤出当前页的记录及其详情行一并移除。
+    // 这样列表不会从 10 条持续增长到 20、30 条。
+    const pageRecordIds=new Set(records.map(x=>String(x.id)));
+    const visibleRows=Array.from(tbody.querySelectorAll('tr[id^="tr-"]:not([id^="trd-"])'));
+    for(const row of visibleRows){
+      const id=row.id.slice(3);
+      if(pageRecordIds.has(id))continue;
+      document.getElementById('trd-'+id)?.remove();
+      row.remove();
+      traceExpanded.delete(id);
+      delete traceDetailCache[id];
+    }
+    // 双重兜底：即使接口或增量合并出现异常，主记录也绝不超过每页上限。
+    const boundedRows=Array.from(tbody.querySelectorAll('tr[id^="tr-"]:not([id^="trd-"])'));
+    for(const row of boundedRows.slice(TRACE_PAGE)){
+      const id=row.id.slice(3);
+      document.getElementById('trd-'+id)?.remove();
+      row.remove();
+      traceExpanded.delete(id);
+      delete traceDetailCache[id];
+    }
     if(!records.length&&!tbody.querySelector('tr'))tbody.innerHTML='<tr><td colspan="10" class="empty">Tracing disabled or no requests yet</td></tr>';
     const totalPages=Math.max(1,Math.ceil(traceTotal/TRACE_PAGE));
     $('tracePageInfo').textContent=`Page ${tracePageNo+1} / ${totalPages} · ${traceTotal} total`;
@@ -2210,8 +2352,20 @@ function loadTraceLogs(force=false){
     $('traceNext').disabled=tracePageNo>=totalPages-1;
   }catch(e){
     if(!$('traceLogRows').querySelector('tr:not(.empty)'))$('traceLogRows').innerHTML=`<tr><td colspan="10" class="empty">${esc(e.message)}</td></tr>`;
+    if(manual){
+      setTraceRefreshState('error','刷新失败');
+      setTimeout(()=>setTraceRefreshState(null,'刷新'),1800);
+    }
+    throw e;
   }
-  })().finally(()=>{
+  })().then(()=>{
+    if(manual){
+      tracePendingCount=0;
+      updateTraceControls($('traceEnabled')?.checked);
+      setTraceRefreshState('success','已刷新');
+      setTimeout(()=>setTraceRefreshState(null,'刷新'),1200);
+    }
+  }).finally(()=>{
     traceLogsLoadPromise=null;
     if(traceLogsForcePending){
       traceLogsForcePending=false;
