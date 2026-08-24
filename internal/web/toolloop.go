@@ -284,8 +284,11 @@ var workspaceToolScopeNouns = []string{
 var workspaceToolMisjudgmentRegexes = []*regexp.Regexp{
 	// EN: denial ... channel noun ... session scope
 	regexp.MustCompile(`(?i)(don'?t have|do not have|doesn'?t provide|does not provide|no (longer )?(tools?|shell|execution|command|interface|access to)|not (available|provided|installed|configured|registered|callable|accessible)|unavailable|lacks?|missing|absent|without) .{0,50}(tools?|shell|execution|command|interface|pwsh|powershell|bash|exec|file (operation|tool)) .{0,60}(in this|in the|this|the|current) (session|environment|workspace)`),
-	// EN: session scope first
-	regexp.MustCompile(`(?i)(this|the|current) (session|environment|workspace) .{0,60}(don'?t have|do not have|doesn'?t provide|does not provide|no|without|lacks?|not (available|provided)|unavailable|missing|absent) .{0,50}(tools?|shell|execution|command|interface|pwsh|powershell|bash|exec)`),
+	// EN: session scope first (bare "no" is excluded — it is too wide and
+	// produces false positives on "this session ... no ... shell was background"
+	// phrases; the semantic co-occurrence layer and EN1 still catch "no tools"
+	// and "no shell" through the "no (longer )?(tools?|shell|...)" branch).
+	regexp.MustCompile(`(?i)(this|the|current) (session|environment|workspace) .{0,60}(don'?t have|do not have|doesn'?t provide|does not provide|without|lacks?|not (available|provided)|unavailable|missing|absent) .{0,50}(tools?|shell|execution|command|interface|pwsh|powershell|bash|exec)`),
 	// ZH: 当前会话 ... 没有可调用/没有提供 ... 工具/接口
 	regexp.MustCompile(`(当前会话|本会话|本次会话|当前环境|当前工作区).{0,40}(没有可调用|没有可用的|没有提供|不提供|没有任何工具|没有工具|无法调用|不能调用|不可用|未提供|不具备|不存在|缺少|找不到|没有执行|没有命令|没有接口).{0,40}(工具|接口|可调用|文件操作|执行|命令|pwsh|powershell|bash|shell)`),
 	// ZH: 没有可调用/没有可用 ... 工具/接口 (no session word needed)
@@ -318,9 +321,15 @@ func isSandboxHallucination(text string) bool {
 // technical narration (permission errors, sandbox notes, command failures) can
 // contain the same denial/channel/scope vocabulary, so scanning only the
 // opening keeps recall for the real failure mode while cutting false positives
-// from long replies. The exact-phrase layer still scans the whole text: those
-// phrases are unambiguous misjudgments and cannot produce false positives.
-const workspaceToolMisjudgmentScanLimit = 300
+// from long replies. The count is in bytes: 150 bytes ≈ 50 汉字 (UTF-8 Chinese
+// is 3 bytes per character), which covers the opening claim of a misjudgment
+// while keeping mid-reply narration out of the scan window. The exact-phrase
+// layer still scans the whole text: those phrases are unambiguous misjudgments
+// and cannot produce false positives.
+//
+// The value is a variable (not a const) so the accuracy/speed trade-off across
+// window sizes can be measured by tests; production code never mutates it.
+var workspaceToolMisjudgmentScanLimit = 150
 
 // workspaceToolMisjudgmentScanText returns the opening window of text used by
 // the structural/semantic/tool-aware layers. The whole text is returned when it

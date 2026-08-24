@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"m365-copilot2api/internal/chathub"
 )
 
 // taskLedger is the server-side "task ledger" persisted on the downstream
@@ -21,19 +25,33 @@ import (
 //	account_id       — the account currently serving the task
 //	conversation_id / session_id — the upstream conversation the task runs on
 //	failures / switches — recorded so a long task does not restart silently
+//	goal_id          — goal identity when the client runs a goal protocol
+//	status           — lifecycle state (empty = active, complete/blocked/paused)
 type taskLedger struct {
-	OriginalGoal   string         `json:"original_goal,omitempty"`
-	Constraints    []string       `json:"constraints,omitempty"`
-	Executed       []string       `json:"executed,omitempty"`
-	ToolResults    []toolEvidence `json:"tool_results,omitempty"`
-	Remaining      []string       `json:"remaining,omitempty"`
-	AccountID      string         `json:"account_id,omitempty"`
-	ConversationID string         `json:"conversation_id,omitempty"`
-	SessionID      string         `json:"session_id,omitempty"`
-	Failures       []string       `json:"failures,omitempty"`
-	Switches       []string       `json:"switches,omitempty"`
-	UpdatedAt      time.Time      `json:"updated_at,omitempty"`
+	OriginalGoal    string         `json:"original_goal,omitempty"`
+	Constraints     []string       `json:"constraints,omitempty"`
+	Executed        []string       `json:"executed,omitempty"`
+	ToolResults     []toolEvidence `json:"tool_results,omitempty"`
+	Remaining       []string       `json:"remaining,omitempty"`
+	AccountID       string         `json:"account_id,omitempty"`
+	ConversationID  string         `json:"conversation_id,omitempty"`
+	SessionID       string         `json:"session_id,omitempty"`
+	Failures        []string       `json:"failures,omitempty"`
+	Switches        []string       `json:"switches,omitempty"`
+	GoalID          string         `json:"goal_id,omitempty"`
+	Status          string         `json:"status,omitempty"`
+	CompletedAt     *time.Time     `json:"completed_at,omitempty"`
+	CompletedReason string         `json:"completed_reason,omitempty"`
+	UpdatedAt       time.Time      `json:"updated_at,omitempty"`
 }
+
+// Goal lifecycle states. The empty status means "active" (an open goal); the
+// ledger stops injecting the "continue the goal" rule once it is complete.
+const (
+	taskStatusComplete = "complete"
+	taskStatusBlocked  = "blocked"
+	taskStatusPaused   = "paused"
+)
 
 const (
 	taskGoalMax        = 1200
@@ -109,6 +127,24 @@ func (t *taskLedger) Context() string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "ORIGINAL_GOAL: %s\n", t.OriginalGoal)
+	if t.GoalID != "" {
+		fmt.Fprintf(&b, "GOAL_ID: %s\n", t.GoalID)
+	}
+	// Emit the lifecycle state so the model knows whether it should keep
+	// working or wrap up. A completed goal must never be re-opened by the
+	// generic "continue the goal" rule below.
+	status := t.Status
+	if status == "" {
+		status = "active"
+	}
+	fmt.Fprintf(&b, "GOAL_STATUS: %s\n", status)
+	if status == taskStatusComplete {
+		if t.CompletedReason != "" {
+			fmt.Fprintf(&b, "COMPLETION_REASON: %s\n", compactTaskText(t.CompletedReason, 300))
+		}
+		b.WriteString("TASK_COMPLETE_RULE: The goal is complete. Do not continue working on it, do not repeat executed steps, and do not report outstanding work. Restate the outcome and stop.")
+		return strings.TrimSpace(b.String())
+	}
 	if len(t.Constraints) > 0 {
 		fmt.Fprintf(&b, "CONSTRAINTS: %s\n", mustJSON(trimLines(t.Constraints, maxTaskLedgerLines)))
 	}
@@ -156,15 +192,113 @@ func mustJSONBytes(v any) []byte { b, _ := json.Marshal(v); return b }
 
 // mergeEvidence folds the protocol-neutral evidence ledger from the current
 // turn into the persistent task ledger (idempotent by call id / signature).
+// It also applies goal-tool evidence so the server-side goal life cycle matches
+// what the model actually did: create_goal registers the goal id, update_goal
+// with action=complete closes the goal, so a completed goal is never re-opened
+// by the generic "continue the goal" rule.
 func (t *taskLedger) mergeEvidence(l agentLedger) {
 	if t == nil {
 		return
 	}
 	for _, e := range l.Completed {
+		t.applyGoalToolEvidence(e)
 		t.ToolResults = appendUniqueEvidence(t.ToolResults, e)
 		step := compactTaskText(e.Name+"("+e.Arguments+")", taskStepMax)
 		t.Executed = appendUniqueString(t.Executed, step)
 	}
+}
+
+// applyGoalToolEvidence mirrors goal-protocol tool results into the ledger
+// state. It must not error-retry after completion: once the client confirms the
+// goal with update_goal(action=complete), the ledger is closed and stays closed.
+func (t *taskLedger) applyGoalToolEvidence(e toolEvidence) {
+	if t == nil || e.Name == "" {
+		return
+	}
+	switch e.Name {
+	case "create_goal":
+		if t.GoalID == "" {
+			t.GoalID = extractGoalID(e.Arguments, e.Result)
+		}
+	case "update_goal":
+		action := strings.ToLower(goalArgString(e.Arguments, "action"))
+		switch action {
+		case "complete":
+			t.markComplete(goalReason(e))
+		case "blocked":
+			if t.Status == "" || t.Status == "active" {
+				t.Status = taskStatusBlocked
+				t.CompletedReason = goalReason(e)
+				now := time.Now().UTC()
+				t.CompletedAt = &now
+			}
+		case "paused", "pause":
+			if t.Status == "" || t.Status == "active" {
+				t.Status = taskStatusPaused
+				now := time.Now().UTC()
+				t.CompletedAt = &now
+			}
+		case "resume":
+			if t.Status == taskStatusPaused || t.Status == taskStatusBlocked {
+				t.Status = ""
+				t.CompletedAt = nil
+				t.CompletedReason = ""
+			}
+		}
+		if tid := extractGoalID(e.Arguments, e.Result); tid != "" && t.GoalID == "" {
+			t.GoalID = tid
+		}
+	case "get_goal":
+		if t.GoalID == "" {
+			t.GoalID = extractGoalID(e.Arguments, e.Result)
+		}
+	}
+	t.UpdatedAt = time.Now().UTC()
+}
+
+// markComplete closes the ledger: status complete with the reason and timestamp.
+func (t *taskLedger) markComplete(reason string) {
+	if t == nil {
+		return
+	}
+	now := time.Now().UTC()
+	t.Status = taskStatusComplete
+	t.CompletedAt = &now
+	t.CompletedReason = compactTaskText(reason, 500)
+	t.Remaining = nil
+	t.UpdatedAt = now
+}
+
+// IsComplete reports whether the ledger carries an explicit completion. The
+// status is server-authoritative: after update_goal(action=complete) evidence
+// lands, no further goal round may re-open the task.
+func (t *taskLedger) IsComplete() bool {
+	return t != nil && t.Status == taskStatusComplete
+}
+
+// goalReason builds a human-readable completion reason from tool evidence, or
+// falls back to a stable summary mentioning the confirming tool call.
+func goalReason(e toolEvidence) string {
+	if r := strings.TrimSpace(e.Result); r != "" {
+		return compactTaskText(r, 500)
+	}
+	return "goal confirmed closed by " + e.Name
+}
+
+func goalArgString(argsJSON, key string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(argsJSON), &m) != nil {
+		return ""
+	}
+	switch v := m[key].(type) {
+	case string:
+		return v
+	case json.Number:
+		return v.String()
+	case float64:
+		return fmt.Sprint(v)
+	}
+	return ""
 }
 
 func (t *taskLedger) bind(accID, convID, sessID string) {
@@ -255,4 +389,275 @@ func (s *Server) sessionTaskLedger(r *http.Request, body *oaiReq) *taskLedger {
 		}
 	}
 	return nil
+}
+
+// extractGoalID pulls a goal-* identifier out of either the tool arguments
+// (the client addresses its own goal) or the tool result JSON (a create_goal
+// response returns the newly minted id). It tolerates nested maps and the
+// "goal_id" / "id" spellings used by goal-protocol clients.
+func extractGoalID(argsJSON, resultJSON string) string {
+	extract := func(raw string) string {
+		if raw == "" {
+			return ""
+		}
+		var v any
+		if json.Unmarshal([]byte(raw), &v) != nil {
+			return ""
+		}
+		var walk func(any) string
+		walk = func(node any) string {
+			switch n := node.(type) {
+			case string:
+				if strings.HasPrefix(n, "goal-") {
+					return n
+				}
+			case []any:
+				for _, item := range n {
+					if id := walk(item); id != "" {
+						return id
+					}
+				}
+			case map[string]any:
+				for _, key := range []string{"goal_id", "id", "goalId"} {
+					if id := walk(n[key]); id != "" {
+						return id
+					}
+				}
+			}
+			return ""
+		}
+		return walk(v)
+	}
+	if id := extract(argsJSON); id != "" {
+		return id
+	}
+	return extract(resultJSON)
+}
+
+// goalToolNames are the goal-protocol tool names. When a client declares any of
+// these in the request, the session is a goal-protocol session regardless of
+// the text content — the strongest structured signal available.
+var goalToolNames = []string{"create_goal", "get_goal", "update_goal"}
+
+// toolsDeclareGoal reports whether the request declares any goal-protocol tool.
+// A DSH harness always ships create_goal/get_goal/update_goal in its tool list,
+// so this is a precise, content-independent signal that the session follows the
+// goal protocol — unlike string matching, it cannot be tripped by a user message
+// that merely mentions "goal" or "完成".
+func toolsDeclareGoal(tools []chathub.Tool) bool {
+	for _, t := range tools {
+		var f struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(t.Function, &f) == nil {
+			for _, g := range goalToolNames {
+				if f.Name == g {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// goalRoundRequest detects a goal-protocol continuation round. It uses three
+// layers of structured signals; content-only string matching is never the sole
+// criterion. This prevents a normal conversation that merely mentions
+// "<goal_round>" or "完成" from triggering the goal flow.
+//
+//  1. Session identity: the task ledger already carries a GoalID (create_goal
+//     evidence landed in an earlier round). This is the strongest signal, but
+//     even with a GoalID the round-structure guard prevents a casual mention
+//     of "<goal_round>" in a goal session from being misdetected.
+//  2. Protocol declaration: the client declares a goal tool (create_goal,
+//     get_goal, update_goal) in the request. The DSH harness always does this.
+//  3. Round structure: the message content carries <goal_round> together with
+//     a Round: N/M counter, which is the protocol's own round format and
+//     cannot be accidentally produced by ordinary user content.
+//
+// All three layers require both the <goal_round> tag AND the Round: N/M
+// counter so that a bare mention of "<goal_round>" in ordinary content is
+// never mistaken for a goal round, regardless of the session's state.
+//
+// When the ledger is already complete these rounds must not re-open the task.
+func goalRoundRequest(messages []oaiMsg, task *taskLedger, tools []chathub.Tool) bool {
+	if task == nil {
+		return false
+	}
+	hasRoundTag := false
+	hasRoundCounter := false
+	for _, m := range messages {
+		c := contentToString(m.Content)
+		if strings.Contains(c, "<goal_round>") {
+			hasRoundTag = true
+		}
+		if roundCounterPattern.MatchString(c) {
+			hasRoundCounter = true
+		}
+	}
+	if !hasRoundTag || !hasRoundCounter {
+		return false
+	}
+	// All three layers need the <goal_round> + Round: N/M structure.
+	// Layer 1 & 2 are session-level signals that confirm the session type.
+	if task.GoalID != "" || toolsDeclareGoal(tools) {
+		return true
+	}
+	// Layer 3: no session-level identity, but the round structure itself is a
+	// strong signal — the protocol-injected format is unique enough that no
+	// ordinary user content can reproduce it.
+	return true
+}
+
+// roundCounterPattern matches the harness's round format: Round: N/M.
+// Examples: "Round: 1/256", "Round: 3/256".
+var roundCounterPattern = regexp.MustCompile(`Round:\s*\d+\s*/\s*\d+`)
+
+// goalRoundCounter extracts the current and max round numbers from a message
+// containing the round counter. Returns (current, max, ok). When the current
+// round reaches or exceeds max, the round budget is exhausted.
+func goalRoundCounter(messages []oaiMsg) (int, int, bool) {
+	for _, m := range messages {
+		c := contentToString(m.Content)
+		match := roundCounterPattern.FindString(c)
+		if match == "" {
+			continue
+		}
+		parts := regexp.MustCompile(`\d+`).FindAllString(match, 2)
+		if len(parts) == 2 {
+			cur, _ := strconv.Atoi(parts[0])
+			max, _ := strconv.Atoi(parts[1])
+			return cur, max, true
+		}
+	}
+	return 0, 0, false
+}
+
+// goalRoundInjectedContext returns a short prompt suffix for an already-complete
+// goal round: the task is closed, further work must not begin. It is attached
+// only when the ledger is complete so the model stops claiming it "cannot mark
+// the goal complete" and instead reports the recorded outcome.
+func (t *taskLedger) goalRoundInjectedContext() string {
+	if t == nil || !t.IsComplete() {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n[TASK_LEDGER] GOAL_STATUS: complete — this goal is already closed on the server. ")
+	b.WriteString("State the recorded outcome and do not start new work. The goal state has been persisted; no further update_goal call is required.")
+	return b.String()
+}
+
+// goalDenialPatterns match an answer that explicitly refuses to claim completion
+// or reports unverified/outstanding work. When any of these appear, the goal
+// must not be auto-closed even if the answer contains success wording.
+var goalDenialPatterns = []string{
+	"cannot confirm", "can't confirm", "unable to confirm", "not fully verified",
+	"not done", "not complete", "not finished", "incomplete", "undone", "unfinished",
+	"未完成", "尚未", "还没", "没有完成", "无法完成", "无法确认", "不能确认", "仍未",
+	"failed", "failure", "timed out", "refused", "failed to",
+	"不成功", "没有成功", "未能",
+}
+
+// goalContinuationPatterns detect answers that are mid-task progress reports
+// rather than final wrap-ups. When any of these appear alongside a completion
+// word, the goal must not be auto-closed — the model is still mid-implementation.
+var goalContinuationPatterns = []string{
+	"继续", "接下来", "下一步", "还需要", "还有", "还差", "仍需要", "后续",
+	"next step", "next steps", "continue", "continuing", "remaining", "still need",
+	"in progress", "ongoing", "still working", "not yet",
+}
+
+// goalProcessRecordPatterns match the specific "the only unfinished thing is the
+// bookkeeping" report — the substantive work is done and only the goal-state
+// process record remains. These patterns are deliberately narrow (they reference
+// "流程记录" or "目标状态") so a phrase like "唯一未完成的是第一个模块" does
+// NOT falsely close the goal.
+var goalProcessRecordPatterns = []string{
+	"唯一未完成的是流程记录",
+	"唯一未完成的是目标状态",
+	"流程记录未完成",
+	"只剩流程记录",
+	"the only remaining item is the process record",
+}
+
+// goalStrongCompletionPatterns are explicitly holistic completion phrases.
+// Single words like "完成", "done", "complete", "success" are NOT included
+// because they also appear in mid-task progress reports ("第一步完成了",
+// "step 1 done", "module A complete").
+var goalStrongCompletionPatterns = []string{
+	"全部完成", "已全部完成", "已经全部完成", "整体完成", "全部搞定",
+	"目标已完成", "目标已达成", "所有任务已完成", "所有工作已完成", "所有步骤已完成",
+	"all done", "all complete", "all completed", "all finished",
+	"everything is done", "everything is complete", "everything has been done",
+	"fully complete", "fully completed", "fully implemented", "fully verified",
+	"implemented and verified", "completed successfully", "finished successfully",
+	"work is complete", "goal is complete", "task is complete",
+	"全部功能", "所有功能", "功能实现与验证",
+}
+
+// goalCompletionSignal is the server-side "state correction" detector: the goal
+// round is auto-closed only when the final answer (a) carries completed tool
+// evidence, (b) has no pending tool results, (c) uses explicitly holistic
+// completion wording, and (d) contains no denial/failure/continuation wording.
+// This is deliberately stricter than completionEvidenceAllows, which also
+// permits honest "I cannot confirm" answers — closing a goal on those would
+// restart the loop in reverse.
+//
+// The "only unfinished thing is the process record" report is treated as
+// completion: the model states the functional work is done but claims it lacks
+// a goal-state entry. That is exactly the loop this fix breaks — the server now
+// owns the goal state, so it closes the goal and tells the next round the goal
+// is already complete.
+func goalCompletionSignal(answer string, l agentLedger) bool {
+	if len(l.Completed) == 0 {
+		return false
+	}
+	if len(l.Pending) > 0 {
+		return false
+	}
+	low := strings.ToLower(answer)
+
+	// Check for continuation signals first — even process-record-only reports
+	// must not be closed if the answer says "I'll continue working".
+	hasContinuation := false
+	for _, p := range goalContinuationPatterns {
+		if strings.Contains(low, strings.ToLower(p)) {
+			hasContinuation = true
+			break
+		}
+	}
+	if hasContinuation {
+		return false
+	}
+
+	processRecordOnly := false
+	for _, p := range goalProcessRecordPatterns {
+		if strings.Contains(low, strings.ToLower(p)) {
+			processRecordOnly = true
+			break
+		}
+	}
+
+	// Check denial patterns only when not a process-record-only report, because
+	// the "未完成"/"无法标记" in the process-record phrasing refers to the
+	// bookkeeping, not the substantive work.
+	if !processRecordOnly {
+		for _, p := range goalDenialPatterns {
+			if strings.Contains(low, strings.ToLower(p)) {
+				return false
+			}
+		}
+	}
+
+	for _, w := range goalStrongCompletionPatterns {
+		if strings.Contains(low, strings.ToLower(w)) {
+			return true
+		}
+	}
+
+	// processRecordOnly without a strong completion word: the answer says "the
+	// only unfinished thing is the process record" but doesn't use a holistic
+	// completion phrase. Close anyway — the model is reporting the bookkeeping
+	// gap, which is exactly the loop condition we're breaking.
+	return processRecordOnly
 }

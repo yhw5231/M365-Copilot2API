@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -67,6 +68,12 @@ var GlobalRegistry = &sessionRegistry{sessions: map[string]*session{}}
 // APIKeyValidator is injected by the web package to validate API keys.
 // When nil, no authentication is enforced on MCP endpoints.
 var APIKeyValidator func(r *http.Request) bool
+
+// GlobalToolCallHandler is a fallback for tools/call on sessions without a
+// session-specific provider. It is injected by the web layer to execute the
+// goal-state tools (create_goal/get_goal/update_goal) against the downstream
+// session's task ledger. Signature: (ctx, apiKey, toolName, args) -> result.
+var GlobalToolCallHandler func(ctx context.Context, apiKey, name string, args map[string]any) (CallResult, error)
 
 // HandleToolsList returns the currently registered tools as JSON. Mount at /v1/mcp/tools.
 func HandleToolsList(w http.ResponseWriter, r *http.Request) {
@@ -198,7 +205,7 @@ func HandleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := handleRPC(r.Context(), sess, &req)
+	resp := handleRPC(r.Context(), r, sess, &req)
 	if resp == nil {
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -249,7 +256,21 @@ func jsonRPCResult(id *int64, result any) *jsonRPCResponse {
 	return &jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: b}
 }
 
-func handleRPC(ctx context.Context, sess *session, req *jsonRPCRequest) *jsonRPCResponse {
+func handleRPC(ctx context.Context, r *http.Request, sess *session, req *jsonRPCRequest) *jsonRPCResponse {
+	// Session-less global tools need the API key to resolve the downstream
+	// session; derive it from the request when available.
+	apiKey := ""
+	if r != nil {
+		apiKey = strings.TrimSpace(r.Header.Get("X-API-Key"))
+		if apiKey == "" {
+			if v := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(v), "bearer ") {
+				apiKey = strings.TrimSpace(v[7:])
+			}
+		}
+		if apiKey == "" {
+			apiKey = r.URL.Query().Get("api_key")
+		}
+	}
 	switch req.Method {
 	case "initialize":
 		return jsonRPCResult(req.ID, map[string]any{
@@ -280,15 +301,27 @@ func handleRPC(ctx context.Context, sess *session, req *jsonRPCRequest) *jsonRPC
 		sess.providerMu.RLock()
 		provider := sess.provider
 		sess.providerMu.RUnlock()
-		if provider == nil {
-			return newRPCError(req.ID, -32603, "no tools available")
-		}
 		var params struct {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			return newRPCError(req.ID, -32602, "invalid params: "+err.Error())
+		}
+		if provider == nil && GlobalToolCallHandler != nil {
+			// Session-less global tools (goal-state read/update). Resolve the
+			// downstream session from the API key inside the handler.
+			result, err := GlobalToolCallHandler(ctx, apiKey, params.Name, params.Arguments)
+			if err != nil {
+				return jsonRPCResult(req.ID, map[string]any{
+					"content": []map[string]any{{"type": "text", "text": fmt.Sprintf("error: %v", err)}},
+					"isError": true,
+				})
+			}
+			return jsonRPCResult(req.ID, result)
+		}
+		if provider == nil {
+			return newRPCError(req.ID, -32603, "no tools available")
 		}
 		result, err := provider.CallTool(ctx, params.Name, params.Arguments)
 		if err != nil {

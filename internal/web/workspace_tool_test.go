@@ -223,6 +223,11 @@ func TestIsWorkspaceToolMisjudgment(t *testing.T) {
 		{name: "EN rephrase — scope first", text: "This session does not have any tools available.", want: true},
 		{name: "EN rephrase — no shell", text: "I don't have shell access in this environment.", want: true},
 		{name: "EN rephrase — 环境 exclusivity", text: "This environment only provides a Linux sandbox.", want: true},
+		// Window boundary: the base detector scans only the opening 50
+		// characters. A denial that only completes after that point is treated
+		// as mid-reply narration; the tool-aware layer (which knows the declared
+		// tool names) is the layer that catches long-form English denials.
+		{name: "long EN denial beyond 50-char window is not base-detected", text: "I have verified the three files that need changes and prepared the final explanation. Note that the current session does not provide any file operation interface, but this is background.", want: false},
 		{name: "opening misjudgment inside long reply", text: "目前仍无法继续修改：当前会话实际没有可调用的文件操作接口。我已经完成了前序分析，接下来需要修改配置、请求处理器和测试套件三个文件，并补充对应的用例说明。", want: true},
 		{name: "exact phrase caught mid-reply", text: "我已经完成了前序分析，接下来需要修改配置、请求处理器和测试套件三个文件。但当前会话只提供 linux 容器。以上是完整说明。", want: true},
 		{name: "ordinary container discussion", text: "The service deploys in a Linux container.", want: false},

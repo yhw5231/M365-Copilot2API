@@ -302,6 +302,8 @@ func (s *Server) RefreshExpiredTokens() {
 
 func (s *Server) Routes() http.Handler {
 	mcp.APIKeyValidator = s.validAPIKey
+	registerGoalMCPTools()
+	s.registerGoalMCPHandler()
 	m := http.NewServeMux()
 	m.HandleFunc("/api/admin/login", s.adminLogin)
 	m.HandleFunc("/api/admin/logout", s.adminLogout)
@@ -343,6 +345,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/conversations/whitelist", s.conversationWhitelist)
 	m.HandleFunc("/v1/sessions", s.handleSessions)
 	m.HandleFunc("/v1/sessions/", s.handleSessionDelete)
+	m.HandleFunc("/v1/goal", s.handleGoalState)
 	m.HandleFunc("/api/m365/conversations", s.handleM365Conversations)
 	m.HandleFunc("/api/m365/conversations/detail", s.handleM365ConversationDetail)
 	m.HandleFunc("/api/m365/conversations/delete", s.handleM365Delete)
@@ -2110,6 +2113,28 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	answerPrompt = withTaskLedger(answerPrompt, task)
 	prompt = withTaskLedger(prompt, task)
+	// When the goal is already complete and the client sends a continuation
+	// round, inject the server-side completion context so the model reports
+	// the recorded outcome instead of claiming it cannot close the goal.
+	if task != nil && task.IsComplete() && goalRoundRequest(body.Messages, task, body.Tools) {
+		suffix := task.goalRoundInjectedContext()
+		answerPrompt += suffix
+		prompt += suffix
+	}
+	// Round-budget state: when the round counter has reached its ceiling, the
+	// goal can never make further progress. Inject the structured fact so the
+	// model wraps up with the honest status instead of re-attempting the work
+	// every round. This is a precise signal (Round: N/M from the protocol),
+	// not a keyword match.
+	if task != nil {
+		cur, max, ok := goalRoundCounter(body.Messages)
+		if ok && cur >= max && !task.IsComplete() && task.GoalID != "" {
+			note := fmt.Sprintf("\n\n[TASK_LEDGER] ROUND_BUDGET_EXHAUSTED: %d/%d rounds used. "+
+				"Stop continuing the goal, report the current status and any unverified steps, and close the goal with update_goal(action=complete) if the work is done.", cur, max)
+			answerPrompt += note
+			prompt += note
+		}
+	}
 
 	// Conversation cache: reuse existing M365 conversation for same account+model
 	// to avoid re-processing full system prompt + history each request (latency
@@ -2455,7 +2480,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.User != "" && res.ConversationID != "" {
 				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
-			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task)
+			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, false)
 			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 			return
 		}
@@ -2469,7 +2494,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if body.User != "" && res.ConversationID != "" {
 			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
-		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task)
+		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
 		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
@@ -2894,7 +2919,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// content-policy handling, and completion-evidence normalization, but before
 	// either streaming or non-streaming client output.
 	if res.ConversationID != "" {
-		s.bindConversation(acc, &body, r, res, prompt, startedAt, task)
+		s.bindConversation(acc, &body, r, res, prompt, startedAt, task, true)
 		s.storeConvCache(acc.ID, convCacheModel, res, tone, cleanWorkspaceToolMisjudgments(body.Messages, toolMaps), convReused)
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
@@ -3049,9 +3074,9 @@ const defaultPublicModelName = "m365-copilot"
 const sessionHeaderName = "X-M365-Session-Id"
 
 // bindConversation 在请求完成后登记会话解析器索引与缓存统计，流式与非流式
-// 路径共用。会话为内容键，云端的对话由 auto_cleanup 按 2h 闲置窗口回收，
-// 这里不再做"用完即删"，否则复用永远不可能命中。
-func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time, task *taskLedger) {
+// 路径共用。finalRound 为 false 时跳过服务端状态修正（工具调用轮无法安全
+// 判断完成措辞的真实意图）。
+func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time, task *taskLedger, finalRound bool) {
 	if res.ConversationID == "" {
 		return
 	}
@@ -3060,6 +3085,16 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 		// to the account/conversation that actually served the task.
 		task.mergeEvidence(buildAgentLedger(body.Messages))
 		task.bind(acc.ID, res.ConversationID, res.SessionID)
+		// State correction: a goal-protocol turn whose final answer states
+		// completion (with tool evidence) closes the goal server-side. The
+		// merged evidence already handles explicit update_goal(action=complete);
+		// this catches the "work is done, but I could not call update_goal"
+		// case the agent reports as the last remaining step. Only final-round
+		// answers are eligible — a tool-call round must never close the goal
+		// (the model may still be mid-implementation).
+		if finalRound && !task.IsComplete() && goalRoundRequest(body.Messages, task, body.Tools) && goalCompletionSignal(res.Text, buildAgentLedger(body.Messages)) {
+			task.markComplete("server-side correction: final answer states completion with tool evidence")
+		}
 	}
 	historyBody := *body
 	historyBody.Messages = append(cloneMessages(body.Messages), oaiMsg{
