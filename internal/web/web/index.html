@@ -149,6 +149,20 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 /* Account cell */
 .account-cell{display:flex;align-items:center;gap:10px}
 .avatar{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#5856d6);color:#fff;display:grid;place-items:center;font-weight:600;font-size:11px}
+.account-list-head{gap:12px;flex-wrap:wrap}
+.account-list-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.account-list-tools #accountSearch{width:min(320px,100%);padding:6px 10px;font-size:12px}
+.account-batch-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 18px;border-bottom:1px solid var(--line);background:rgba(128,128,128,.04)}
+.account-batch-toolbar #accountSelectionStatus{margin-right:auto;color:var(--muted);font-size:12px;font-weight:600}
+.account-table .account-select-column,.account-table .account-index-column{width:1%;white-space:nowrap;text-align:center}
+.account-table tbody tr.account-selected{background:rgba(0,122,255,.07)}
+.account-table input[type="checkbox"]{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
+.account-sort{display:inline-flex;align-items:center;gap:5px;padding:0;border:0;background:transparent;color:inherit;font:inherit;font-weight:inherit;text-transform:inherit;letter-spacing:inherit;white-space:nowrap;cursor:pointer}
+.account-sort:hover,.account-sort.active{color:var(--accent)}
+.account-sort-state::after{content:'↕';font-size:10px;opacity:.45}
+.account-sort[data-sort-direction="asc"] .account-sort-state::after{content:'↑';opacity:1}
+.account-sort[data-sort-direction="desc"] .account-sort-state::after{content:'↓';opacity:1}
+@media(max-width:760px){.account-list-tools{width:100%}.account-list-tools #accountSearch{width:100%}.account-batch-toolbar #accountSelectionStatus{width:100%;margin-right:0}}
 
 /* Status */
 .status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
@@ -637,29 +651,35 @@ if (response.output_text) {
               <p class="form-hint">Maximum simultaneous requests per account. The default is 1.</p>
             </div>
             <div class="form-group" style="margin:0">
-              <label class="form-label" for="accountRoutingRule">Account routing rule</label>
+              <label class="form-label" for="accountRoutingRule">账号路由规则</label>
               <select class="form-input" id="accountRoutingRule">
-                <option value="available-first">Available first</option>
-                <option value="round-robin">Round robin</option>
+                <option value="available-first">可用优先</option>
+                <option value="round-robin">轮询</option>
               </select>
-              <p class="form-hint"><b>Available first</b> keeps using the first healthy account until its concurrency capacity is full. <b>Round robin</b> advances to another healthy account for each new session.</p>
+              <p class="form-hint"><b>可用优先</b>：新会话优先使用队列中第一个健康且未达到并发上限的账号；仅当该账号并发已满、被限流或不可用时，才选择后续可用账号。<br><b>轮询</b>：每个新会话按照账号队列顺序依次选择健康且未达到并发上限的账号，到达队尾后从第一个账号重新开始；已有会话仍保持绑定原账号，除非该账号被限流或不可用。</p>
             </div>
           </div>
         </div>
         <div class="card">
-          <div class="card-head">
-            <span class="card-title">Authorized accounts</span>
-            <div style="display:flex;gap:8px;align-items:center">
-              <input class="form-input" id="accountSearch" placeholder="Search accounts…" style="width:180px;padding:6px 10px;font-size:12px" data-action="search-accounts">
+          <div class="card-head account-list-head">
+            <span class="card-title">已授权账号</span>
+            <div class="account-list-tools">
+              <input class="form-input" id="accountSearch" placeholder="搜索显示名、邮箱、账号 ID 或代理…" data-action="search-accounts">
               <div class="seg" id="accountFilter">
-                <button data-f="all" class="active" data-action="set-account-filter">All</button>
-                <button data-f="online" data-action="set-account-filter">Online</button>
-                <button data-f="cooldown" data-action="set-account-filter">Cooldown</button>
-                <button data-f="offline" data-action="set-account-filter">Offline</button>
+                <button data-f="all" class="active" data-action="set-account-filter">全部</button>
+                <button data-f="online" data-action="set-account-filter">在线</button>
+                <button data-f="cooldown" data-action="set-account-filter">冷却中</button>
+                <button data-f="offline" data-action="set-account-filter">离线</button>
               </div>
             </div>
           </div>
-          <div style="overflow-x:auto"><table class="table"><thead><tr><th>Account</th><th>Account ID</th><th>Queue position</th><th>Concurrency</th><th>Total calls / today tokens</th><th>Last request</th><th>Status</th><th>Enabled</th><th>Proxy</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="10" class="empty">加载中...</td></tr></tbody></table></div>
+          <div class="account-batch-toolbar" id="accountBatchToolbar">
+            <span id="accountSelectionStatus">已选择 0 个账号</span>
+            <button class="btn-sm btn" type="button" data-action="batch-enable-accounts" disabled>批量启用</button>
+            <button class="btn-sm btn" type="button" data-action="batch-disable-accounts" disabled>批量禁用</button>
+            <button class="btn-sm btn danger" type="button" data-action="batch-delete-accounts" disabled>批量删除</button>
+          </div>
+          <div style="overflow-x:auto"><table class="table account-table"><thead><tr><th class="account-select-column"><input id="accountSelectAll" type="checkbox" data-action="select-all-accounts" aria-label="选择全部可见账号"></th><th class="account-index-column">序号</th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="identity">账号<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="id">账号 ID<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="queuePosition">队列位置<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="concurrency">并发数<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="usage">总调用次数 / 今日令牌数<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="lastRequestAt">最近请求<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="status">状态<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="scheduleEnabled">已启用<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="boundProxy">代理<span class="account-sort-state" aria-hidden="true"></span></button></th><th>操作</th></tr></thead><tbody id="accountRows"><tr><td colspan="12" class="empty">加载中...</td></tr></tbody></table></div>
         </div>
       </section>
 
@@ -1373,6 +1393,12 @@ document.addEventListener('click',e=>{
     case 'close-use-key': closeUseKey(); break;
     case 'select-use-key': target.select(); break;
     case 'copy-use-key': copyUseKey(); break;
+    case 'sort-accounts': sortAccounts(target.dataset.sortKey); break;
+    case 'select-all-accounts': selectAllAccounts(target.checked); break;
+    case 'select-account': selectAccount(target.dataset.accountId,target.checked); break;
+    case 'batch-enable-accounts': batchSetAccountSchedule(true); break;
+    case 'batch-disable-accounts': batchSetAccountSchedule(false); break;
+    case 'batch-delete-accounts': batchDeleteAccounts(); break;
     case 'toggle-account-schedule': toggleAccountSchedule(target.dataset.accountId, target.dataset.enabled === 'true'); break;
     case 'bind-account-proxy': bindAccountProxy(target.dataset.accountId, target.dataset.proxy); break;
     case 'delete-account': deleteAccount(target.dataset.accountId); break;
@@ -1575,31 +1601,119 @@ async function loadRecentRequests(){
   }catch(e){showEmpty();}
 }
 
-let _accountsCache=[],_accountFilter='all';
+let _accountsCache=[],_accountFilter='all',_accountSort={key:'queuePosition',direction:'asc'};
+const _selectedAccountIds=new Set();
 function setAccountFilter(f){_accountFilter=f;document.querySelectorAll('#accountFilter button').forEach(b=>b.classList.toggle('active',b.dataset.f===f));renderAccounts();}
-function renderAccounts(){
+function accountSearchText(x){return [x.displayName,x.email,x.id,x.boundProxy].map(v=>String(v||'').toLowerCase()).join(' ');}
+function accountSortValue(x,key){
+  switch(key){
+    case 'identity':return String(x.displayName||x.email||'').toLowerCase();
+    case 'id':return String(x.id||'').toLowerCase();
+    case 'queuePosition':return Number(x.queuePosition)||0;
+    case 'concurrency':return Number(x.currentConcurrency)||0;
+    case 'usage':return (Number(x.callCount)||0)+(Number(x.todayTokens)||0);
+    case 'lastRequestAt':return x.lastRequestAt?new Date(x.lastRequestAt).getTime():0;
+    case 'status':return String(x.status||'').toLowerCase();
+    case 'scheduleEnabled':return x.scheduleEnabled===false?0:1;
+    case 'boundProxy':return String(x.boundProxy||'').toLowerCase();
+    default:return '';
+  }
+}
+function compareAccounts(a,b){
+  const av=accountSortValue(a,_accountSort.key),bv=accountSortValue(b,_accountSort.key);
+  let result=0;
+  if(typeof av==='number'&&typeof bv==='number')result=av-bv;
+  else result=String(av).localeCompare(String(bv),'zh-CN',{numeric:true,sensitivity:'base'});
+  if(result===0)result=(Number(a.queuePosition)||0)-(Number(b.queuePosition)||0);
+  return _accountSort.direction==='desc'?-result:result;
+}
+function sortAccounts(key){
+  if(_accountSort.key===key)_accountSort.direction=_accountSort.direction==='asc'?'desc':'asc';
+  else _accountSort={key,direction:'asc'};
+  renderAccounts();
+}
+function visibleAccounts(){
   const q=($('accountSearch').value||'').trim().toLowerCase();
-  const list=_accountsCache.filter(x=>{
+  return _accountsCache.filter(x=>{
     if(_accountFilter==='online'&&x.status!=='online')return false;
     if(_accountFilter==='cooldown'&&x.status!=='cooldown')return false;
     if(_accountFilter==='offline'&&(x.status==='online'||x.status==='cooldown'))return false;
-    if(q&&!((x.displayName||'')+' '+(x.email||'')).toLowerCase().includes(q))return false;
-    return true;
+    return !q||accountSearchText(x).includes(q);
+  }).sort(compareAccounts);
+}
+function pruneAccountSelection(){
+  const valid=new Set(_accountsCache.map(x=>String(x.id||'')));
+  for(const id of _selectedAccountIds)if(!valid.has(id))_selectedAccountIds.delete(id);
+}
+function updateAccountSelectionStatus(list=visibleAccounts()){
+  pruneAccountSelection();
+  const selectedCount=_selectedAccountIds.size;
+  const status=$('accountSelectionStatus');
+  if(status)status.textContent=`已选择 ${selectedCount} 个账号`;
+  document.querySelectorAll('#accountBatchToolbar button').forEach(button=>button.disabled=selectedCount===0);
+  const selectAll=$('accountSelectAll');
+  if(selectAll){
+    const visibleIds=list.map(x=>String(x.id||'')).filter(Boolean);
+    const selectedVisible=visibleIds.filter(id=>_selectedAccountIds.has(id)).length;
+    selectAll.checked=visibleIds.length>0&&selectedVisible===visibleIds.length;
+    selectAll.indeterminate=selectedVisible>0&&selectedVisible<visibleIds.length;
+  }
+  document.querySelectorAll('.account-sort').forEach(button=>{
+    const active=button.dataset.sortKey===_accountSort.key;
+    button.classList.toggle('active',active);
+    if(active)button.dataset.sortDirection=_accountSort.direction;
+    else delete button.dataset.sortDirection;
+    button.setAttribute('aria-sort',active?(_accountSort.direction==='asc'?'ascending':'descending'):'none');
   });
+}
+function selectAllAccounts(checked){
+  visibleAccounts().forEach(x=>{
+    const id=String(x.id||'');
+    if(!id)return;
+    if(checked)_selectedAccountIds.add(id);else _selectedAccountIds.delete(id);
+  });
+  renderAccounts();
+}
+function selectAccount(id,checked){
+  id=String(id||'');
+  if(!id)return;
+  if(checked)_selectedAccountIds.add(id);else _selectedAccountIds.delete(id);
+  renderAccounts();
+}
+function renderAccounts(){
+  const list=visibleAccounts();
+  pruneAccountSelection();
   const tbody=$('accountRows');
   if(!list.length){
     const tr=document.createElement('tr');
     const td=document.createElement('td');
-    td.colSpan=10;
+    td.colSpan=12;
     td.className='empty';
     td.textContent=translateText('No matching accounts');
+    updateAccountSelectionStatus(list);
     tr.appendChild(td);
     tbody.replaceChildren(tr);
     return;
   }
   const fragment=document.createDocumentFragment();
-  list.forEach(x=>{
+  list.forEach((x,index)=>{
+    const accountId=String(x.id||'');
     const tr=document.createElement('tr');
+    tr.classList.toggle('account-selected',_selectedAccountIds.has(accountId));
+
+    const selectTd=document.createElement('td');
+    selectTd.className='account-select-column';
+    const selectCheckbox=document.createElement('input');
+    selectCheckbox.type='checkbox';
+    selectCheckbox.checked=_selectedAccountIds.has(accountId);
+    selectCheckbox.dataset.action='select-account';
+    selectCheckbox.dataset.accountId=accountId;
+    selectCheckbox.setAttribute('aria-label',`选择账号 ${x.displayName||x.email||accountId}`);
+    selectTd.appendChild(selectCheckbox);
+
+    const indexTd=document.createElement('td');
+    indexTd.className='account-index-column';
+    indexTd.textContent=String(index+1);
 
     const identityTd=document.createElement('td');
     const accountCell=document.createElement('div');
@@ -1686,10 +1800,11 @@ function renderAccounts(){
     deleteButton.textContent=translateText('Delete');
     actionsTd.appendChild(deleteButton);
 
-    tr.append(identityTd,idTd,queueTd,concurrencyTd,callsTd,lastRequestTd,statusTd,scheduleTd,proxyTd,actionsTd);
+    tr.append(selectTd,indexTd,identityTd,idTd,queueTd,concurrencyTd,callsTd,lastRequestTd,statusTd,scheduleTd,proxyTd,actionsTd);
     fragment.appendChild(tr);
   });
   tbody.replaceChildren(fragment);
+  updateAccountSelectionStatus(list);
 }
 function normalizeAccountRoutingRule(value){
   const rule=String(value||'').trim().toLowerCase().replace(/_/g,'-');
@@ -1743,7 +1858,7 @@ function loadAccounts(){
     }catch(e){
       const tr=document.createElement('tr');
       const td=document.createElement('td');
-      td.colSpan=10;
+      td.colSpan=12;
       td.className='empty';
       td.textContent=e.message;
       tr.appendChild(td);
@@ -1751,6 +1866,40 @@ function loadAccounts(){
     }
   })().finally(()=>{accountsLoadPromise=null;});
   return accountsLoadPromise;
+}
+
+async function batchSetAccountSchedule(enabled){
+  const ids=[..._selectedAccountIds];
+  if(!ids.length)return;
+  try{
+    for(const id of ids){
+      await api('/api/accounts/schedule',{method:'POST',body:JSON.stringify({id,enabled})});
+      const account=_accountsCache.find(x=>String(x.id||'')===id);
+      if(account)account.scheduleEnabled=enabled;
+    }
+    showNotice(`已${enabled?'启用':'禁用'} ${ids.length} 个账号`,'success');
+    renderAccounts();
+  }catch(e){
+    showNotice(e.message,'error');
+    await loadAccounts();
+  }
+}
+
+async function batchDeleteAccounts(){
+  const ids=[..._selectedAccountIds];
+  if(!ids.length)return;
+  if(!confirm(`确定删除已选择的 ${ids.length} 个账号？此操作无法撤销。`))return;
+  try{
+    for(const id of ids){
+      await api('/api/accounts/delete',{method:'POST',body:JSON.stringify({id})});
+      _selectedAccountIds.delete(id);
+    }
+    showNotice(`已删除 ${ids.length} 个账号`,'success');
+    await loadAccounts();
+  }catch(e){
+    showNotice(e.message,'error');
+    await loadAccounts();
+  }
 }
 
 async function toggleAccountSchedule(id,enabled){

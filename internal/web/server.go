@@ -646,7 +646,6 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 	concurrency := s.accountConcurrency.Snapshot()
 	limit, _ := concurrency["limit"].(int)
 	inflight, _ := concurrency["inflight"].(map[string]int)
-	waiting, _ := concurrency["waiting"].(map[string]int)
 
 	type view struct {
 		ID                 string     `json:"id"`
@@ -669,7 +668,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 		BoundProxy         string     `json:"boundProxy,omitempty"`
 	}
 	out := make([]view, 0, len(list))
-	for _, a := range list {
+	for i, a := range list {
 		status := a.Status
 		var cooldownUntil *time.Time
 		var rateLimited bool
@@ -697,7 +696,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
 			Status: status, ScheduleEnabled: !a.ScheduleDisabled,
 			CallCount: callCount, TodayTokens: stat.TodayTokens, LastRequestAt: lastRequestAt,
-			CurrentConcurrency: inflight[a.ID], MaxConcurrency: limit, QueuePosition: waiting[a.ID],
+			CurrentConcurrency: inflight[a.ID], MaxConcurrency: limit, QueuePosition: i + 1,
 			RateLimited: rateLimited, CooldownUntil: cooldownUntil, OID: a.OID, TID: a.TID,
 			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
 		})
