@@ -116,7 +116,8 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .trace-detail pre{box-sizing:border-box;width:100%;max-width:100%;margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
 .trace-token-cell,.trace-latency-cell{font-size:12px;color:var(--muted);white-space:normal!important;min-width:0}
 .trace-token-cell{width:170px}
-.trace-latency-cell{width:105px}
+.trace-latency-cell{width:105px;text-align:center}
+.usage-table th:nth-child(5){text-align:center}
 .trace-token-cell div,.trace-latency-cell div{display:flex;align-items:center;justify-content:flex-start;gap:6px;line-height:1.7;text-align:left}
 .trace-token-cell b,.trace-latency-cell b{font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap}
 .trace-token-cell span,.trace-latency-cell span{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:left}
@@ -1601,12 +1602,13 @@ async function loadRecentRequests(){
   }catch(e){showEmpty();}
 }
 
-let _accountsCache=[],_accountFilter='all',_accountSort={key:'queuePosition',direction:'asc'};
+let _accountsCache=[],_accountFilter='all',_accountSort={key:'importOrder',direction:'asc'};
 const _selectedAccountIds=new Set();
 function setAccountFilter(f){_accountFilter=f;document.querySelectorAll('#accountFilter button').forEach(b=>b.classList.toggle('active',b.dataset.f===f));renderAccounts();}
 function accountSearchText(x){return [x.displayName,x.email,x.id,x.boundProxy].map(v=>String(v||'').toLowerCase()).join(' ');}
 function accountSortValue(x,key){
   switch(key){
+    case 'importOrder':return Number(x._importOrder)||0;
     case 'identity':return String(x.displayName||x.email||'').toLowerCase();
     case 'id':return String(x.id||'').toLowerCase();
     case 'queuePosition':return Number(x.queuePosition)||0;
@@ -1732,7 +1734,7 @@ function renderAccounts(){
     identityTd.appendChild(accountCell);
 
     const idTd=document.createElement('td');
-    idTd.style.cssText='font-size:11px;color:var(--muted);max-width:180px;word-break:break-all';
+    idTd.style.cssText='font-size:11px;color:var(--muted);width:180px;max-width:180px;white-space:normal;overflow-wrap:anywhere;word-break:break-word';
     idTd.textContent=x.id||'-';
 
     const queueTd=document.createElement('td');
@@ -1853,7 +1855,7 @@ function loadAccounts(){
     }
     try{
       const d=await api('/api/accounts');
-      _accountsCache=d.accounts||[];
+      _accountsCache=(d.accounts||[]).map((account,index)=>({...account,_importOrder:index}));
       renderAccounts();
     }catch(e){
       const tr=document.createElement('tr');

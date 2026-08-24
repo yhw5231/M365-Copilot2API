@@ -3191,6 +3191,7 @@ func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *o
 		InputTokens:    inputTokens,
 		OutputTokens:   outputTokens,
 		CacheTokens:    cacheTokens,
+		TTFTMs:         res.TTFTMs,
 		DurationMs:     durationMs,
 		Status:         200,
 	})
@@ -3203,6 +3204,7 @@ func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *o
 			rec.InputTokens = inputTokens
 			rec.OutputTokens = outputTokens
 			rec.CachedTokens = cacheTokens
+			rec.TTFTMs = res.TTFTMs
 			rec.DurationMs = durationMs
 		})
 	}
