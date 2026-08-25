@@ -2245,7 +2245,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), calls, routeRes)
+			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, routeRes)
 			s.recordToolUsage(r, acc, &body, routeRes, startedAt)
 			return
 		}
@@ -2477,7 +2477,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), calls, toolResult)
+			_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, toolResult)
 			if body.User != "" && res.ConversationID != "" {
 				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
@@ -2488,6 +2488,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if err := emitText(text.String()); err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 			return
+		}
+		if body.shouldSendStreamUsage() {
+			pt := EstimateTokens(prompt)
+			ct := EstimateTokens(res.Text)
+			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedInputTokens(prompt, answerPrompt))}
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		}
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finishChunk)+"\n\n")
@@ -2554,7 +2560,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), calls, routeRes)
+			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, routeRes)
 			s.recordToolUsage(r, acc, &body, routeRes, startedAt)
 			return
 		}
@@ -2577,7 +2583,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 						calls = calls[:1]
 					}
-					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), calls, retryRes)
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, retryRes)
 					s.recordToolUsage(r, acc, &body, retryRes, startedAt)
 					return
 				}
@@ -2729,16 +2735,15 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		pt := EstimateTokens(prompt)
 		ct := EstimateTokens(res.Text)
+		cached := cachedInputTokens(prompt, answerPrompt)
 		if tr := traceFromRequest(r); tr != nil {
 			s.trace.update(tr.ID, func(rec *traceRecord) {
 				rec.InputTokens = int64(pt)
 				rec.OutputTokens = int64(ct)
-				if convReused {
-					rec.CachedTokens = int64(pt)
-				}
+				rec.CachedTokens = cached
 			})
 		}
-		log.Printf("[usage] stream id=%s pt=%d ct=%d res.Text=%d", id, pt, ct, len(res.Text))
+		log.Printf("[usage] stream id=%s pt=%d ct=%d cached=%d res.Text=%d", id, pt, ct, cached, len(res.Text))
 		if err == nil && ct == 0 {
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned empty completion; the requested model may be unavailable for this tenant", "code": "upstream_error"}})+"\n\n")
 		}
@@ -2746,7 +2751,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		if err != nil {
 			finish = "stop"
 		}
-		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}, "usage": usageWithCache(pt, ct, cached)}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 	} else {
@@ -2849,7 +2854,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), calls, res)
+			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, res)
 			return
 		}
 	}
@@ -2861,7 +2866,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), calls, res)
+			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, res)
 			return
 		}
 	}
@@ -2886,7 +2891,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 				}
 				calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-				_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), calls, routeRes)
+				_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, routeRes)
 				return
 			}
 		}
@@ -2953,7 +2958,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		_ = sseRaw(r.Context(), w, flusher, "data: "+string(b)+"\n\n")
 		pt := EstimateTokens(prompt)
 		ct := EstimateTokens(res.Text)
-		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usageWithCache(pt, ct, cachedInputTokens(prompt, answerPrompt))}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		return
@@ -2998,11 +3003,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			"finish_reason": "stop",
 		}},
 		"m365": meta,
-		"usage": map[string]any{
-			"prompt_tokens":     pt,
-			"completion_tokens": ct,
-			"total_tokens":      pt + ct,
-		},
+		// 把「增量请求中被上游会话复用的输入」以标准字段
+		// usage.prompt_tokens_details.cached_tokens 返回给下游（sub2api 等
+		// 转发层与客户端据此识别缓存命中）。
+		"usage": usageWithCache(pt, ct, cachedInputTokens(prompt, answerPrompt)),
 	}
 	if len(body.Metadata) > 0 {
 		completion["metadata"] = body.Metadata

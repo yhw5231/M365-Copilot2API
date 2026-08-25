@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sendUsage bool, calls []detectedToolCall, res chathub.Result) error {
+func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sendUsage bool, cachedTokens int64, calls []detectedToolCall, res chathub.Result) error {
 	toolCalls := toolCallMaps(calls)
 	msg := map[string]any{"role": "assistant", "content": nil, "tool_calls": toolCalls}
 	if res.Reasoning != "" {
@@ -70,12 +70,12 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sen
 			}
 		}
 		if sendUsage {
-			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedTokens)}
 			_ = sseSafeRaw(w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		}
 		_ = sseSafeRaw(w, flusher, "data: [DONE]\n\n")
 		return nil
 	}
-	jsonOut(w, map[string]any{"id": id, "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": "tool_calls"}}, "m365": compatM365Metadata(res), "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}})
+	jsonOut(w, map[string]any{"id": id, "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": "tool_calls"}}, "m365": compatM365Metadata(res), "usage": usageWithCache(pt, ct, cachedTokens)})
 	return nil
 }

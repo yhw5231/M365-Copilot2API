@@ -480,6 +480,30 @@ curl http://127.0.0.1:9090/v1/messages \
 - **只发增量**：严格前缀命中时上层只补发新消息，等价于把云端对话当作上下文缓存用。
 - **线程与清理联动**：会话绑定持久化在 `sessions.json`（0600），过期时间由 `M365_SESSION_TTL_MINUTES` 控制；长期无命中的会话会随自动清理按同一窗口（默认 2 小时）被回收。
 
+### 缓存信息如何返回给下游
+
+网关在 `/v1/chat/completions` 响应（非流式）与流式结尾的 `usage` chunk（`stream_options.include_usage=true` 时）中，以 **OpenAI 标准字段 `usage.prompt_tokens_details.cached_tokens`** 回传本次请求被上游会话复用的输入 token 数：
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 1200,
+    "completion_tokens": 80,
+    "total_tokens": 1280,
+    "prompt_tokens_details": {
+      "cached_tokens": 1000,
+      "text_tokens": 200
+    }
+  }
+}
+```
+
+- `cached_tokens` = 完整逻辑 prompt 中被复用的历史部分（会话复用命中时未重新发送给 ChatHub 的 token 估算，等价于把云端对话当作上下文缓存）。
+- `text_tokens` = 本次新提交的增量输入；`prompt_tokens` = `cached_tokens + text_tokens`。
+- 复用未命中（新建会话、全量重发）时 `cached_tokens` 为 `0`，字段仍然返回，便于下游统一解析。
+
+下游转发层（如 sub2api / one-api / new-api）和客户端（NextChat、Cherry Studio、LobeChat 等）读取该标准字段即可展示「缓存命中」与节省量，无需额外协议。工具调用响应（`finish_reason: tool_calls`）的 `usage` 同样携带该字段。
+
 ## 内容自动清理
 
 云端对话被视作「缓存条目」：**会话命中 = 刷新存活时间；空闲 = 过期**。后台循环默认每 30 分钟回收：
