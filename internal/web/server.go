@@ -2014,12 +2014,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[user-session] hit user=%s conversation=%s session=%s", body.User, us.ConversationID, us.SessionID)
 		}
 	}
-	// Existing conversations normally remain bound to their upstream account and
-	// may send only the messages added since the stored history. In round-robin
-	// mode every request, including one matched to an existing local session,
-	// must instead select the next account and start a fresh upstream conversation.
-	// The fresh conversation receives the complete message history so no context
-	// is lost when switching accounts.
+	// Account selection: for a new session (no binding), resolveAccount applies
+	// the routing rule ("available-first" or "round-robin"). Existing sessions
+	// bound via session key, user field, or the session resolver stay sticky to
+	// their account and conversation, so incremental context reuse (cache) is
+	// preserved; resolveAccount returns 429 when the bound account is at its
+	// concurrency limit or cooling down.
 	answerPrompt := prompt
 	resolvedConversationID := ""
 	if body.ConversationID == "" && len(body.Messages) > 0 && !body.NewConversation {
@@ -2049,17 +2049,6 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-	}
-
-	if s.settings != nil && s.settings.get().AccountRoutingRule == "round-robin" {
-		if body.ConversationID != "" || body.SessionID != "" || body.AccountID != "" {
-			log.Printf("[account-route] round-robin restarting existing conversation with full context old_account=%q old_conversation=%q", body.AccountID, body.ConversationID)
-		}
-		body.AccountID = ""
-		body.ConversationID = ""
-		body.SessionID = ""
-		resolvedConversationID = ""
-		answerPrompt, body.Attachments = flattenPromptMessages(body.Messages, nil)
 	}
 
 	accountID := body.AccountID
@@ -2987,7 +2976,12 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// OpenAI 要求的 usage 字段。
 	pt := EstimateTokens(prompt)
 	ct := EstimateTokens(res.Text)
+	cached := cachedInputTokens(prompt, answerPrompt)
 	meta := compatM365Metadata(res)
+	// 调试可见性：m365.cache_hit / m365.cached_tokens 直接标出本次请求是否
+	// 复用了上游会话、复用了多少输入 token（0 = 未命中，新建会话全量发送）。
+	meta["cache_hit"] = cached > 0
+	meta["cached_tokens"] = cached
 	if params, ok := ignoredSamplingParams(&body); ok {
 		meta["ignored_parameters"] = params
 		meta["sampling_note"] = samplingNote
@@ -3006,7 +3000,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		// 把「增量请求中被上游会话复用的输入」以标准字段
 		// usage.prompt_tokens_details.cached_tokens 返回给下游（sub2api 等
 		// 转发层与客户端据此识别缓存命中）。
-		"usage": usageWithCache(pt, ct, cachedInputTokens(prompt, answerPrompt)),
+		"usage": usageWithCache(pt, ct, cached),
 	}
 	if len(body.Metadata) > 0 {
 		completion["metadata"] = body.Metadata
