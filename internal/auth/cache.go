@@ -27,6 +27,7 @@ type AccountToken struct {
 	AccessToken      string    `json:"accessToken"`
 	RefreshToken     string    `json:"refreshToken,omitempty"`
 	ExpiresAt        time.Time `json:"expiresAt"`
+	ImportedAt       time.Time `json:"importedAt,omitempty"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 	OID              string    `json:"oid,omitempty"`
 	TID              string    `json:"tid,omitempty"`
@@ -287,6 +288,7 @@ func (s *Store) Upsert(tok TokenSet) (AccountToken, error) {
 		AccessToken:  tok.AccessToken,
 		RefreshToken: tok.RefreshToken,
 		ExpiresAt:    tok.ExpiresAt,
+		ImportedAt:   time.Now(),
 		UpdatedAt:    time.Now(),
 		OID:          firstNonEmpty(tok.HomeOID, id),
 		TID:          tok.TenantID,
@@ -303,6 +305,13 @@ func (s *Store) Upsert(tok TokenSet) (AccountToken, error) {
 			}
 			if acc.OID == "" {
 				acc.OID = existing.OID
+			}
+			// Re-authorizing or refreshing an existing account must not change its
+			// original import timestamp. Legacy records without importedAt use their
+			// earliest available persisted timestamp as a stable migration fallback.
+			acc.ImportedAt = existing.ImportedAt
+			if acc.ImportedAt.IsZero() {
+				acc.ImportedAt = existing.UpdatedAt
 			}
 			acc.ScheduleDisabled = existing.ScheduleDisabled
 			if acc.BoundProxy == "" {

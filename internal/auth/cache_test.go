@@ -66,6 +66,50 @@ func TestScheduleEnabledPersists(t *testing.T) {
 	}
 }
 
+func TestImportedAtPersistsAcrossUpsertAndRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := TokenSet{
+		AccessToken:  "access-1",
+		RefreshToken: "refresh-1",
+		Email:        "a@example.com",
+		DisplayName:  "A",
+		HomeOID:      "oid-1",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	first, err := store.Upsert(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ImportedAt.IsZero() {
+		t.Fatal("new account has zero importedAt")
+	}
+
+	token.AccessToken = "access-2"
+	updated, err := store.Upsert(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.ImportedAt.Equal(first.ImportedAt) {
+		t.Fatalf("upsert changed importedAt: got %s want %s", updated.ImportedAt, first.ImportedAt)
+	}
+
+	reopened, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := reopened.List()
+	if len(list) != 1 {
+		t.Fatalf("expected 1 account after restart, got %d", len(list))
+	}
+	if !list[0].ImportedAt.Equal(first.ImportedAt) {
+		t.Fatalf("importedAt was not persisted: got %s want %s", list[0].ImportedAt, first.ImportedAt)
+	}
+}
+
 func TestMoveToBackRotatesSchedulingQueue(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "tokens.json"))
 	if err != nil {

@@ -667,6 +667,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 		OID                string     `json:"oid,omitempty"`
 		TID                string     `json:"tid,omitempty"`
 		ExpiresAt          time.Time  `json:"expiresAt,omitempty"`
+		ImportedAt         time.Time  `json:"importedAt,omitempty"`
 		UpdatedAt          time.Time  `json:"updatedAt,omitempty"`
 		BoundProxy         string     `json:"boundProxy,omitempty"`
 	}
@@ -701,7 +702,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			CallCount: callCount, TodayTokens: stat.TodayTokens, LastRequestAt: lastRequestAt,
 			CurrentConcurrency: inflight[a.ID], MaxConcurrency: limit, QueuePosition: i + 1,
 			RateLimited: rateLimited, CooldownUntil: cooldownUntil, OID: a.OID, TID: a.TID,
-			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
+			ExpiresAt: a.ExpiresAt, ImportedAt: a.ImportedAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
 		})
 	}
 	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot(), "accountConcurrency": concurrency, "timeZone": cfg.TimeZone})
