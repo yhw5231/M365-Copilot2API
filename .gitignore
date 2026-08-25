@@ -60,3 +60,7 @@ AGENTS.md
 *.bak*
 _wip_backup_*
 *.dll
+
+# Test/experiment scripts (kept locally, excluded from the repo)
+/scripts/
+/test_pkce_auth_gateway.py
