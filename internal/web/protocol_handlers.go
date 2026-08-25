@@ -108,6 +108,10 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	// failure, ...). Surface those instead of guessing from the absence of
 	// content, which currently produces a misleading empty_upstream_response.
 	var innerErr *innerStreamError
+	// The inner /v1/chat/completions stream may carry a usage chunk with
+	// prompt_tokens_details.cached_tokens. Capture it here so the final
+	// response.completed event can report it under input_tokens_details.
+	var innerCachedTokens int64
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
 	for scanner.Scan() {
@@ -130,6 +134,13 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			}
 			innerErr = &innerStreamError{Code: code, Message: msg}
 			continue
+		}
+		// Capture usage-only chunks (which carry cached_tokens) before the
+		// choices-skip; the usage JSON is the only signal we need from them.
+		if u, ok := chunk["usage"].(map[string]any); ok {
+			if ct := cachedTokensFromUsage(u); ct > 0 {
+				innerCachedTokens = ct
+			}
 		}
 		choices, _ := chunk["choices"].([]any)
 		if len(choices) == 0 {
@@ -318,6 +329,9 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		usageOutput += call.Name + call.Args
 	}
 	estimate := estimateResponsesUsage(model, o.Messages, o.Tools, o.ToolChoice, usageOutput)
+	if innerCachedTokens > 0 {
+		withInputCacheDetails(estimate.Values, innerCachedTokens)
+	}
 	resp := map[string]any{"id": id, "object": "response", "created_at": created, "status": "completed", "model": model, "output": output, "usage": estimate.Values, "m365": localUsageMetadata(estimate.Source)}
 	emit("response.completed", map[string]any{"type": "response.completed", "response": resp})
 }
@@ -420,6 +434,15 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, outputForUsage)
+	// The inner /v1/chat/completions run already reported how much of the
+	// input was served from the reused M365 conversation
+	// (usage.prompt_tokens_details.cached_tokens). Lift that value into the
+	// Responses usage under the standard input_tokens_details.cached_tokens
+	// field so relays (sub2api etc.) and clients see the cache hit.
+	cached := cachedTokensFromUsage(out["usage"])
+	if cached > 0 {
+		withInputCacheDetails(estimate.Values, cached)
+	}
 	out["usage"] = estimate.Values
 	out["m365_usage_source"] = estimate.Source
 	if body.Store != nil {

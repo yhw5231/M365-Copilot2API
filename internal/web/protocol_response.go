@@ -99,6 +99,15 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 		}
 	}
 	out := map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": blocks, "stop_reason": stop, "stop_sequence": nil, "usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens}}
+	// Add cached-token fields: Anthropic native cache_read_input_tokens and the
+	// OpenAI-style input_tokens_details.cached_tokens (sub2api reads both).
+	if u, ok := src["usage"].(map[string]any); ok {
+		if cached := cachedTokensFromUsage(u); cached > 0 {
+			outUsage := out["usage"].(map[string]any)
+			outUsage["cache_read_input_tokens"] = cached
+			withInputCacheDetails(outUsage, cached)
+		}
+	}
 	if !stream {
 		jsonOut(w, out)
 		return

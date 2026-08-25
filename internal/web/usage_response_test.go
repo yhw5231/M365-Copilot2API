@@ -63,3 +63,48 @@ func TestCachedInputTokensFullSendIsZero(t *testing.T) {
 		t.Fatalf("sent >= full must be 0 cached, got %d", got)
 	}
 }
+
+func TestCachedTokensFromUsageSpellings(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage any
+		want  int64
+	}{
+		{"chat completions prompt_tokens_details", map[string]any{"prompt_tokens_details": map[string]any{"cached_tokens": float64(70)}}, 70},
+		{"responses input_tokens_details", map[string]any{"input_tokens_details": map[string]any{"cached_tokens": float64(12)}}, 12},
+		{"top-level cached_tokens", map[string]any{"cached_tokens": float64(5)}, 5},
+		{"input_tokens_details wins", map[string]any{"input_tokens_details": map[string]any{"cached_tokens": float64(9)}, "prompt_tokens_details": map[string]any{"cached_tokens": float64(3)}}, 9},
+		{"missing", map[string]any{"prompt_tokens": 10}, 0},
+		{"zero", map[string]any{"prompt_tokens_details": map[string]any{"cached_tokens": float64(0)}}, 0},
+		{"not a map", "usage", 0},
+		{"nil", nil, 0},
+	}
+	for _, tc := range cases {
+		if got := cachedTokensFromUsage(tc.usage); got != tc.want {
+			t.Fatalf("%s: got %d want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestWithInputCacheDetailsClampsToInput(t *testing.T) {
+	usage := map[string]any{"input_tokens": float64(100), "output_tokens": float64(10)}
+	withInputCacheDetails(usage, 30)
+	det := usage["input_tokens_details"].(map[string]any)
+	if det["cached_tokens"].(int64) != 30 || det["text_tokens"].(int64) != 70 {
+		t.Fatalf("details wrong: %#v", det)
+	}
+
+	usage2 := map[string]any{"input_tokens": float64(50)}
+	withInputCacheDetails(usage2, 999)
+	det2 := usage2["input_tokens_details"].(map[string]any)
+	if det2["cached_tokens"].(int64) != 50 || det2["text_tokens"].(int64) != 0 {
+		t.Fatalf("clamp wrong: %#v", det2)
+	}
+
+	usage3 := map[string]any{"input_tokens": float64(50)}
+	withInputCacheDetails(usage3, -3)
+	det3 := usage3["input_tokens_details"].(map[string]any)
+	if det3["cached_tokens"].(int64) != 0 || det3["text_tokens"].(int64) != 50 {
+		t.Fatalf("negative wrong: %#v", det3)
+	}
+}

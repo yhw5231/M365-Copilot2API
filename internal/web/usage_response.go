@@ -1,5 +1,7 @@
 package web
 
+import "encoding/json"
+
 // usageWithCache builds an OpenAI-compatible chat completion usage object that
 // records how much of the input was served from the reused upstream M365
 // conversation. The prompt_tokens_details.cached_tokens / text_tokens
@@ -41,4 +43,71 @@ func cachedInputTokens(fullPrompt, sentPrompt string) int64 {
 		return 0
 	}
 	return full - sent
+}
+
+// cachedTokensFromUsage extracts the cached input token count from an
+// OpenAI-style usage object, accepting every spelling used across protocols:
+// prompt_tokens_details.cached_tokens (Chat Completions),
+// input_tokens_details.cached_tokens (Responses / Anthropic), or a top-level
+// cached_tokens (Kimi / xAI). Returns 0 when nothing is present.
+func cachedTokensFromUsage(usage any) int64 {
+	u, ok := usage.(map[string]any)
+	if !ok {
+		return 0
+	}
+	for _, detailsKey := range []string{"input_tokens_details", "prompt_tokens_details"} {
+		if details, ok := u[detailsKey].(map[string]any); ok {
+			if v, ok := details["cached_tokens"]; ok {
+				if n := numberToInt64(v); n > 0 {
+					return n
+				}
+			}
+		}
+	}
+	if v, ok := u["cached_tokens"]; ok {
+		if n := numberToInt64(v); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// numberToInt64 converts float64/int64/int/JSON-number values to int64.
+func numberToInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	case int:
+		return int64(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
+// withInputCacheDetails stamps the OpenAI Responses / Anthropic style
+// input_tokens_details.cached_tokens breakdown onto a usage map. cached is
+// clamped to the input size so text_tokens can never go negative.
+func withInputCacheDetails(usage map[string]any, cached int64) map[string]any {
+	input := int64(0)
+	if v, ok := usage["input_tokens"]; ok {
+		if n := numberToInt64(v); n > 0 {
+			input = n
+		}
+	}
+	if cached < 0 {
+		cached = 0
+	}
+	if cached > input {
+		cached = input
+	}
+	usage["input_tokens_details"] = map[string]any{
+		"cached_tokens": cached,
+		"text_tokens":   input - cached,
+	}
+	return usage
 }
