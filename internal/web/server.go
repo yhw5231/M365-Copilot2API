@@ -2323,15 +2323,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		var text strings.Builder
 		var streamedTools []detectedToolCall
 		first := true
+		noTools := len(toolMaps) == 0
 		identityFilter := newPublicIdentityStreamFilter(model)
 		emitText := func(part string) error {
 			if part == "" {
 				return nil
 			}
-			// The whole buffered response is emitted in one shot after validation,
-			// so drain the filter's pending tail as well; otherwise the last
-			// fragment (up to boundary/neutral-tail bytes) would be dropped.
-			part = identityFilter.Push(part) + identityFilter.Flush()
+			// Push-only: the identity filter holds partial identity boundaries
+			// until a safe boundary is reached. The final Flush is called in
+			// flushText at the end of the stream.
+			part = identityFilter.Push(part)
 			if part == "" {
 				return nil
 			}
@@ -2352,6 +2353,23 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			return nil
 		}
+		flushText := func() error {
+			if part := identityFilter.Flush(); part != "" {
+				delta := map[string]any{"content": part}
+				if first {
+					delta["role"] = "assistant"
+					first = false
+				}
+				chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}}
+				rc := http.NewResponseController(w)
+				_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk)); err != nil {
+					return err
+				}
+				flusher.Flush()
+			}
+			return nil
+		}
 		res, err := s.chatWithAccountEvents(ctx, acc.ID, account, answerReq, func(ev chathub.StreamEvent) error {
 			if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
 				streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
@@ -2360,8 +2378,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if ev.Kind != "text" || ev.Text == "" {
 				return nil
 			}
-			// Buffer the complete upstream response. Do not emit assistant text
-			// until tool-call parsing and workspace/tool-misjudgment validation pass.
+			if noTools {
+				// No tool validation to wait for: forward the delta immediately
+				// so the downstream client sees the first token as soon as the
+				// upstream produces it.
+				if err := emitText(ev.Text); err != nil {
+					return err
+				}
+			}
 			text.WriteString(ev.Text)
 			return nil
 		})
@@ -2392,8 +2416,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if ev.Kind != "text" || ev.Text == "" {
 						return nil
 					}
-					// Buffer the complete failover response as well. Validation must
-					// finish before any assistant text becomes client-visible.
+					if noTools {
+						if err := emitText(ev.Text); err != nil {
+							return err
+						}
+					}
 					text.WriteString(ev.Text)
 					return nil
 				})
@@ -2460,7 +2487,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// answer takes minutes to generate, and discarding the buffered text
 			// turns a retryable timeout into a user-visible total loss. The
 			// error event still follows so clients know the response is partial.
-			if text.Len() > 0 {
+			// When the request has no tools, deltas were already forwarded
+			// inline as they arrived, so only drain the identity filter tail.
+			if noTools {
+				_ = flushText()
+			} else if text.Len() > 0 {
 				_ = emitText(text.String())
 			}
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
@@ -2486,7 +2517,21 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// delta-assembled text, replace the buffer with it. This both recovers
 		// the empty case and prevents a truncated prefix from being emitted as
 		// a complete answer.
-		if len(res.Text) > text.Len() {
+		// When streaming inline (no tools), deltas were already forwarded as
+		// they arrived; only emit the unseen suffix if the result is longer.
+		if noTools {
+			// Deltas were already forwarded inline, so we cannot un-send text.
+			// If the authoritative result extends what the client already saw
+			// (a strict prefix superset), append only the unseen suffix.
+			if len(res.Text) > text.Len() && strings.HasPrefix(res.Text, text.String()) {
+				suffix := res.Text[text.Len():]
+				if err := emitText(suffix); err != nil {
+					log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+					return
+				}
+				text.WriteString(suffix)
+			}
+		} else if len(res.Text) > text.Len() {
 			text.Reset()
 			text.WriteString(res.Text)
 		}
@@ -2542,7 +2587,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 			return
 		}
-		if err := emitText(text.String()); err != nil {
+		if noTools {
+			// Text was already forwarded inline; drain the identity filter tail
+			// so the final fragment reaches the client.
+			if err := flushText(); err != nil {
+				log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+				return
+			}
+		} else if err := emitText(text.String()); err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 			return
 		}
@@ -2714,12 +2766,23 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		reasoningFilter := newPublicReasoningStreamFilter()
 		var bufferedContent strings.Builder
 		var bufferedReasoning strings.Builder
+		noTools := len(toolMaps) == 0
 		onDelta := func(content string) error {
 			bufferedContent.WriteString(content)
+			if noTools {
+				if c := contentFilter.Push(content); c != "" {
+					return writeChunk(map[string]any{"content": c})
+				}
+			}
 			return nil
 		}
 		onReasoning := func(reasoning string) error {
 			bufferedReasoning.WriteString(reasoning)
+			if noTools {
+				if rc := reasoningFilter.Push(reasoning); rc != "" {
+					return writeChunk(map[string]any{"reasoning_content": rc})
+				}
+			}
 			return nil
 		}
 		if err := sseRaw(r.Context(), w, flusher, ": connected\n\n"); err != nil {
@@ -2782,14 +2845,30 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
-			if reasoning := reasoningFilter.Push(res.Reasoning) + reasoningFilter.Flush(); reasoning != "" {
-				if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
-					return
+			if noTools {
+				// Reasoning/content deltas were already forwarded inline as they
+				// arrived; drain the filter tails so the last fragment reaches
+				// the client.
+				if reasoning := reasoningFilter.Flush(); reasoning != "" {
+					if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
+						return
+					}
 				}
-			}
-			if content := contentFilter.Push(res.Text) + contentFilter.Flush(); content != "" {
-				if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
-					return
+				if content := contentFilter.Flush(); content != "" {
+					if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
+						return
+					}
+				}
+			} else {
+				if reasoning := reasoningFilter.Push(res.Reasoning) + reasoningFilter.Flush(); reasoning != "" {
+					if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
+						return
+					}
+				}
+				if content := contentFilter.Push(res.Text) + contentFilter.Flush(); content != "" {
+					if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
+						return
+					}
 				}
 			}
 			s.accountPool.MarkSuccess(acc.ID)
@@ -2812,6 +2891,16 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				msg = "account is at capacity; the request queued too long, please retry shortly"
 			}
 			msg = sanitizePublicInternalText(msg)
+			if noTools {
+				// Deltas were already forwarded inline; drain filter tails so the
+				// partial content reaches the client before the error event.
+				if reasoning := reasoningFilter.Flush(); reasoning != "" {
+					_ = writeChunk(map[string]any{"reasoning_content": reasoning})
+				}
+				if content := contentFilter.Flush(); content != "" {
+					_ = writeChunk(map[string]any{"content": content})
+				}
+			}
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
