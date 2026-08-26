@@ -2040,10 +2040,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// conversation. cacheOnAccountSwitch overrides this with the value that
 	// applied before an account switch, so downstream still sees the cache
 	// savings even though the new account started a fresh conversation.
+	// sentPrompt captures the true incremental prompt before it is overwritten
+	// by answerReq.Text (which includes workspace instruction + ledger context
+	// that are not in the "prompt" baseline). Without this, the cached-tokens
+	// calculation would compare the full prompt against an inflated sent text
+	// and return 0 when the overhead exceeds the history.
 	cachedOverride := int64(-1)
+	var sentPrompt string
 	cachedTokens := func() int64 {
 		if cachedOverride >= 0 {
 			return cachedOverride
+		}
+		if sentPrompt != "" {
+			return cachedInputTokens(prompt, sentPrompt)
 		}
 		return cachedInputTokens(prompt, answerPrompt)
 	}
@@ -2289,6 +2298,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL)
 		answerReq.TraceID = requestID
 		answerReq.BindAccount = acc.ID
+		// Preserve the true incremental prompt before it is replaced by the full
+		// answer request text, so cached-token accounting measures only what the
+		// upstream conversation actually re-sent (not the workspace instruction
+		// or ledger context added by buildAnswerRequest).
+		if sentPrompt == "" {
+			sentPrompt = answerPrompt
+		}
 		answerPrompt = answerReq.Text
 		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d mcp=%s", requestID, len(answerPrompt), len(answerReq.Tools), mcpServerURL)
 		id := "chatcmpl-" + uuid.NewString()
@@ -2398,7 +2414,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				// no healthy alternative
 			} else {
 				if s.settings.get().CacheOnAccountSwitch {
-					cachedOverride = cachedInputTokens(prompt, answerPrompt)
+					cachedOverride = cachedTokens()
 				}
 				failoverReq := answerReq
 				if body.ConversationID == resolvedConversationID {
@@ -2709,6 +2725,11 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL)
 	answerReq.TraceID = requestID
 	answerReq.BindAccount = acc.ID
+	// Preserve the true incremental prompt before the full answer request text
+	// overwrites it (see the streaming path above).
+	if sentPrompt == "" {
+		sentPrompt = answerPrompt
+	}
 	answerPrompt = answerReq.Text
 	var res chathub.Result
 	// Reasoning-tone streams (tone ends in "_Reasoning") reach here via
@@ -2796,7 +2817,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			next, nerr := s.nextProxySafeAccount(acc.ID)
 			if nerr == nil {
 				if s.settings.get().CacheOnAccountSwitch {
-					cachedOverride = cachedInputTokens(prompt, answerPrompt)
+					cachedOverride = cachedTokens()
 				}
 				failoverReq := answerReq
 				if body.ConversationID == resolvedConversationID {
@@ -2949,7 +2970,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			next, nerr := s.nextProxySafeAccount(acc.ID)
 			if nerr == nil {
 				if s.settings.get().CacheOnAccountSwitch {
-					cachedOverride = cachedInputTokens(prompt, answerPrompt)
+					cachedOverride = cachedTokens()
 				}
 				failoverReq := answerReq
 				if body.ConversationID == resolvedConversationID {
