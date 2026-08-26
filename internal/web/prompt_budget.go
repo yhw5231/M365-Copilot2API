@@ -101,6 +101,24 @@ func budgetMessages(msgs []oaiMsg, maxTokens int) []oaiMsg {
 			break
 		}
 	}
+	// Goal tool evidence (create_goal/get_goal/update_goal) is critical task
+	// state: it carries the goal id and completion status the server-side ledger
+	// mirrors. Keep these calls even in old history so a trimmed request can
+	// still recover the goal identity when the ledger is rebuilt (their paired
+	// tool results are already tier-2 essential above).
+	for i, m := range msgs {
+		if strings.ToLower(strings.TrimSpace(m.Role)) != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		for _, raw := range m.ToolCalls {
+			fn, _ := raw["function"].(map[string]any)
+			name, _ := fn["name"].(string)
+			switch strings.ToLower(name) {
+			case "create_goal", "get_goal", "update_goal":
+				essential[i] = true
+			}
+		}
+	}
 	// The current turn tail (from the last user message) is never trimmed.
 	lastUser := -1
 	for i := len(msgs) - 1; i >= 0; i-- {

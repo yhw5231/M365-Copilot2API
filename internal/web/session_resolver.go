@@ -540,6 +540,36 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 	sr.persist.markDirty()
 }
 
+// ResolveTaskLedger returns the task ledger for the downstream session matching
+// the request, using the same content-key matching as Resolve (prefix first,
+// then suffix to tolerate local context truncation). This lets a client that
+// never sends an explicit session id (e.g. a plain OpenAI chat client) keep its
+// task ledger — and therefore its goal state — across rounds, instead of
+// rebuilding a fresh active ledger every request. It is a read-only fallback and
+// does not mutate the session binding.
+func (sr *sessionResolver) ResolveTaskLedger(r *http.Request, body *oaiReq) *taskLedger {
+	if sr == nil {
+		return nil
+	}
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	key := extractAPIKey(r)
+	ipFinger := clientIPFingerprint(r)
+	// Strict prefix match first (the request extends the stored history).
+	if bestID, _ := sr.matchContextLocked(ipFinger, key, body.Messages); bestID != "" {
+		if sess, ok := sr.sessions[bestID]; ok {
+			return sess.Task
+		}
+	}
+	// Suffix match tolerates the client dropping old history.
+	if suffixID, _ := sr.matchSuffixLocked(ipFinger, key, body.Messages); suffixID != "" {
+		if sess, ok := sr.sessions[suffixID]; ok {
+			return sess.Task
+		}
+	}
+	return nil
+}
+
 // SetTask attaches a task ledger to an existing session binding. It is a no-op
 // when the session is unknown (the ledger is then attached by the next bind).
 func (sr *sessionResolver) SetTask(sessionID string, task *taskLedger) {

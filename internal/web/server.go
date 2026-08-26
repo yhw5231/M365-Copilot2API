@@ -2306,6 +2306,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
+		// Expose the stable downstream session id so a client that echoes it
+		// back (X-M365-Session-Id header / body.session_id) keeps its task
+		// ledger and goal state across rounds.
+		if resolved := s.sessionResolver.Resolve(r, &body); !resolved.IsNew {
+			w.Header().Set(sessionHeaderName, resolved.SessionID)
+		}
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "stream unsupported")

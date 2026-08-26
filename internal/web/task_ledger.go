@@ -400,6 +400,16 @@ func (s *Server) sessionTaskLedger(r *http.Request, body *oaiReq) *taskLedger {
 			}
 		}
 	}
+	// Content-key fallback: a client that never sends an explicit session
+	// identifier still gets its persistent ledger (and goal state) across rounds
+	// via the same prefix/suffix content matching the session resolver uses for
+	// conversation reuse. Without this, every round rebuilds a fresh active
+	// ledger and the goal can never be observed as complete server-side.
+	if s.sessionResolver != nil {
+		if task := s.sessionResolver.ResolveTaskLedger(r, body); task != nil {
+			return task
+		}
+	}
 	return nil
 }
 
