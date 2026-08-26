@@ -62,7 +62,9 @@ type innerStreamError struct {
 
 // streamResponsesAdapter converts the internal OpenAI SSE incrementally instead
 // of buffering the entire completion in httptest.ResponseRecorder.
-func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, o oaiReq, model string) {
+// newMessages carries the current request's messages (before previous_response_id
+// history prepend) so the adapter can compute cached_tokens = input_tokens - new_input_tokens.
+func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, o oaiReq, model string, newMessages []oaiMsg) {
 	o.Stream = true
 	b, _ := json.Marshal(o)
 	r2 := r.Clone(r.Context())
@@ -112,10 +114,6 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	// failure, ...). Surface those instead of guessing from the absence of
 	// content, which currently produces a misleading empty_upstream_response.
 	var innerErr *innerStreamError
-	// The inner /v1/chat/completions stream may carry a usage chunk with
-	// prompt_tokens_details.cached_tokens. Capture it here so the final
-	// response.completed event can report it under input_tokens_details.
-	var innerCachedTokens int64
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
 	for scanner.Scan() {
@@ -139,13 +137,8 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			innerErr = &innerStreamError{Code: code, Message: msg}
 			continue
 		}
-		// Capture usage-only chunks (which carry cached_tokens) before the
-		// choices-skip; the usage JSON is the only signal we need from them.
-		if u, ok := chunk["usage"].(map[string]any); ok {
-			if ct := cachedTokensFromUsage(u); ct > 0 {
-				innerCachedTokens = ct
-			}
-		}
+		// Skip usage-only chunks (they carry no choices); the estimate is
+		// computed locally at the end from the visible request and completion.
 		choices, _ := chunk["choices"].([]any)
 		if len(choices) == 0 {
 			continue
@@ -355,8 +348,14 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		usageOutput += call.Name + call.Args
 	}
 	estimate := estimateResponsesUsage(model, o.Messages, o.Tools, o.ToolChoice, usageOutput)
-	if innerCachedTokens > 0 {
-		withInputCacheDetails(estimate.Values, innerCachedTokens)
+	// Cache breakdown for the downstream: everything except the current
+	// request's own messages (newMessages, captured before the history prepend)
+	// is cached history restored through previous_response_id. The inner
+	// session-reuse signal (innerCachedTokens) is a different token basis and
+	// produced values inconsistent with the estimate's input_tokens, so the
+	// difference-based calc is authoritative.
+	if cached := responsesHistoryCacheTokens(model, o.Messages, newMessages, o.Tools, o.ToolChoice, usageOutput); cached > 0 {
+		withInputCacheDetails(estimate.Values, cached)
 	}
 	resp := map[string]any{"id": id, "object": "response", "created_at": created, "status": "completed", "model": model, "output": output, "usage": estimate.Values, "m365": localUsageMetadata(estimate.Source)}
 	emit("response.completed", map[string]any{"type": "response.completed", "response": resp})
@@ -416,6 +415,10 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant := extractAPIKey(r)
+	// Capture the current request's own messages before the previous_response_id
+	// history prepend: they are the "new" input for the cache breakdown, while
+	// the restored history is what the downstream should report as cached.
+	currentMessages := append([]oaiMsg(nil), o.Messages...)
 	if body.PreviousResponseID != "" {
 		s.responseMu.Lock()
 		prior, ok := s.responseMessages[tenant][body.PreviousResponseID]
@@ -435,7 +438,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		o.Messages = append(messages, o.Messages...)
 	}
 	if body.Stream {
-		s.streamResponsesAdapter(w, r, o, firstNonEmpty(body.Model, "m365-copilot"))
+		s.streamResponsesAdapter(w, r, o, firstNonEmpty(body.Model, "m365-copilot"), currentMessages)
 		return
 	}
 	out, raw, status, err := s.runOpenAIAdapter(r, o)
@@ -460,12 +463,13 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, outputForUsage)
-	// The inner /v1/chat/completions run already reported how much of the
-	// input was served from the reused M365 conversation
-	// (usage.prompt_tokens_details.cached_tokens). Lift that value into the
-	// Responses usage under the standard input_tokens_details.cached_tokens
-	// field so relays (sub2api etc.) and clients see the cache hit.
-	cached := cachedTokensFromUsage(out["usage"])
+	// Cache breakdown for the downstream: everything except the current
+	// request's own messages (currentMessages, captured before the history
+	// prepend) is cached history restored through previous_response_id. The
+	// inner M365 conversation-reuse signal (usage.prompt_tokens_details.
+	// cached_tokens) uses a different token basis and was inconsistent with the
+	// estimate's input_tokens, so the difference-based calc is authoritative.
+	cached := responsesHistoryCacheTokens(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, currentMessages, o.Tools, o.ToolChoice, outputForUsage)
 	if cached > 0 {
 		withInputCacheDetails(estimate.Values, cached)
 	}
@@ -490,6 +494,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		Endpoint:     "/v1/responses",
 		InputTokens:  int64(estimate.Values["input_tokens"].(int)),
 		OutputTokens: int64(estimate.Values["output_tokens"].(int)),
+		CacheTokens:  cached,
 		DurationMs:   time.Since(startedAt).Milliseconds(),
 		Status:       200,
 	})
