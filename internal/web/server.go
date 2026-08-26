@@ -2031,9 +2031,25 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// and return 0 when the overhead exceeds the history.
 	cachedOverride := int64(-1)
 	var sentPrompt string
+	// storedContextPrompt carries the upstream conversation's persisted history
+	// when an explicit session is reused with only the current turn submitted
+	// (explicit_incremental). Those tokens are the cached portion of the logical
+	// prompt and must be reflected in prompt_tokens / cached_tokens even though
+	// the request body itself does not echo them.
+	var storedContextPrompt string
 	cachedTokens := func() int64 {
 		if cachedOverride >= 0 {
 			return cachedOverride
+		}
+		if storedContextPrompt != "" {
+			// explicit_incremental reuse: the upstream conversation already held
+			// storedContextPrompt; only the current turn (delta) was re-submitted.
+			// The persisted history is the cached portion of the logical prompt.
+			delta := sentPrompt
+			if delta == "" {
+				delta = answerPrompt
+			}
+			return EstimateTokens(storedContextPrompt+"\n"+delta) - EstimateTokens(delta)
 		}
 		if sentPrompt != "" {
 			return cachedInputTokens(prompt, sentPrompt)
@@ -2064,6 +2080,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if incPrompt != "" {
 						answerPrompt = incPrompt
 						body.Attachments = incAtt
+					}
+				} else if len(resolved.StoredContext) > 0 {
+					// explicit_incremental: the client submitted only its current turn,
+					// but the upstream conversation already holds StoredContext. Its
+					// tokens are the cached portion of the logical prompt.
+					if sp, _ := flattenPromptMessages(resolved.StoredContext, nil); strings.TrimSpace(sp) != "" {
+						storedContextPrompt = strings.TrimSpace(sp)
 					}
 				}
 			}
@@ -2573,7 +2596,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if body.shouldSendStreamUsage() {
-			pt := EstimateTokens(prompt)
+			pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
 			ct := EstimateTokens(res.Text)
 			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedTokens())}
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
@@ -2877,7 +2900,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
 		}
-		pt := EstimateTokens(prompt)
+		pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
 		ct := EstimateTokens(res.Text)
 		cached := cachedTokens()
 		if tr := traceFromRequest(r); tr != nil {
@@ -3099,7 +3122,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		b, _ := json.Marshal(chunk)
 		_ = sseRaw(r.Context(), w, flusher, "data: "+string(b)+"\n\n")
-		pt := EstimateTokens(prompt)
+		pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
 		ct := EstimateTokens(res.Text)
 		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usageWithCache(pt, ct, cachedTokens())}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
@@ -3128,7 +3151,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	// 上游 ChatHub 不返回 token 计数，按请求/回复文本本地估算填充
 	// OpenAI 要求的 usage 字段。
-	pt := EstimateTokens(prompt)
+	pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
 	ct := EstimateTokens(res.Text)
 	cached := cachedTokens()
 	meta := compatM365Metadata(res)
@@ -3287,6 +3310,18 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	}
 	for _, msg := range body.Messages[:upper] {
 		historyTokens += EstimateTokens(contentToString(msg.Content))
+	}
+	// Single-turn incremental reuse (explicit_incremental): the request carried
+	// only the current turn, but the upstream conversation already held the
+	// persisted history. Account those pre-existing tokens as cached history so
+	// the server-side usage record matches the cached_tokens reported to the
+	// client. A first turn has no session binding yet, so this stays zero.
+	if upper == 0 && body.SessionID != "" {
+		if sess, ok := s.sessionResolver.GetSession(body.SessionID); ok && len(sess.ContextHistory) > 0 {
+			for _, msg := range sess.ContextHistory {
+				historyTokens += EstimateTokens(contentToString(msg.Content))
+			}
+		}
 	}
 	newTokens := EstimateTokens(prompt)
 	outTokens := EstimateTokens(res.Text)

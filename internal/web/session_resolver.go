@@ -179,6 +179,12 @@ type ResolveResult struct {
 	// are already present in the upstream conversation. It is safe to use only
 	// as the start index of body.Messages[HistoryLen:].
 	HistoryLen int
+	// StoredContext is the persisted upstream message history when a session is
+	// reused without a full-history echo (explicit_incremental, HistoryLen == 0).
+	// The client submitted only its current turn; the upstream conversation
+	// still holds StoredContext, so those tokens are the cached portion of the
+	// logical prompt. Empty otherwise.
+	StoredContext []oaiMsg
 	// ResetUpstream signals that the downstream session is still valid, but its
 	// submitted context no longer extends the stored history. The caller must
 	// start a fresh upstream conversation and send the complete current context.
@@ -245,6 +251,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 			// client mode, not evidence that the client compacted its context.
 			if len(body.Messages) <= 1 {
 				result.MatchedBy = "explicit_incremental"
+				result.StoredContext = cloneMessages(sess.ContextHistory)
 				return result
 			}
 			// A multi-message request that no longer extends the stored history is

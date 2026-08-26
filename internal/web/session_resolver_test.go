@@ -421,3 +421,61 @@ func TestResolveAcceptsAltSessionHeaderName(t *testing.T) {
 		t.Fatalf("different session value must stay new, got %+v", resolvedC)
 	}
 }
+
+// TestExplicitIncrementalCarriesStoredContext verifies that a single-message
+// incremental reuse (explicit_incremental, HistoryLen == 0) surfaces the
+// upstream conversation's persisted history through ResolveResult.StoredContext.
+// The caller uses it to report cached_tokens even though the request body does
+// not echo the history; without it the client would see a false zero even
+// though the upstream conversation was genuinely reused.
+func TestExplicitIncrementalCarriesStoredContext(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(sessionHeaderName, "sid-inc-context")
+	sr.Bind("upstream-conv", "conv-inc-context", "account-a",
+		&oaiReq{Messages: []oaiMsg{
+			{Role: "system", Content: "You are concise."},
+			{Role: "user", Content: "第一轮问题"},
+			{Role: "assistant", Content: "第一轮回答"},
+		}},
+		"",
+		req)
+
+	// Second turn: only the current user message, no history echo.
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req2.Header.Set(sessionHeaderName, "sid-inc-context")
+	res := sr.Resolve(req2, &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "第二轮问题"}}})
+	if res.IsNew {
+		t.Fatal("single-message request with the same explicit session id must reuse the session")
+	}
+	if res.MatchedBy != "explicit_incremental" {
+		t.Fatalf("expected explicit_incremental, got %q", res.MatchedBy)
+	}
+	if res.HistoryLen != 0 {
+		t.Fatalf("expected HistoryLen=0 for single-message incremental, got %d", res.HistoryLen)
+	}
+	if len(res.StoredContext) != 3 {
+		t.Fatalf("expected StoredContext to carry the 3 persisted messages, got %d", len(res.StoredContext))
+	}
+	if res.StoredContext[2].Content != "第一轮回答" {
+		t.Fatalf("stored context content mismatch: %q", res.StoredContext[2].Content)
+	}
+
+	// A prefix-echo request must NOT populate StoredContext (the history is
+	// already visible in the request body).
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req3.Header.Set(sessionHeaderName, "sid-inc-context")
+	res3 := sr.Resolve(req3, &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "You are concise."},
+		{Role: "user", Content: "第一轮问题"},
+		{Role: "assistant", Content: "第一轮回答"},
+		{Role: "user", Content: "第三轮问题"},
+	}})
+	if res3.MatchedBy != "explicit_prefix_3" {
+		t.Fatalf("expected explicit_prefix_3, got %q", res3.MatchedBy)
+	}
+	if len(res3.StoredContext) != 0 {
+		t.Fatalf("prefix echo must not populate StoredContext, got %d", len(res3.StoredContext))
+	}
+}
