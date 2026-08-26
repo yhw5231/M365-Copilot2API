@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"strconv"
@@ -587,6 +588,23 @@ func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, ac
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).ChatWithEvents(ctx, account, request, onEvent)
+	s.markAccountResult(accountID, err)
+	return result, err
+}
+
+// chatWithAccountRawEvents runs one streaming chat request under the account's
+// concurrency slot, forwarding every raw upstream SignalR frame to onRaw as it
+// arrives (no buffering until completion).
+func (s *Server) chatWithAccountRawEvents(ctx context.Context, accountID string, account chathub.Account, request chathub.Request, onRaw func(json.RawMessage) error) (chathub.Result, error) {
+	release, err := s.accountConcurrency.Acquire(ctx, accountID, request.SessionID)
+	if err != nil {
+		return chathub.Result{}, err
+	}
+	defer release()
+	if s.accountPool != nil {
+		s.accountPool.MarkCall(accountID)
+	}
+	result, err := s.accountClient(accountID).ChatWithRawEvents(ctx, account, request, onRaw)
 	s.markAccountResult(accountID, err)
 	return result, err
 }

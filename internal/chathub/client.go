@@ -95,6 +95,12 @@ type Request struct {
 	// TraceID correlates OnUpstream lifecycle frames with a request-level trace
 	// record so the web layer can attach them to the correct debug entry.
 	TraceID string
+	// RequestID optionally pins the upstream request id that is returned in
+	// Result.RequestID and used for the ChatHub session URL. When empty, a
+	// random one is generated per request. Callers that need to reference the
+	// id before the request completes (e.g. streaming pass-through frames) can
+	// set it explicitly.
+	RequestID string
 	// BindAccount pins this request's ChatHub traffic to the proxy node bound
 	// to the account ID (account-node binding in the outbound pool). Empty
 	// keeps the pool's default round-robin behavior.
@@ -209,7 +215,7 @@ func (c *Client) ChatWithEvents(ctx context.Context, acc Account, req Request, h
 			return nil
 		}
 		return handler(StreamEvent{Kind: "text", Text: text})
-	}, handler)
+	}, handler, nil)
 }
 
 // ChatWithDelta preserves Chat semantics while exposing upstream text deltas as
@@ -217,7 +223,16 @@ func (c *Client) ChatWithEvents(ctx context.Context, acc Account, req Request, h
 // cancels the request. Full snapshot messages are retained for final-result
 // reconstruction but are not emitted as deltas, preventing duplicate text.
 func (c *Client) ChatWithDelta(ctx context.Context, acc Account, req Request, onDelta func(string) error) (Result, error) {
-	return c.chatWithHandlers(ctx, acc, req, onDelta, nil)
+	return c.chatWithHandlers(ctx, acc, req, onDelta, nil, nil)
+}
+
+// ChatWithRawEvents streams every raw SignalR frame to onRaw as soon as it is
+// read from the socket, before any normalization. The web layer uses it for
+// pass-through endpoints that must relay the native frame stream downstream
+// without waiting for the full completion. onRaw must return quickly; an error
+// cancels the request. The returned Result is identical to Chat's.
+func (c *Client) ChatWithRawEvents(ctx context.Context, acc Account, req Request, onRaw func(json.RawMessage) error) (Result, error) {
+	return c.chatWithHandlers(ctx, acc, req, nil, nil, onRaw)
 }
 
 // ChatWithReasoning is the streaming entry point used by the OpenAI-compatible
@@ -230,10 +245,10 @@ func (c *Client) ChatWithReasoning(ctx context.Context, acc Account, req Request
 			return onReasoning(ev.Text)
 		}
 		return nil
-	})
+	}, nil)
 }
 
-func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request, onDelta func(string) error, onEvent StreamHandler) (Result, error) {
+func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request, onDelta func(string) error, onEvent StreamHandler, onRaw func(json.RawMessage) error) (Result, error) {
 	startedAt := time.Now()
 	log.Printf("chathub timing start prompt_len=%d", len(req.Text))
 	if acc.AccessToken == "" || acc.OID == "" || acc.TID == "" {
@@ -254,7 +269,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		req.ConversationID = uuid.NewString()
 		firstTurn = true
 	}
-	requestID := uuid.NewString()
+	requestID := req.RequestID
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
 	// Account-node binding: when the request names a bound account, its
 	// ChatHub traffic (attachment upload/download and the WebSocket stream)
 	// goes through the proxy node pinned to that account.
@@ -531,6 +549,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			}
 			b := []byte(part)
 			events = append(events, json.RawMessage(b))
+			if onRaw != nil {
+				if err := onRaw(json.RawMessage(b)); err != nil {
+					returnConn = false
+					return Result{}, err
+				}
+			}
 			var obj map[string]any
 			if err := json.Unmarshal(b, &obj); err != nil {
 				continue
