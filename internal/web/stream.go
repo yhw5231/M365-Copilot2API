@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"m365-copilot2api/internal/chathub"
 )
 
@@ -49,14 +51,65 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate a stable request id so streaming frames and the final done
+	// event carry the same value.
+	requestID := uuid.NewString()
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
-	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{
-		Text: text, Tone: body.Tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments,
-		BindAccount: acc.ID,
+
+	cc := chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}
+	req := chathub.Request{
+		Text: text, Tone: body.Tone, ConversationID: body.ConversationID, SessionID: body.SessionID,
+		Attachments: body.Attachments, BindAccount: acc.ID, RequestID: requestID,
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "stream unsupported")
+		return
+	}
+
+	var headersWritten bool
+	var eventIndex, semanticIndex int
+	emitEvent := func(raw json.RawMessage) error {
+		if !headersWritten {
+			headersWritten = true
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+		}
+		norm := chathub.NormalizeEvents([]json.RawMessage{raw})
+		for _, ev := range norm {
+			payload := map[string]any{
+				"index":          eventIndex,
+				"type":           "chathub.event",
+				"event":          ev,
+				"conversationId": body.ConversationID,
+				"sessionId":      body.SessionID,
+				"requestId":      requestID,
+			}
+			eventIndex++
+			if err := writeSSE(r, w, flusher, "event", payload); err != nil {
+				return err
+			}
+		}
+		for _, se := range chathub.SemanticEvents([]json.RawMessage{raw}) {
+			payload := map[string]any{"index": semanticIndex, "type": "m365.semantic", "event": se}
+			semanticIndex++
+			if err := writeSSE(r, w, flusher, "semantic", payload); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	res, err := s.chatWithAccountRawEvents(ctx, acc.ID, cc, req, func(raw json.RawMessage) error {
+		return emitEvent(raw)
 	})
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", upstreamError(err))
+		if !headersWritten {
+			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", upstreamError(err))
+		}
 		return
 	}
 	if body.SessionKey != "" {
@@ -65,31 +118,10 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	res.Text = sanitizePublicAssistantText(res.Text)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "stream unsupported")
-		return
-	}
-	for i, event := range res.Normalized {
-		payload := map[string]any{
-			"index":          i,
-			"type":           "chathub.event",
-			"event":          event,
-			"conversationId": res.ConversationID,
-			"sessionId":      res.SessionID,
-			"requestId":      res.RequestID,
-		}
-		if err := writeSSE(r, w, flusher, "event", payload); err != nil {
-			return
-		}
-	}
-	for i, event := range chathub.SemanticEvents(res.Events) {
-		if err := writeSSE(r, w, flusher, "semantic", map[string]any{"index": i, "type": "m365.semantic", "event": event}); err != nil {
-			return
-		}
+	if !headersWritten {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
 	}
 	if err := writeSSE(r, w, flusher, "done", map[string]any{
 		"type": "done", "text": res.Text,
