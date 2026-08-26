@@ -65,7 +65,7 @@ type innerStreamError struct {
 // of buffering the entire completion in httptest.ResponseRecorder.
 // newMessages carries the current request's messages (before previous_response_id
 // history prepend) so the adapter can compute cached_tokens = input_tokens - new_input_tokens.
-func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, o oaiReq, model string, newMessages []oaiMsg) {
+func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, o oaiReq, model string, newMessages []oaiMsg, startedAt time.Time, storeHistory *bool) {
 	o.Stream = true
 	b, _ := json.Marshal(o)
 	r2 := r.Clone(r.Context())
@@ -129,6 +129,54 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	// failure, ...). Surface those instead of guessing from the absence of
 	// content, which currently produces a misleading empty_upstream_response.
 	var innerErr *innerStreamError
+	// innerCachedTokens captures the upstream conversation-reuse cache from the
+	// inner stream's usage chunk (session resolver / conv-cache hit). It is the
+	// authoritative cache signal for the downstream Responses usage: it works
+	// even when the client never sends previous_response_id.
+	var innerCachedTokens int64
+
+	// Usage accounting for the streaming Responses path: the inner chat records
+	// its own /v1/chat/completions row, but the protocol entry (/v1/responses)
+	// must also be logged so the request table shows the cache share and
+	// time-to-first-token as seen by the Responses client. TTFT is measured to
+	// the first visible delta (reasoning, text, or tool argument).
+	status := 200
+	var errMsg string
+	firstDeltaAt := time.Time{}
+	markFirstDelta := func() {
+		if firstDeltaAt.IsZero() {
+			firstDeltaAt = time.Now()
+		}
+	}
+	defer func() {
+		usageOut := reasoning.String() + text.String()
+		for _, call := range calls {
+			usageOut += call.Name + call.Args
+		}
+		est := estimateResponsesUsage(model, o.Messages, o.Tools, o.ToolChoice, usageOut)
+		cached := responsesHistoryCacheTokens(model, o.Messages, newMessages, o.Tools, o.ToolChoice, usageOut)
+		if innerCachedTokens > cached {
+			cached = innerCachedTokens
+		}
+		var ttft int64
+		if !firstDeltaAt.IsZero() {
+			ttft = firstDeltaAt.Sub(startedAt).Milliseconds()
+		}
+		s.usage.record(UsageRecord{
+			Time:         time.Now(),
+			APIKeyPrefix: extractAPIKey(r),
+			Model:        model,
+			Endpoint:     "/v1/responses",
+			Stream:       true,
+			InputTokens:  int64(est.Values["input_tokens"].(int)),
+			OutputTokens: int64(est.Values["output_tokens"].(int)),
+			CacheTokens:  cached,
+			TTFTMs:       ttft,
+			DurationMs:   time.Since(startedAt).Milliseconds(),
+			Status:       status,
+			Error:        errMsg,
+		})
+	}()
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
 	for scanner.Scan() {
@@ -154,14 +202,24 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		}
 		// Skip usage-only chunks (they carry no choices); the estimate is
 		// computed locally at the end from the visible request and completion.
+		// Capture the inner conversation-reuse cache from the usage chunk: it
+		// reflects what the upstream actually held (session resolver / conv
+		// cache hit), which stays valid even when the client did not send
+		// previous_response_id.
 		choices, _ := chunk["choices"].([]any)
 		if len(choices) == 0 {
+			if u, ok := chunk["usage"]; ok {
+				if c := cachedTokensFromUsage(u); c > 0 {
+					innerCachedTokens = c
+				}
+			}
 			continue
 		}
 		choice, _ := choices[0].(map[string]any)
 		delta, _ := choice["delta"].(map[string]any)
 		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
 			reasoning.WriteString(rc)
+			markFirstDelta()
 			if !reasoningStarted {
 				reasoningStarted = true
 				emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "reasoning", "id": reasoningID, "status": "in_progress", "summary": []any{map[string]any{"type": "summary_text", "id": reasoningContentID, "text": "", "annotations": []any{}}}}})
@@ -170,6 +228,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		}
 		if content, ok := delta["content"].(string); ok && content != "" {
 			text.WriteString(content)
+			markFirstDelta()
 			msgIndex := 0
 			if reasoningStarted {
 				msgIndex = 1
@@ -193,6 +252,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 				if !ok {
 					continue
 				}
+				markFirstDelta()
 				idxFloat, ok := tc["index"].(float64)
 				if !ok {
 					continue
@@ -249,10 +309,11 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	}
 	<-innerDone
 	if scanner.Err() != nil || irw.status >= http.StatusBadRequest {
-		status := irw.status
+		status = irw.status
 		if status == 0 {
 			status = http.StatusBadGateway
 		}
+		errMsg = errorMessage(irw.body.Bytes(), "inner chat request failed")
 		// Surface the inner request's own error message (e.g. an upstream 4xx/5xx
 		// or a chat protocol rejection) instead of an opaque placeholder, so the
 		// client can see why the response failed.
@@ -260,7 +321,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			"type": "response.failed",
 			"response": map[string]any{
 				"id": id, "object": "response", "status": "failed", "model": model,
-				"error": map[string]any{"code": status, "message": errorMessage(irw.body.Bytes(), "inner chat request failed")},
+				"error": map[string]any{"code": status, "message": errMsg},
 			},
 		})
 		return
@@ -270,6 +331,8 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		// completion, repair failure, ...). Report the real cause instead of
 		// guessing. Partial text already streamed is kept; the failed event
 		// tells the client the response is incomplete.
+		status = http.StatusBadGateway
+		errMsg = innerErr.Message
 		emit("response.failed", map[string]any{
 			"type": "response.failed",
 			"response": map[string]any{
@@ -283,11 +346,13 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		// Never leave a Responses stream after response.created without a
 		// terminal event: clients otherwise render this as a successful blank
 		// answer and may reuse an incomplete response on the next turn.
+		status = http.StatusBadGateway
+		errMsg = "ChatHub returned no text or tool call"
 		emit("response.failed", map[string]any{
 			"type": "response.failed",
 			"response": map[string]any{
 				"id": id, "object": "response", "status": "failed", "model": model,
-				"error": map[string]any{"code": "empty_upstream_response", "message": "ChatHub returned no text or tool call"},
+				"error": map[string]any{"code": "empty_upstream_response", "message": errMsg},
 			},
 		})
 		return
@@ -332,11 +397,13 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 				// tool-conversation guard 409s. Surface the upstream anomaly
 				// as a failed response instead.
 				log.Printf("[responses] dropping tool call with empty name at output_index=%d", i)
+				status = http.StatusBadGateway
+				errMsg = "upstream tool call missing name"
 				emit("response.failed", map[string]any{
 					"type": "response.failed",
 					"response": map[string]any{
 						"id": id, "object": "response", "status": "failed", "model": model,
-						"error": map[string]any{"code": "invalid_tool_call", "message": "upstream tool call missing name"},
+						"error": map[string]any{"code": "invalid_tool_call", "message": errMsg},
 					},
 				})
 				return
@@ -381,11 +448,57 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	// is cached history restored through previous_response_id. The inner
 	// session-reuse signal (innerCachedTokens) is a different token basis and
 	// produced values inconsistent with the estimate's input_tokens, so the
-	// difference-based calc is authoritative.
-	if cached := responsesHistoryCacheTokens(model, o.Messages, newMessages, o.Tools, o.ToolChoice, usageOutput); cached > 0 {
+	// difference-based calc is authoritative — unless the inner reuse cache is
+	// the only signal available (client without previous_response_id), in which
+	// case it is reported as-is.
+	cached := responsesHistoryCacheTokens(model, o.Messages, newMessages, o.Tools, o.ToolChoice, usageOutput)
+	if innerCachedTokens > cached {
+		cached = innerCachedTokens
+	}
+	if cached > 0 {
 		withInputCacheDetails(estimate.Values, cached)
 	}
 	resp := map[string]any{"id": id, "object": "response", "created_at": created, "status": "completed", "model": model, "output": output, "usage": estimate.Values, "m365": localUsageMetadata(estimate.Source)}
+	// Store the response for subsequent previous_response_id (same semantics as
+	// the non-streaming path in responses()).
+	tenant := extractAPIKey(r)
+	if shouldStoreResponsesHistory(storeHistory) && (text.Len() > 0 || len(calls) > 0 || reasoning.Len() > 0) {
+		stored := append([]oaiMsg(nil), o.Messages...)
+		if len(calls) > 0 {
+			converted := make([]map[string]any, 0, len(calls))
+			for _, call := range calls {
+				converted = append(converted, map[string]any{"id": call.ID, "type": "function", "function": map[string]any{"name": call.Name, "arguments": call.Args}})
+			}
+			stored = append(stored, oaiMsg{Role: "assistant", ToolCalls: converted})
+		} else if text.Len() > 0 {
+			stored = append(stored, oaiMsg{Role: "assistant", Content: text.String(), ReasoningContent: reasoning.String()})
+		} else if reasoning.Len() > 0 {
+			stored = append(stored, oaiMsg{Role: "assistant", ReasoningContent: reasoning.String()})
+		}
+		s.responseMu.Lock()
+		bucket := s.responseMessages[tenant]
+		if bucket == nil {
+			bucket = map[string]respHistory{}
+			s.responseMessages[tenant] = bucket
+		}
+		for k, h := range bucket {
+			if time.Since(h.At) > time.Hour {
+				delete(bucket, k)
+			}
+		}
+		if len(bucket) >= maxResponsesPerTenant {
+			var oldestKey string
+			var oldestAt time.Time
+			for k, h := range bucket {
+				if oldestKey == "" || h.At.Before(oldestAt) {
+					oldestKey, oldestAt = k, h.At
+				}
+			}
+			delete(bucket, oldestKey)
+		}
+		bucket[id] = respHistory{At: time.Now(), Messages: stored}
+		s.responseMu.Unlock()
+	}
 	emit("response.completed", map[string]any{"type": "response.completed", "response": resp})
 }
 
@@ -466,7 +579,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		o.Messages = append(messages, o.Messages...)
 	}
 	if body.Stream {
-		s.streamResponsesAdapter(w, r, o, firstNonEmpty(body.Model, "m365-copilot"), currentMessages)
+		s.streamResponsesAdapter(w, r, o, firstNonEmpty(body.Model, "m365-copilot"), currentMessages, startedAt, body.Store)
 		return
 	}
 	out, raw, status, err := s.runOpenAIAdapter(r, o)
@@ -495,9 +608,13 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	// request's own messages (currentMessages, captured before the history
 	// prepend) is cached history restored through previous_response_id. The
 	// inner M365 conversation-reuse signal (usage.prompt_tokens_details.
-	// cached_tokens) uses a different token basis and was inconsistent with the
-	// estimate's input_tokens, so the difference-based calc is authoritative.
+	// cached_tokens) reflects what the upstream actually held (session resolver
+	// / conv-cache hit) and is the only cache signal when the client never sent
+	// previous_response_id, so it is preferred whenever it is larger.
 	cached := responsesHistoryCacheTokens(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, currentMessages, o.Tools, o.ToolChoice, outputForUsage)
+	if inner := cachedTokensFromUsage(out["usage"]); inner > cached {
+		cached = inner
+	}
 	if cached > 0 {
 		withInputCacheDetails(estimate.Values, cached)
 	}
