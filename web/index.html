@@ -659,6 +659,23 @@ if (response.output_text) {
               </select>
               <p class="form-hint"><b>可用优先</b>：新会话优先使用队列中第一个健康且未达到并发上限的账号；仅当该账号并发已满、被限流或不可用时，才选择后续可用账号。<br><b>轮询</b>：每个新会话按照账号队列顺序依次选择健康且未达到并发上限的账号，到达队尾后从第一个账号重新开始；已有会话仍保持绑定原账号，除非该账号被限流或不可用。</p>
             </div>
+            <div class="form-group" style="margin:0">
+              <label class="form-label" for="accountWarmSessionSeconds">会话优先级保留时长（秒）</label>
+              <input class="form-input" id="accountWarmSessionSeconds" type="number" min="1" max="86400" step="1" value="180" inputmode="numeric">
+              <p class="form-hint">会话释放后，其并发槽位保留给该会话的时长（默认 180 秒 = 3 分钟）。在此期间该会话返回时立即获得槽位，其他新对话不能占用。超过时长后变为旧对话，按空闲并发走缓存，无空闲并发则重新发起对话。</p>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label class="form-label" for="cacheOnAccountSwitch">切换账号计算缓存</label>
+              <label class="form-checkbox" style="margin-top:4px">
+                <input id="cacheOnAccountSwitch" type="checkbox"><i class="form-icon"></i> 开启后，切换账号也计算缓存并将缓存值返回给下游
+              </label>
+              <p class="form-hint">同会话 ID 切换账号时（故障转移或旧会话重启），估算原始会话的缓存 token 数并返回给下游，避免因切换账号而丢失缓存统计。</p>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label class="form-label" for="accountQueueTimeoutSeconds">排队超时（秒）</label>
+              <input class="form-input" id="accountQueueTimeoutSeconds" type="number" min="1" max="86400" step="1" value="10" inputmode="numeric">
+              <p class="form-hint">冷会话在 FIFO 队列中等待超过该时长后，直接返回 HTTP 429（默认 10 秒），避免一直排队；可调大以容忍更长的排队。</p>
+            </div>
           </div>
         </div>
         <div class="card">
@@ -1825,9 +1842,17 @@ async function loadAccountSchedulingSettings(){
     const concurrency=Number(s.accountConcurrency??s.accountDefaultConcurrency??s.defaultAccountConcurrency??1);
     $('accountConcurrency').value=Number.isInteger(concurrency)&&concurrency>0?concurrency:1;
     $('accountRoutingRule').value=normalizeAccountRoutingRule(s.accountRoutingRule??s.accountSelectionRule??s.routingRule);
+    const warmSeconds=Number(s.accountWarmSessionSeconds??s.accountWarmWindowSeconds??180);
+    $('accountWarmSessionSeconds').value=Number.isInteger(warmSeconds)&&warmSeconds>0?warmSeconds:180;
+    $('cacheOnAccountSwitch').checked=!!s.cacheOnAccountSwitch;
+    const queueTimeoutSeconds=Number(s.accountQueueTimeoutSeconds??10);
+    $('accountQueueTimeoutSeconds').value=Number.isInteger(queueTimeoutSeconds)&&queueTimeoutSeconds>0?queueTimeoutSeconds:10;
   }catch(e){
     $('accountConcurrency').value='1';
     $('accountRoutingRule').value='available-first';
+    $('accountWarmSessionSeconds').value='180';
+    $('cacheOnAccountSwitch').checked=false;
+    $('accountQueueTimeoutSeconds').value='10';
     showNotice('账号调度设置加载失败：'+e.message,'error');
   }
 }
@@ -1841,9 +1866,25 @@ async function saveAccountSchedulingSettings(){
       return;
     }
     const accountRoutingRule=normalizeAccountRoutingRule($('accountRoutingRule').value);
+    const warmSeconds=Number.parseInt($('accountWarmSessionSeconds').value,10);
+    if(!Number.isInteger(warmSeconds)||warmSeconds<1||warmSeconds>86400){
+      showNotice('会话优先级保留时长必须是 1-86400 的整数','error');
+      $('accountWarmSessionSeconds').focus();
+      return;
+    }
+    const cacheOnAccountSwitch=$('cacheOnAccountSwitch').checked;
+    const queueTimeoutSeconds=Number.parseInt($('accountQueueTimeoutSeconds').value,10);
+    if(!Number.isInteger(queueTimeoutSeconds)||queueTimeoutSeconds<1||queueTimeoutSeconds>86400){
+      showNotice('排队超时必须是 1-86400 的整数','error');
+      $('accountQueueTimeoutSeconds').focus();
+      return;
+    }
     $('accountConcurrency').value=String(concurrency);
     $('accountRoutingRule').value=accountRoutingRule;
-    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({accountConcurrency:concurrency,accountRoutingRule})});
+    $('accountWarmSessionSeconds').value=String(warmSeconds);
+    $('cacheOnAccountSwitch').checked=cacheOnAccountSwitch;
+    $('accountQueueTimeoutSeconds').value=String(queueTimeoutSeconds);
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({accountConcurrency:concurrency,accountRoutingRule,accountWarmSessionSeconds:warmSeconds,cacheOnAccountSwitch,accountQueueTimeoutSeconds:queueTimeoutSeconds})});
     showNotice('账号调度设置已保存','success');
   }catch(e){showNotice(e.message,'error');}
 }
