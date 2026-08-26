@@ -8,20 +8,20 @@ import (
 	"time"
 )
 
-func TestResolveContentKeyedSameIdentity(t *testing.T) {
+func TestResolveExplicitSessionReusesRegardlessOfUser(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	t.Setenv("M365_CONVERSATION_CACHE", filepath.Join(t.TempDir(), "conversations.json"))
 	t.Setenv("M365_USER_SESSION_CACHE", filepath.Join(t.TempDir(), "users.json"))
 	sr := openSessionResolver()
 
-	// 首次请求绑定云端对话，同一 IP/UA 但不同 user 账户。
+	// 首次请求用显式会话 ID 绑定云端对话。
 	sr.Bind("", "conv-shared", "acc1",
 		&oaiReq{User: "alice", Messages: []oaiMsg{{Role: "user", Content: "hello"}, {Role: "assistant", Content: "你好"}}},
 		"",
-		resolverTestRequest("203.0.113.10", "client-a", "alice"))
+		resolverTestRequestWithSID("203.0.113.10", "client-a", "alice", "sid-shared"))
 
-	// 续接请求来自同一 IP/UA（换 user 仍可命中，说明不做 user 拦截）。
-	res := sr.Resolve(resolverTestRequest("203.0.113.10", "client-a", "bob"),
+	// 续接请求携带同一显式会话 ID（换 user 字段仍命中，说明续用只认会话 ID）。
+	res := sr.Resolve(resolverTestRequestWithSID("203.0.113.10", "client-a", "bob", "sid-shared"),
 		&oaiReq{
 			User: "bob",
 			Messages: []oaiMsg{
@@ -31,16 +31,27 @@ func TestResolveContentKeyedSameIdentity(t *testing.T) {
 			},
 		})
 	if res.IsNew {
-		t.Fatal("同 IP/UA 前缀相同却未复用会话，内容键失效")
-	}
-	if res.MatchedBy != "context_prefix_2" {
-		t.Fatalf("expected context_prefix_2, got %q", res.MatchedBy)
+		t.Fatal("同一显式会话 ID 未复用会话")
 	}
 	if res.ConversationID != "conv-shared" {
 		t.Fatalf("expected conversation conv-shared, got %s", res.ConversationID)
 	}
 	if res.HistoryLen != 2 {
 		t.Fatalf("expected HistoryLen=2 (增量起点), got %d", res.HistoryLen)
+	}
+
+	// 携带不同的会话 ID、即使内容完全相同，也必须新建会话（不靠聊天记录相似）。
+	res2 := sr.Resolve(resolverTestRequestWithSID("203.0.113.10", "client-a", "bob", "sid-other"),
+		&oaiReq{
+			User: "bob",
+			Messages: []oaiMsg{
+				{Role: "user", Content: "hello"},
+				{Role: "assistant", Content: "你好"},
+				{Role: "user", Content: "多说点"},
+			},
+		})
+	if !res2.IsNew {
+		t.Fatalf("不同会话 ID 必须新建会话，got matched=%s", res2.MatchedBy)
 	}
 }
 
@@ -63,35 +74,37 @@ func TestResolveDoesNotMatchAcrossIdentity(t *testing.T) {
 	}
 }
 
-func TestResolveSingleMessageReusesForSameUser(t *testing.T) {
+func TestResolveExplicitSessionSingleMessageReuses(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()
 
-	sr.Bind("sess-short", "conv-short", "acc1",
+	sr.Bind("", "conv-short", "acc1",
 		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "继续"}}},
 		"",
-		resolverTestRequest("203.0.113.10", "client-a", "alice"))
+		resolverTestRequestWithSID("203.0.113.10", "client-a", "alice", "sid-short"))
 
-	res := sr.Resolve(resolverTestRequest("203.0.113.10", "client-a", "alice"),
+	// 同一显式会话 ID，即使只发单条相同消息也复用同一会话。
+	res := sr.Resolve(resolverTestRequestWithSID("203.0.113.10", "client-a", "alice", "sid-short"),
 		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "继续"}}})
 	if res.IsNew {
-		t.Fatalf("same user re-sending a message should reuse session, got IsNew=true")
+		t.Fatalf("同一显式会话 ID 应复用会话，got IsNew=true")
 	}
 }
 
-func TestResolveSingleMessageNeverReusesAcrossUsers(t *testing.T) {
+func TestResolveExplicitSessionNeverReusesAcrossSessions(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()
 
-	sr.Bind("sess-short", "conv-short", "acc1",
+	sr.Bind("", "conv-short", "acc1",
 		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "继续"}}},
 		"",
-		resolverTestRequest("203.0.113.10", "client-a", "alice"))
+		resolverTestRequestWithSID("203.0.113.10", "client-a", "alice", "sid-a"))
 
-	res := sr.Resolve(resolverTestRequest("203.0.113.20", "client-b", "bob"),
+	// 不同会话 ID，内容完全相同也绝不复用。
+	res := sr.Resolve(resolverTestRequestWithSID("203.0.113.20", "client-b", "bob", "sid-b"),
 		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "继续"}}})
 	if !res.IsNew {
-		t.Fatalf("different user must not reuse session, got matched=%s", res.MatchedBy)
+		t.Fatalf("different session id must not reuse session, got matched=%s", res.MatchedBy)
 	}
 }
 
@@ -102,36 +115,46 @@ func resolverTestRequest(ip, ua, user string) *http.Request {
 	return r
 }
 
+func resolverTestRequestWithSID(ip, ua, user, sid string) *http.Request {
+	r := resolverTestRequest(ip, ua, user)
+	r.Header.Set("X-M365-Session-Id", sid)
+	return r
+}
+
 func TestResolverIncrementalBoundary(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req1.Header.Set("X-M365-Session-Id", "sid-inc")
 	sr.Bind("", "conv-inc", "acc1",
 		&oaiReq{Messages: []oaiMsg{
 			{Role: "user", Content: "第一轮问题"},
 			{Role: "assistant", Content: "第一轮回答"},
 		}},
 		"",
-		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+		req1)
 
-	// 第二轮只应发送历史之外的新增消息。
-	res := sr.Resolve(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	// 第二轮携带同一显式会话 ID，历史为前缀 → HistoryLen=2，只发增量。
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req2.Header.Set("X-M365-Session-Id", "sid-inc")
+	res := sr.Resolve(req2,
 		&oaiReq{Messages: []oaiMsg{
 			{Role: "user", Content: "第一轮问题"},
 			{Role: "assistant", Content: "第一轮回答"},
 			{Role: "user", Content: "第二轮问题"},
 		}})
 	if res.IsNew {
-		t.Fatal("增量请求应复用以 2 轮历史为前缀的会话")
+		t.Fatal("同一显式会话 ID 的增量请求应复用会话")
 	}
 	if res.HistoryLen != 2 {
 		t.Fatalf("expected HistoryLen=2, got %d", res.HistoryLen)
 	}
 
-	// 内容不再是前一轮任何历史的前缀时不应误命中。
+	// 不带会话 ID 的全新内容 → 一律新会话（不靠聊天记录相似）。
 	res2 := sr.Resolve(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "全新问题完全无关"}}})
 	if !res2.IsNew {
-		t.Fatalf("不相关内容必须新建会话, got %s conv=%s", res2.MatchedBy, res2.ConversationID)
+		t.Fatalf("无会话 ID 必须新建会话, got %s conv=%s", res2.MatchedBy, res2.ConversationID)
 	}
 }
 
@@ -157,11 +180,13 @@ func TestResolverEvictsAfterTTL(t *testing.T) {
 	}
 }
 
-func TestResolverPersistsHistoryAcrossReload(t *testing.T) {
+func TestResolverPersistsExplicitSessionAcrossReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sessions.json")
 	t.Setenv("M365_SESSION_CACHE", path)
 
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req1.Header.Set("X-M365-Session-Id", "sid-persist")
 	sr1 := openSessionResolver()
 	sr1.Bind("", "conv-persist", "acc1",
 		&oaiReq{Messages: []oaiMsg{
@@ -169,27 +194,45 @@ func TestResolverPersistsHistoryAcrossReload(t *testing.T) {
 			{Role: "assistant", Content: "persisted answer"},
 		}},
 		"",
-		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+		req1)
 	if err := sr1.persist.flushNowBlocking(); err != nil {
 		t.Fatal(err)
 	}
 
-	// 模拟重启：重新打开同一缓存文件，历史仍在 → 前缀仍可命中。
+	// 模拟重启：重新打开同一缓存文件，显式会话 ID 的绑定与历史仍在 → 可续用。
 	sr2 := openSessionResolver()
-	res := sr2.Resolve(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req2.Header.Set("X-M365-Session-Id", "sid-persist")
+	res := sr2.Resolve(req2,
 		&oaiReq{Messages: []oaiMsg{
 			{Role: "user", Content: "persisted question"},
 			{Role: "assistant", Content: "persisted answer"},
 			{Role: "user", Content: "follow-up"},
 		}})
 	if res.IsNew {
-		t.Fatal("contextHistory 应持久化，重启后仍可内容复用")
+		t.Fatal("显式会话 ID 重启后仍应复用会话")
 	}
 	if res.ConversationID != "conv-persist" {
 		t.Fatalf("unexpected conversation %s", res.ConversationID)
 	}
 	if res.HistoryLen != 2 {
 		t.Fatalf("expected HistoryLen=2 after reload, got %d", res.HistoryLen)
+	}
+
+	// 同一会话 ID 但多消息内容不再延续历史 → 保留会话 ID，但要求重建上游对话（不误续）。
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req3.Header.Set("X-M365-Session-Id", "sid-persist")
+	res3 := sr2.Resolve(req3,
+		&oaiReq{Messages: []oaiMsg{
+			{Role: "user", Content: "全新问题完全无关"},
+			{Role: "assistant", Content: "全新回答"},
+			{Role: "user", Content: "追问"},
+		}})
+	if res3.IsNew {
+		t.Fatal("同一会话 ID 仍应识别为同一会话（内容变化走 reset 而非新会话）")
+	}
+	if !res3.ResetUpstream {
+		t.Fatal("内容不延续历史时应 ResetUpstream，而不是续用旧上游对话")
 	}
 }
 

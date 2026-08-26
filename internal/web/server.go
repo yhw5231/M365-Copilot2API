@@ -126,7 +126,6 @@ type Server struct {
 	responseMessages    map[string]map[string]respHistory
 	usage               *usageLog
 	trace               *traceStore
-	convCache           *conversationCache
 	generatedImages     map[string]*generatedImage
 	generatedImagesMu   sync.Mutex
 }
@@ -209,7 +208,6 @@ func New() (*Server, error) {
 		responseMessages:    map[string]map[string]respHistory{},
 		usage:               openUsageLog(),
 		trace:               openTraceStore(),
-		convCache:           newConversationCache(),
 		generatedImages:     make(map[string]*generatedImage),
 	}
 	srv.chat.OnUpstream = srv.routeUpstreamTrace
@@ -279,12 +277,8 @@ func (s *Server) routeUpstreamTrace(traceID, stage string, meta map[string]any) 
 }
 
 func (s *Server) StartConvCacheGC() {
-	go func() {
-		for {
-			time.Sleep(2 * time.Minute)
-			s.convCache.GC()
-		}
-	}()
+	// Conversation reuse is explicit-session-id driven only; there is no
+	// content-keyed conversation cache to garbage collect.
 }
 
 func (s *Server) InitM365CloudClient() {
@@ -1510,15 +1504,10 @@ func (s *Server) recoverWorkspaceToolMisjudgment(
 	bad chathub.Result,
 	answerReq chathub.Request,
 	toolMaps []map[string]any,
-	convCacheModel string,
-	convReused bool,
 	tone string,
 	requestID string,
 ) (chathub.Result, error) {
 	badConversationID := strings.TrimSpace(bad.ConversationID)
-	if convReused {
-		s.invalidateConvCache(acc.ID, convCacheModel)
-	}
 	if badConversationID != "" {
 		s.dropTransientConversation(badConversationID)
 	}
@@ -2021,17 +2010,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	if body.User != "" && body.ConversationID == "" && !body.NewConversation {
-		if us, ok := s.userSessions.Get(body.User); ok {
-			body.AccountID = firstNonEmpty(body.AccountID, us.AccountID)
-			body.ConversationID = us.ConversationID
-			body.SessionID = us.SessionID
-			log.Printf("[user-session] hit user=%s conversation=%s session=%s", body.User, us.ConversationID, us.SessionID)
-		}
-	}
+	// The `user` field is an end-user identifier, not a conversation identifier:
+	// it must never auto-continue a previous conversation. A fresh request from
+	// the same user without an explicit session id starts a new conversation.
 	// Account selection: for a new session (no binding), resolveAccount applies
-	// the routing rule ("available-first" or "round-robin"). Existing sessions
-	// bound via session key, user field, or the session resolver stay sticky to
+	// the routing rule ("available-first" or "round-robin"). Sessions bound via
+	// an explicit session key, header, or previous_response_id stay sticky to
 	// their account and conversation, so incremental context reuse (cache) is
 	// preserved; resolveAccount returns 429 when the bound account is at its
 	// concurrency limit or cooling down.
@@ -2181,32 +2165,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Conversation cache: reuse existing M365 conversation for same account+model
-	// to avoid re-processing full system prompt + history each request (latency
-	// drops from 3-5s to ~1s). Only kicks in when no explicit conversation ID
-	// was provided by client, session key, user session, or session resolver.
-	convReused := false
-	convCacheModel := firstNonEmpty(body.Model, "m365-copilot")
-	if body.ConversationID == "" && len(body.Messages) > 1 && !body.NewConversation {
-		sysHash := systemPromptHash(body.Messages)
-		if cached := s.convCache.Lookup(acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
-			if len(body.Messages) > cached.MessageCount {
-				incPrompt, incAtt := flattenPromptMessages(body.Messages[cached.MessageCount:], nil)
-				incPrompt = strings.TrimSpace(incPrompt)
-				if incPrompt != "" {
-					body.ConversationID = cached.ConversationID
-					body.SessionID = cached.SessionID
-					answerPrompt = incPrompt
-					body.Attachments = incAtt
-					convReused = true
-					log.Printf("[conv-cache] hit account=%s model=%s conversation=%s cached_msgs=%d new_msgs=%d", acc.ID, convCacheModel, cached.ConversationID, cached.MessageCount, len(body.Messages))
-				}
-			}
-		}
-	}
-	if !convReused && body.ConversationID == "" {
-		log.Printf("[conv-cache] miss account=%s model=%s", acc.ID, convCacheModel)
-	}
+	// Conversation continuation is driven ONLY by explicit session identity
+	// (X-M365-Session-Id header, body session_key/session_id/conversation_id,
+	// or /v1/responses previous_response_id), never by content similarity.
+	// A request without an explicit identifier starts a fresh upstream
+	// conversation even when its messages match a previous request, so distinct
+	// conversations (and distinct users) can never silently merge.
 
 	// Normalize tools once. Selection is always made by the upstream model;
 	// the gateway only validates its structured decision and converts protocols.
@@ -2454,9 +2418,6 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
-			if convReused {
-				s.invalidateConvCache(acc.ID, convCacheModel)
-			}
 			// Record the failed stream so the request log does not show a
 			// zero-token row: the input is known from the prompt, and the
 			// output reflects whatever the upstream produced before failing.
@@ -2596,11 +2557,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				calls = calls[:1]
 			}
 			_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), cachedTokens(), calls, toolResult)
-			if body.User != "" && res.ConversationID != "" {
-				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
-			}
 			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, false)
-			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 			return
 		}
 		if noTools {
@@ -2623,11 +2580,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finishChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
-		if body.User != "" && res.ConversationID != "" {
-			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
-		}
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
 	// Ask the upstream model to select and validate the next tool. The gateway
@@ -2896,9 +2849,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
-			if convReused {
-				s.invalidateConvCache(acc.ID, convCacheModel)
-			}
 			code := "upstream_error"
 			msg := upstreamError(err)
 			if IsEmptyCompletion(err) {
@@ -2947,11 +2897,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}, "usage": usageWithCache(pt, ct, cached)}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
-		if body.User != "" && res.ConversationID != "" {
-			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
-		}
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	} else {
 		res, err = s.chatWithAccount(ctx, acc.ID, account, answerReq)
@@ -2998,10 +2944,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		if task != nil {
 			task.recordFailure(err)
 		}
-		if convReused {
-			s.invalidateConvCache(acc.ID, convCacheModel)
-			log.Printf("[conv-cache] invalidated account=%s model=%s after error: %v", acc.ID, convCacheModel, err)
-		}
 		s.usage.record(UsageRecord{
 			Time:           time.Now(),
 			APIKeyPrefix:   apiKeyPrefix(r),
@@ -3039,13 +2981,12 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// always creates a clean upstream branch and accepts only a distinct, valid
 	// replacement conversation.
 	if len(toolMaps) > 0 && isWorkspaceToolMisjudgmentForTools(res.Text, toolMaps) {
-		res, err = s.recoverWorkspaceToolMisjudgment(ctx, acc, account, &body, res, answerReq, toolMaps, convCacheModel, convReused, tone, requestID)
+		res, err = s.recoverWorkspaceToolMisjudgment(ctx, acc, account, &body, res, answerReq, toolMaps, tone, requestID)
 		if err != nil {
 			log.Printf("[workspace-tool-eject] id=%s clean-branch correction failed: %v", requestID, err)
 			writeOpenAIError(w, http.StatusBadGateway, workspaceToolCorrectionErrorCode(err), workspaceToolCorrectionPublicMessage(err))
 			return
 		}
-		convReused = false
 	}
 	invalidDetectedTool := false
 	if rawCalls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice); len(rawCalls) > 0 {
@@ -3128,7 +3069,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// either streaming or non-streaming client output.
 	if res.ConversationID != "" {
 		s.bindConversation(acc, &body, r, res, prompt, startedAt, task, true)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, cleanWorkspaceToolMisjudgments(body.Messages, toolMaps), convReused)
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			w.Header().Set(sessionHeaderName, resolved.SessionID)

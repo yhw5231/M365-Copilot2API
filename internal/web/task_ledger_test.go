@@ -391,10 +391,10 @@ func TestGoalStrongCompletionPhrasesNew(t *testing.T) {
 	}
 }
 
-// TestResolveTaskLedgerByContext verifies the Q2/Q3 fix: a client that never
-// sends an explicit session id still finds its persistent ledger (and goal
-// state) through the content-key matching fallback.
-func TestResolveTaskLedgerByContext(t *testing.T) {
+// TestResolveTaskLedgerByExplicitSession verifies that the task ledger is
+// found through the explicit session ID (X-M365-Session-Id), never through
+// content similarity.
+func TestResolveTaskLedgerByExplicitSession(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", t.TempDir()+"/sessions.json")
 	t.Setenv("M365_CONVERSATION_CACHE", t.TempDir()+"/conversations.json")
 	t.Setenv("M365_USER_SESSION_CACHE", t.TempDir()+"/users.json")
@@ -402,21 +402,26 @@ func TestResolveTaskLedgerByContext(t *testing.T) {
 	ledger := &taskLedger{OriginalGoal: "refactor auth", GoalID: "goal-ctx-1"}
 	body := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "<goal_round>\nObjective: refactor auth\nRound: 1/256"}}}
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	r.Header.Set("X-M365-Session-Id", "sess-ctx")
 	sr.BindWithTask("sess-ctx", "conv-ctx", "acc-1", body, "working", r, ledger)
 
-	// Round 2 extends the history but carries no explicit session id.
+	// Round 2 extends the history, carries the same explicit session ID.
 	round2 := &oaiReq{Messages: append(cloneMessages(body.Messages),
 		oaiMsg{Role: "assistant", Content: "working"},
 		oaiMsg{Role: "user", Content: "<goal_round>\nObjective: refactor auth\nRound: 2/256"},
 	)}
 	r2 := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	r2.Header.Set("X-M365-Session-Id", "sess-ctx")
 	got := sr.ResolveTaskLedger(r2, round2)
 	if got == nil || got.GoalID != "goal-ctx-1" || got.OriginalGoal != "refactor auth" {
-		t.Fatalf("context-based ledger lookup failed: %#v", got)
+		t.Fatalf("explicit session id ledger lookup failed: %#v", got)
 	}
-	// No match for an unrelated conversation.
-	other := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "what is 1+1?"}}}
-	if got := sr.ResolveTaskLedger(r2, other); got != nil {
-		t.Fatalf("unrelated conversation must not match: %#v", got)
+	// No explicit session ID → no match, even with identical content.
+	noID := &oaiReq{Messages: append(cloneMessages(body.Messages),
+		oaiMsg{Role: "assistant", Content: "working"},
+		oaiMsg{Role: "user", Content: "<goal_round>\nObjective: refactor auth\nRound: 2/256"},
+	)}
+	if got := sr.ResolveTaskLedger(httptest.NewRequest("POST", "/v1/chat/completions", nil), noID); got != nil {
+		t.Fatalf("request without explicit session id must not match: %#v", got)
 	}
 }

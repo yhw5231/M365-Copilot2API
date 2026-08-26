@@ -265,128 +265,14 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 		}
 	}
 
-	// 鍐呭閿細鍗忚娑堟伅鍚嶅簭鍒椾弗鏍肩瓑浜庢煇涓凡璁板綍浼氳瘽鐨勫巻鍙叉椂鐩存帴澶嶇敤杩欎釜
-	// 浜戠瀵硅瘽锛屼絾鍙湪鍚屼竴 IP/UA 鎸囩汗涓嬶紝閬垮厤鐭秷鎭湪涓嶅悓鐢ㄦ埛闂翠簰绔?
-	// HistoryLen 杩斿洖璇ュ墠缂€闀垮害锛屼笂灞傛嵁姝ゅ彧鍙戦€?messages[HistoryLen:] 澧為噺銆?
-	ipFinger := clientIPFingerprint(r)
-	if bestID, n := sr.matchContextLocked(ipFinger, key, body.Messages); bestID != "" {
-		sess := sr.sessions[bestID]
-		sess.LastUsedAt = time.Now().UTC()
-		sr.sessions[bestID] = sess
-		sr.persist.markDirty()
-		return ResolveResult{
-			SessionID:      sess.SessionID,
-			ConversationID: sess.ConversationID,
-			AccountID:      sess.AccountID,
-			MatchedBy:      fmt.Sprintf("context_prefix_%d", n),
-			IsNew:          false,
-			HistoryLen:     n,
-		}
-	}
-
-	// 寮辩害鏉熷厹搴曪細鍐呭涓嶆瀯鎴愪弗鏍煎墠缂€锛屼絾涓庢煇涓巻鍙查珮搴︾浉浼硷紙濡傚鎴风
-	// 鏈湴鎴柇浜嗗巻鍙诧級锛屼粛澶嶇敤璇ヤ細璇濄€傛鏃跺閲忚竟鐣屾湭鐭ワ紝涓婂眰鍙戦€佸叏閲忋€?
-	suffixID, suffixN := sr.matchSuffixLocked(ipFinger, key, body.Messages)
-	if suffixID != "" {
-		sess := sr.sessions[suffixID]
-		sess.LastUsedAt = time.Now().UTC()
-		sr.sessions[suffixID] = sess
-		sr.persist.markDirty()
-		return ResolveResult{
-			SessionID:      sess.SessionID,
-			ConversationID: sess.ConversationID,
-			AccountID:      sess.AccountID,
-			MatchedBy:      fmt.Sprintf("context_suffix_%d", suffixN),
-			IsNew:          false,
-			HistoryLen:     suffixN,
-		}
-	}
-
+	// No explicit session identifier means this is a brand-new conversation.
+	// Content-similarity reuse (prefix/suffix chat-history matching) is
+	// deliberately NOT performed: a new request that happens to repeat earlier
+	// messages must start a fresh upstream conversation, never silently resume
+	// someone else's (or an earlier) conversation.
 	return ResolveResult{IsNew: true}
 }
 
-func (sr *sessionResolver) matchSuffixLocked(ipFinger, key string, messages []oaiMsg) (string, int) {
-	if len(messages) < 2 {
-		return "", 0
-	}
-	type match struct {
-		id     string
-		n      int
-		recent time.Time
-	}
-	best := match{}
-	minSuffix := 2
-	for id, sess := range sr.sessions {
-		if time.Since(sess.LastUsedAt) > sr.contextTTL {
-			continue
-		}
-		if sess.IPFingerprint != ipFinger {
-			continue
-		}
-		if !sessionOwnedBy(sess, key) {
-			continue
-		}
-		hist := sess.ContextHistory
-		if len(hist) < minSuffix {
-			continue
-		}
-		n := suffixMatchLen(hist, messages)
-		if n >= minSuffix && (n > best.n || (n == best.n && sess.LastUsedAt.After(best.recent))) {
-			best = match{id: id, n: n, recent: sess.LastUsedAt}
-		}
-	}
-	return best.id, best.n
-}
-
-func suffixMatchLen(hist, msgs []oaiMsg) int {
-	maxN := len(hist)
-	if maxN > len(msgs) {
-		maxN = len(msgs)
-	}
-	n := 0
-	for i := 1; i <= maxN; i++ {
-		if messagesEqual(hist[len(hist)-i], msgs[len(msgs)-i]) {
-			n = i
-		} else {
-			break
-		}
-	}
-	return n
-}
-
-// matchContextLocked 浠庡叏閮ㄤ細璇濅腑鎵惧埌鍏?contextHistory 涓ユ牸浣滀负娑堟伅鍓嶇紑鐨?
-// 閭ｄ釜浼氳瘽锛涘彧閫夊墠缂€鏈€闀跨殑涓€涓紝閬垮厤鐭墠缂€鍦ㄤ笉鍚屼細璇濋棿浜掓挒銆傝繑鍥?
-// (sessionID, 鍖归厤鍒扮殑娑堟伅鏉℃暟)銆?
-func (sr *sessionResolver) matchContextLocked(ipFinger, key string, messages []oaiMsg) (string, int) {
-	if len(messages) == 0 {
-		return "", 0
-	}
-	type match struct {
-		id     string
-		n      int
-		recent time.Time
-	}
-	best := match{}
-	for id, sess := range sr.sessions {
-		if time.Since(sess.LastUsedAt) > sr.contextTTL {
-			continue
-		}
-		if sess.IPFingerprint != ipFinger {
-			continue
-		}
-		if !sessionOwnedBy(sess, key) {
-			continue
-		}
-		n := contextPrefixLen(sess.ContextHistory, messages)
-		if n >= 1 && (n > best.n || (n == best.n && sess.LastUsedAt.After(best.recent))) {
-			best = match{id: id, n: n, recent: sess.LastUsedAt}
-		}
-	}
-	return best.id, best.n
-}
-
-// contextPrefixLen 杩斿洖 hist 鏄惁涓ユ牸鏄?msgs 鐨勫墠缂€銆俬ist 涓虹┖鎴栦笉鏄墠缂€
-// 鏃惰繑鍥?0锛涘懡涓椂杩斿洖 len(hist)锛屽嵆澧為噺鍙戦€佽捣鐐广€?
 func contextPrefixLen(hist, msgs []oaiMsg) int {
 	if len(hist) == 0 || len(msgs) < len(hist) {
 		return 0
@@ -540,13 +426,12 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 	sr.persist.markDirty()
 }
 
-// ResolveTaskLedger returns the task ledger for the downstream session matching
-// the request, using the same content-key matching as Resolve (prefix first,
-// then suffix to tolerate local context truncation). This lets a client that
-// never sends an explicit session id (e.g. a plain OpenAI chat client) keep its
-// task ledger — and therefore its goal state — across rounds, instead of
-// rebuilding a fresh active ledger every request. It is a read-only fallback and
-// does not mutate the session binding.
+// ResolveTaskLedger returns the task ledger for the downstream session that the
+// request explicitly identifies (X-M365-Session-Id header or body.session_id).
+// Content-similarity fallback is deliberately NOT performed: a client that does
+// not send an explicit session id starts a fresh session/ledger every request,
+// exactly like conversation reuse. It is a read-only lookup and does not mutate
+// the session binding.
 func (sr *sessionResolver) ResolveTaskLedger(r *http.Request, body *oaiReq) *taskLedger {
 	if sr == nil {
 		return nil
@@ -554,18 +439,20 @@ func (sr *sessionResolver) ResolveTaskLedger(r *http.Request, body *oaiReq) *tas
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	key := extractAPIKey(r)
-	ipFinger := clientIPFingerprint(r)
-	// Strict prefix match first (the request extends the stored history).
-	if bestID, _ := sr.matchContextLocked(ipFinger, key, body.Messages); bestID != "" {
-		if sess, ok := sr.sessions[bestID]; ok {
+	explicitID := strings.TrimSpace(r.Header.Get("X-M365-Session-Id"))
+	if explicitID == "" {
+		explicitID = strings.TrimSpace(body.SessionID)
+	}
+	if explicitID == "" {
+		return nil
+	}
+	if sessID, ok := sr.byExplicit[explicitID]; ok {
+		if sess, ok := sr.sessions[sessID]; ok && sessionOwnedBy(sess, key) {
 			return sess.Task
 		}
 	}
-	// Suffix match tolerates the client dropping old history.
-	if suffixID, _ := sr.matchSuffixLocked(ipFinger, key, body.Messages); suffixID != "" {
-		if sess, ok := sr.sessions[suffixID]; ok {
-			return sess.Task
-		}
+	if sess, ok := sr.sessions[explicitID]; ok && sessionOwnedBy(sess, key) {
+		return sess.Task
 	}
 	return nil
 }
@@ -675,4 +562,5 @@ func cloneMessages(msgs []oaiMsg) []oaiMsg {
 	out := make([]oaiMsg, len(msgs))
 	copy(out, msgs)
 	return out
+
 }

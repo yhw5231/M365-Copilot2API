@@ -114,9 +114,8 @@ func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := cacheStats.GetStats()
 	jsonOut(w, map[string]any{
-		"object":     "cache_stats",
-		"stats":      stats,
-		"conv_cache": s.convCache.Stats(),
+		"object": "cache_stats",
+		"stats":  stats,
 	})
 }
 

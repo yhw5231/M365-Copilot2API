@@ -393,18 +393,11 @@ func (s *Server) sessionTaskLedger(r *http.Request, body *oaiReq) *taskLedger {
 			}
 		}
 	}
-	if strings.TrimSpace(body.User) != "" && s.userSessions != nil {
-		if us, ok := s.userSessions.Get(body.User); ok {
-			if b, ok := s.sessionResolver.GetSession(us.SessionID); ok {
-				return b.Task
-			}
-		}
-	}
-	// Content-key fallback: a client that never sends an explicit session
-	// identifier still gets its persistent ledger (and goal state) across rounds
-	// via the same prefix/suffix content matching the session resolver uses for
-	// conversation reuse. Without this, every round rebuilds a fresh active
-	// ledger and the goal can never be observed as complete server-side.
+	// Explicit session identifiers only: the task ledger (and goal state)
+	// survives across rounds when the client sends X-M365-Session-Id or
+	// body.session_id. Content-similarity inheritance is deliberately not
+	// performed, so a brand-new conversation never silently carries an old
+	// session's task ledger.
 	if s.sessionResolver != nil {
 		if task := s.sessionResolver.ResolveTaskLedger(r, body); task != nil {
 			return task
