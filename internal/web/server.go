@@ -213,7 +213,22 @@ func New() (*Server, error) {
 		generatedImages:     make(map[string]*generatedImage),
 	}
 	srv.chat.OnUpstream = srv.routeUpstreamTrace
+	srv.applyPersistedAccountConcurrency()
 	return srv, nil
+}
+
+// applyPersistedAccountConcurrency seeds the runtime per-account concurrency
+// limiter from settings.json after startup. newAccountConcurrency only reads
+// M365_ACCOUNT_DEFAULT_CONCURRENCY / the built-in default, so without this an
+// upgrade silently reset the per-account limit to 1 while settings.json still
+// held the configured value.
+func (s *Server) applyPersistedAccountConcurrency() {
+	if s.settings == nil || s.accountConcurrency == nil {
+		return
+	}
+	if saved := s.settings.get().AccountConcurrency; saved >= 1 {
+		s.accountConcurrency.SetLimit(saved)
+	}
 }
 
 // routeUpstreamTrace forwards ChatHub lifecycle frames (request payload, first
@@ -2021,6 +2036,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// preserved; resolveAccount returns 429 when the bound account is at its
 	// concurrency limit or cooling down.
 	answerPrompt := prompt
+	// cachedTokens reports how much of the input was served from the reused
+	// conversation. cacheOnAccountSwitch overrides this with the value that
+	// applied before an account switch, so downstream still sees the cache
+	// savings even though the new account started a fresh conversation.
+	cachedOverride := int64(-1)
+	cachedTokens := func() int64 {
+		if cachedOverride >= 0 {
+			return cachedOverride
+		}
+		return cachedInputTokens(prompt, answerPrompt)
+	}
 	resolvedConversationID := ""
 	if body.ConversationID == "" && len(body.Messages) > 0 && !body.NewConversation {
 		resolved := s.sessionResolver.Resolve(r, &body)
@@ -2077,6 +2103,26 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[account-route] selected id=%q email=%q token_present=%t oid_present=%t tid_present=%t", acc.ID, acc.Email, acc.AccessToken != "", acc.OID != "", acc.TID != "")
+	// Old-session restart ("重新发起对话"): a returning session whose warm
+	// window has lapsed (no reserved slot) and whose bound account has no idle
+	// unreserved capacity must not block in the queue. Re-initiate the
+	// conversation on another account that has idle concurrency; when no
+	// alternative account has capacity, fall through to the normal FIFO queue
+	// on the bound account.
+	if body.SessionID != "" && body.ConversationID != "" && !s.accountConcurrency.HasReservation(acc.ID, body.SessionID) && !s.accountConcurrency.HasUnreservedSlot(acc.ID) {
+		if next, nerr := s.nextHealthyAccount(acc.ID); nerr == nil {
+			if s.settings.get().CacheOnAccountSwitch {
+				cachedOverride = cachedInputTokens(prompt, answerPrompt)
+			}
+			log.Printf("[account-restart] session=%s old_account=%s new_account=%s reason=no_idle_concurrency cached=%d", body.SessionID, acc.ID, next.ID, cachedOverride)
+			acc = next
+			body.AccountID = next.ID
+			body.ConversationID = ""
+			body.SessionID = ""
+			resolvedConversationID = ""
+			answerPrompt, body.Attachments = flattenPromptMessages(body.Messages, nil)
+		}
+	}
 	if tr := traceFromRequest(r); tr != nil {
 		s.trace.update(tr.ID, func(rec *traceRecord) {
 			rec.AccountEmail = acc.Email
@@ -2247,6 +2293,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d mcp=%s", requestID, len(answerPrompt), len(answerReq.Tools), mcpServerURL)
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
+		// Bound the per-account queue wait BEFORE the stream preamble: if the
+		// request would only sit in the FIFO queue, fail with HTTP 429 (排队超时)
+		// instead of sending ": connected" and then silence.
+		if body.SessionID != "" {
+			if err := s.accountConcurrency.WaitForSlot(r.Context(), acc.ID, body.SessionID); err != nil {
+				log.Printf("[req-trace] id=%s stage=queue_timeout account=%s err=%v", requestID, acc.ID, err)
+				writeUpstreamError(w, err)
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -2311,6 +2367,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if nerr != nil {
 				// no healthy alternative
 			} else {
+				if s.settings.get().CacheOnAccountSwitch {
+					cachedOverride = cachedInputTokens(prompt, answerPrompt)
+				}
 				failoverReq := answerReq
 				if body.ConversationID == resolvedConversationID {
 					failoverReq.ConversationID = ""
@@ -2365,7 +2424,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				InputTokens:    int64(pt),
 				OutputTokens:   int64(ct),
 				DurationMs:     time.Since(startedAt).Milliseconds(),
-				Status:         http.StatusBadGateway,
+				Status:         upstreamStatus(err),
 				Error:          truncatedError(err),
 			})
 			if tr := traceFromRequest(r); tr != nil {
@@ -2382,6 +2441,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
 				code = "rate_limit"
+			} else if IsQueueTimeout(err) {
+				msg = "account is at capacity; the request queued too long, please retry shortly"
+				code = "queue_timeout"
 			} else if errors.Is(err, context.DeadlineExceeded) {
 				msg = "upstream timed out while generating the response"
 			} else if errors.Is(err, context.Canceled) {
@@ -2466,7 +2528,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, toolResult)
+			_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), cachedTokens(), calls, toolResult)
 			if body.User != "" && res.ConversationID != "" {
 				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
@@ -2481,7 +2543,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if body.shouldSendStreamUsage() {
 			pt := EstimateTokens(prompt)
 			ct := EstimateTokens(res.Text)
-			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedInputTokens(prompt, answerPrompt))}
+			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedTokens())}
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		}
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
@@ -2549,7 +2611,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, routeRes)
+			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, routeRes)
 			s.recordToolUsage(r, acc, &body, routeRes, startedAt)
 			return
 		}
@@ -2572,7 +2634,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 						calls = calls[:1]
 					}
-					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, retryRes)
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, retryRes)
 					s.recordToolUsage(r, acc, &body, retryRes, startedAt)
 					return
 				}
@@ -2586,7 +2648,22 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	answerReq.BindAccount = acc.ID
 	answerPrompt = answerReq.Text
 	var res chathub.Result
+	// Reasoning-tone streams (tone ends in "_Reasoning") reach here via
+	// ChatWithReasoning, which surfaces the ChainOfThought transcript as
+	// streaming reasoning_content. Non-reasoning streams return inside the
+	// content-stream block above, so this branch is reached only by models
+	// whose tone drives reasoning generation.
 	if body.Stream {
+		// Bound the per-account queue wait BEFORE the stream preamble (see the
+		// content-stream path above): fail with HTTP 429 instead of "silence
+		// after :connected".
+		if body.SessionID != "" {
+			if err := s.accountConcurrency.WaitForSlot(r.Context(), acc.ID, body.SessionID); err != nil {
+				log.Printf("[req-trace] id=%s stage=queue_timeout account=%s err=%v", requestID, acc.ID, err)
+				writeUpstreamError(w, err)
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -2644,6 +2721,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			// indistinguishable from a fresh request.
 			next, nerr := s.nextProxySafeAccount(acc.ID)
 			if nerr == nil {
+				if s.settings.get().CacheOnAccountSwitch {
+					cachedOverride = cachedInputTokens(prompt, answerPrompt)
+				}
 				failoverReq := answerReq
 				if body.ConversationID == resolvedConversationID {
 					failoverReq.ConversationID = ""
@@ -2716,6 +2796,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			} else if IsRateLimited(err) {
 				code = "rate_limit_error"
 				msg = "upstream is rate limiting; try again shortly"
+			} else if IsQueueTimeout(err) {
+				code = "queue_timeout"
+				msg = "account is at capacity; the request queued too long, please retry shortly"
 			}
 			msg = sanitizePublicInternalText(msg)
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
@@ -2724,7 +2807,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		pt := EstimateTokens(prompt)
 		ct := EstimateTokens(res.Text)
-		cached := cachedInputTokens(prompt, answerPrompt)
+		cached := cachedTokens()
 		if tr := traceFromRequest(r); tr != nil {
 			s.trace.update(tr.ID, func(rec *traceRecord) {
 				rec.InputTokens = int64(pt)
@@ -2759,6 +2842,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			// account; a fresh chat can safely retry on the next healthy account.
 			next, nerr := s.nextProxySafeAccount(acc.ID)
 			if nerr == nil {
+				if s.settings.get().CacheOnAccountSwitch {
+					cachedOverride = cachedInputTokens(prompt, answerPrompt)
+				}
 				failoverReq := answerReq
 				if body.ConversationID == resolvedConversationID {
 					failoverReq.ConversationID = ""
@@ -2798,7 +2884,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			Endpoint:       "/v1/chat/completions",
 			Stream:         body.Stream,
 			DurationMs:     time.Since(startedAt).Milliseconds(),
-			Status:         http.StatusBadGateway,
+			Status:         upstreamStatus(err),
 			Error:          truncatedError(err),
 		})
 		if tr := traceFromRequest(r); tr != nil {
@@ -2843,7 +2929,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, res)
+			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, res)
 			return
 		}
 	}
@@ -2855,7 +2941,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, res)
+			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, res)
 			return
 		}
 	}
@@ -2880,7 +2966,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 				}
 				calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-				_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, routeRes)
+				_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, routeRes)
 				return
 			}
 		}
@@ -2947,7 +3033,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		_ = sseRaw(r.Context(), w, flusher, "data: "+string(b)+"\n\n")
 		pt := EstimateTokens(prompt)
 		ct := EstimateTokens(res.Text)
-		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usageWithCache(pt, ct, cachedInputTokens(prompt, answerPrompt))}
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usageWithCache(pt, ct, cachedTokens())}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		return
@@ -2976,7 +3062,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// OpenAI 要求的 usage 字段。
 	pt := EstimateTokens(prompt)
 	ct := EstimateTokens(res.Text)
-	cached := cachedInputTokens(prompt, answerPrompt)
+	cached := cachedTokens()
 	meta := compatM365Metadata(res)
 	// 调试可见性：m365.cache_hit / m365.cached_tokens 直接标出本次请求是否
 	// 复用了上游会话、复用了多少输入 token（0 = 未命中，新建会话全量发送）。

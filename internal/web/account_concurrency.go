@@ -18,14 +18,55 @@ import (
 // instead of racing them (upstream PR #25).
 const defaultAccountConcurrency = 1
 
+// defaultAccountWarmSessionSeconds is how long a session keeps its concurrency
+// slot reserved after releasing it. During the window the returning warm
+// session gets its slot back immediately and new/cold sessions cannot use the
+// reserved slot ("对话保留 3 分钟优先级"). Override at startup with
+// M365_ACCOUNT_WARM_SESSION_SECONDS, or at runtime from the web console
+// (accountWarmSessionSeconds).
+const defaultAccountWarmSessionSeconds = 180
+
+// defaultAccountQueueTimeoutSeconds bounds how long a cold session may sit in
+// a per-account FIFO queue before the request fails with HTTP 429 ("排队也要
+// 有时间，默认超过 10 秒返回 429"). Override at startup with
+// M365_ACCOUNT_QUEUE_TIMEOUT_SECONDS, or at runtime from the web console
+// (accountQueueTimeoutSeconds).
+const defaultAccountQueueTimeoutSeconds = 10
+
+// warmSessionWindow returns the effective warm/reservation window. The
+// persisted web-console setting wins; the legacy M365_ACCOUNT_WARM_SESSION_WINDOW
+// (Go duration) environment variable is honored as a fallback for older
+// deployments.
+func warmSessionWindow() time.Duration {
+	if sec := currentSettings().AccountWarmSessionSeconds; sec > 0 {
+		return time.Duration(sec) * time.Second
+	}
+	if raw := strings.TrimSpace(os.Getenv("M365_ACCOUNT_WARM_SESSION_WINDOW")); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return time.Duration(defaultAccountWarmSessionSeconds) * time.Second
+}
+
 type accountConcurrency struct {
 	mu         sync.Mutex
 	limit      int
 	inflight   map[string]int
 	sessions   map[string]map[string]int // accountID -> upstream session ID -> active request references
-	waiters    map[string][]uint64       // accountID -> FIFO waiter tickets
+	waiters    map[string][]uint64       // accountID -> FIFO waiter tickets (cold sessions only)
 	nextTicket uint64
-	changed    chan struct{}
+	// warmSessions reserves the just-released slot for a returning session
+	// ("accountID\x00sessionID" -> reserved until). While reserved, the session
+	// acquires immediately and other (cold) sessions cannot use that slot.
+	warmSessions map[string]time.Time
+	// reservedCount is the per-account number of active slot reservations, so
+	// unreserved capacity = limit - inflight - reservedCount.
+	reservedCount map[string]int
+	changed       chan struct{}
+	// queueTimeoutOverride lets tests bound the queue wait without touching the
+	// global settings store; zero means "use the configured setting".
+	queueTimeoutOverride time.Duration
 }
 
 func newAccountConcurrency() *accountConcurrency {
@@ -36,15 +77,112 @@ func newAccountConcurrency() *accountConcurrency {
 		}
 	}
 	return &accountConcurrency{
-		limit:    limit,
-		inflight: map[string]int{},
-		sessions: map[string]map[string]int{},
-		waiters:  map[string][]uint64{},
-		changed:  make(chan struct{}),
+		limit:         limit,
+		inflight:      map[string]int{},
+		sessions:      map[string]map[string]int{},
+		waiters:       map[string][]uint64{},
+		warmSessions:  map[string]time.Time{},
+		reservedCount: map[string]int{},
+		changed:       make(chan struct{}),
 	}
 }
 
-// Available reports whether the account currently has a free concurrency slot.
+// Available reports whether the account currently has a free unreserved slot
+// for a brand-new session. A returning warm session is not gated by this check
+// — Acquire honors its reservation directly.
+func (c *accountConcurrency) Available(accountID string) bool {
+	if c == nil || accountID == "" {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.unreservedLocked(accountID) > 0
+}
+
+// HasUnreservedSlot reports whether the account has capacity that is neither in
+// flight nor reserved for a returning warm session.
+func (c *accountConcurrency) HasUnreservedSlot(accountID string) bool {
+	if c == nil || accountID == "" {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.unreservedLocked(accountID) > 0
+}
+
+// HasReservation reports whether the session currently holds a reserved slot on
+// the account (i.e. it is still within its warm window).
+func (c *accountConcurrency) HasReservation(accountID, sessionID string) bool {
+	if c == nil || accountID == "" || sessionID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reservationActiveLocked(accountID, sessionID)
+}
+
+// queueTimeout returns how long a queued cold session may wait for a slot
+// before Acquire fails with errQueueTimeout. Zero means wait indefinitely.
+// The web-console setting wins; the override field exists for tests.
+func (c *accountConcurrency) queueTimeout() time.Duration {
+	if c != nil && c.queueTimeoutOverride > 0 {
+		return c.queueTimeoutOverride
+	}
+	if sec := currentSettings().AccountQueueTimeoutSeconds; sec > 0 {
+		return time.Duration(sec) * time.Second
+	}
+	return 0
+}
+
+// WaitForSlot blocks until the session may start on the account (its reserved
+// warm slot, an existing in-flight request, or unreserved capacity), bounded by
+// the queue timeout. It acquires and immediately releases the slot, so
+// streaming handlers can decide BEFORE emitting any stream preamble whether the
+// request would otherwise just queue; on timeout it returns errQueueTimeout
+// (surfaced to the client as HTTP 429).
+func (c *accountConcurrency) WaitForSlot(ctx context.Context, accountID, sessionID string) error {
+	if c == nil || accountID == "" {
+		return nil
+	}
+	release, err := c.Acquire(ctx, accountID, sessionID)
+	if err != nil {
+		return err
+	}
+	release()
+	return nil
+}
+
+// queueWaitTimer arms a timer that fires when the queued waiter's budget runs
+// out. It returns a nil timer when there is nothing to wait for.
+func queueWaitTimer(timeout time.Duration, ticket uint64, queuedAt time.Time) (*time.Timer, <-chan time.Time) {
+	if ticket == 0 || timeout <= 0 || queuedAt.IsZero() {
+		return nil, nil
+	}
+	remaining := timeout - time.Since(queuedAt)
+	if remaining < 0 {
+		remaining = 0
+	}
+	t := time.NewTimer(remaining)
+	return t, t.C
+}
+
+// stopTimer stops a timer without leaking its channel.
+func stopTimer(t *time.Timer) {
+	if t == nil {
+		return
+	}
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+}
+
+func (c *accountConcurrency) unreservedLocked(accountID string) int {
+	return c.limit - c.inflight[accountID] - c.reservedCount[accountID]
+}
+
 // SetLimit hot-updates the per-account concurrency limit and wakes blocked
 // callers so they can re-evaluate availability immediately.
 func (c *accountConcurrency) SetLimit(limit int) {
@@ -58,15 +196,6 @@ func (c *accountConcurrency) SetLimit(limit int) {
 		c.changed = make(chan struct{})
 	}
 	c.mu.Unlock()
-}
-
-func (c *accountConcurrency) Available(accountID string) bool {
-	if c == nil || accountID == "" {
-		return true
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.inflight[accountID] < c.limit
 }
 
 func (c *accountConcurrency) enqueueWaiterLocked(accountID string) uint64 {
@@ -100,9 +229,82 @@ func (c *accountConcurrency) removeWaiterLocked(accountID string, ticket uint64)
 	}
 }
 
+// accountSessionKey builds the reservation map key for one account+session.
+func accountSessionKey(accountID, sessionID string) string {
+	return accountID + "\x00" + sessionID
+}
+
+// reservationActiveLocked reports whether the session still holds a reserved
+// slot. Expired reservations are lazily released (reservedCount decremented).
+func (c *accountConcurrency) reservationActiveLocked(accountID, sessionID string) bool {
+	key := accountSessionKey(accountID, sessionID)
+	until, ok := c.warmSessions[key]
+	if !ok {
+		return false
+	}
+	if until.After(time.Now()) {
+		return true
+	}
+	delete(c.warmSessions, key)
+	if c.reservedCount[accountID] > 0 {
+		c.reservedCount[accountID]--
+	}
+	return false
+}
+
+// clearReservationLocked consumes a reservation when the warm session re-acquires.
+func (c *accountConcurrency) clearReservationLocked(accountID, sessionID string) {
+	key := accountSessionKey(accountID, sessionID)
+	if _, ok := c.warmSessions[key]; ok {
+		delete(c.warmSessions, key)
+		if c.reservedCount[accountID] > 0 {
+			c.reservedCount[accountID]--
+		}
+	}
+}
+
+// reserveSlotLocked marks the just-released slot as reserved for the session.
+func (c *accountConcurrency) reserveSlotLocked(accountID, sessionID string) {
+	if c.warmSessions == nil {
+		c.warmSessions = map[string]time.Time{}
+	}
+	if c.reservedCount == nil {
+		c.reservedCount = map[string]int{}
+	}
+	c.warmSessions[accountSessionKey(accountID, sessionID)] = time.Now().Add(warmSessionWindow())
+	c.reservedCount[accountID]++
+	c.pruneWarmSessionsLocked()
+}
+
+// pruneWarmSessionsLocked bounds reservation-map growth on long-running
+// processes; expired entries older than twice the window are evicted.
+func (c *accountConcurrency) pruneWarmSessionsLocked() {
+	if len(c.warmSessions) < 1024 {
+		return
+	}
+	cutoff := time.Now().Add(-2 * warmSessionWindow())
+	for key, until := range c.warmSessions {
+		if until.Before(cutoff) {
+			delete(c.warmSessions, key)
+			if idx := strings.Index(key, "\x00"); idx > 0 {
+				if c.reservedCount[key[:idx]] > 0 {
+					c.reservedCount[key[:idx]]--
+				}
+			}
+		}
+	}
+}
+
 // Acquire blocks until the account has a free upstream-session slot (or ctx
 // is done). Calls without a session ID retain request-based behavior for
 // operations that have not created an upstream session yet.
+//
+// Scheduling model:
+//   - refs > 0  (session with an in-flight request)  -> bypasses the limit.
+//   - reserved  (session within its warm window)     -> immediate acquire of
+//     the slot that was set aside for it; cold sessions cannot cut in.
+//   - otherwise (cold session / new request)         -> FIFO queue, only uses
+//     unreserved capacity.
 func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sessionIDs ...string) (func(), error) {
 	if c == nil || accountID == "" {
 		return func() {}, nil
@@ -116,12 +318,24 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 	// session key, because each such request may create a distinct session.
 	if sessionID == "" {
 		var ticket uint64
+		var queuedAt time.Time
 		for {
+			timeout := c.queueTimeout()
 			c.mu.Lock()
-			if ticket == 0 && c.inflight[accountID] >= c.limit {
+			if ticket == 0 && c.unreservedLocked(accountID) <= 0 {
 				ticket = c.enqueueWaiterLocked(accountID)
+				queuedAt = time.Now()
 			}
-			canAcquire := c.inflight[accountID] < c.limit && (ticket == 0 || c.waiterIsFirstLocked(accountID, ticket))
+			// A waiter that has spent its whole queue budget fails with 429,
+			// even if a slot happens to free at the same instant.
+			if ticket != 0 && !queuedAt.IsZero() && timeout > 0 && time.Since(queuedAt) >= timeout {
+				c.removeWaiterLocked(accountID, ticket)
+				close(c.changed)
+				c.changed = make(chan struct{})
+				c.mu.Unlock()
+				return nil, errQueueTimeout
+			}
+			canAcquire := c.unreservedLocked(accountID) > 0 && (ticket == 0 || c.waiterIsFirstLocked(accountID, ticket))
 			if canAcquire {
 				if ticket != 0 {
 					c.removeWaiterLocked(accountID, ticket)
@@ -143,10 +357,12 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 					})
 				}, nil
 			}
+			timer, timerC := queueWaitTimer(timeout, ticket, queuedAt)
 			changed := c.changed
 			c.mu.Unlock()
 			select {
 			case <-ctx.Done():
+				stopTimer(timer)
 				c.mu.Lock()
 				if ticket != 0 {
 					c.removeWaiterLocked(accountID, ticket)
@@ -156,10 +372,23 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 				c.mu.Unlock()
 				return nil, ctx.Err()
 			case <-changed:
+				stopTimer(timer)
+			case <-timerC:
+				c.mu.Lock()
+				if ticket != 0 {
+					c.removeWaiterLocked(accountID, ticket)
+					close(c.changed)
+					c.changed = make(chan struct{})
+				}
+				c.mu.Unlock()
+				return nil, errQueueTimeout
 			}
 		}
 	}
+	var ticket uint64
+	var queuedAt time.Time
 	for {
+		timeout := c.queueTimeout()
 		c.mu.Lock()
 		if c.sessions == nil {
 			c.sessions = map[string]map[string]int{}
@@ -170,10 +399,30 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 			c.sessions[accountID] = accountSessions
 		}
 		refs := accountSessions[sessionID]
-		canAcquire := refs > 0 || c.inflight[accountID] < c.limit
+		reserved := c.reservationActiveLocked(accountID, sessionID)
+		if ticket == 0 && !(refs > 0 || reserved || c.unreservedLocked(accountID) > 0) {
+			ticket = c.enqueueWaiterLocked(accountID)
+			queuedAt = time.Now()
+		}
+		// A waiter that has spent its whole queue budget fails with 429, even
+		// if a slot happens to free at the same instant.
+		if ticket != 0 && !queuedAt.IsZero() && timeout > 0 && time.Since(queuedAt) >= timeout {
+			c.removeWaiterLocked(accountID, ticket)
+			close(c.changed)
+			c.changed = make(chan struct{})
+			c.mu.Unlock()
+			return nil, errQueueTimeout
+		}
+		canAcquire := (refs > 0 || reserved || c.unreservedLocked(accountID) > 0) && (ticket == 0 || c.waiterIsFirstLocked(accountID, ticket))
 		if canAcquire {
+			if ticket != 0 {
+				c.removeWaiterLocked(accountID, ticket)
+			}
 			if refs == 0 {
 				c.inflight[accountID]++
+				if reserved {
+					c.clearReservationLocked(accountID, sessionID)
+				}
 			}
 			accountSessions[sessionID] = refs + 1
 			c.mu.Unlock()
@@ -190,6 +439,7 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 							} else {
 								c.inflight[accountID]--
 							}
+							c.reserveSlotLocked(accountID, sessionID)
 						} else {
 							accountSessions[sessionID]--
 						}
@@ -203,24 +453,44 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 				})
 			}, nil
 		}
+		timer, timerC := queueWaitTimer(timeout, ticket, queuedAt)
 		changed := c.changed
 		c.mu.Unlock()
 		select {
 		case <-ctx.Done():
+			stopTimer(timer)
+			c.mu.Lock()
+			if ticket != 0 {
+				c.removeWaiterLocked(accountID, ticket)
+			}
+			close(c.changed)
+			c.changed = make(chan struct{})
+			c.mu.Unlock()
 			return nil, ctx.Err()
 		case <-changed:
+			stopTimer(timer)
+		case <-timerC:
+			c.mu.Lock()
+			if ticket != 0 {
+				c.removeWaiterLocked(accountID, ticket)
+				close(c.changed)
+				c.changed = make(chan struct{})
+			}
+			c.mu.Unlock()
+			return nil, errQueueTimeout
 		}
 	}
 }
 
-// Snapshot exposes the current limit and per-account in-flight counts for the
-// admin console.
+// Snapshot exposes the current limit and per-account in-flight / waiting /
+// reserved counts for the admin console.
 func (c *accountConcurrency) Snapshot() map[string]any {
 	if c == nil {
 		return map[string]any{
 			"limit":    defaultAccountConcurrency,
 			"inflight": map[string]int{},
 			"waiting":  map[string]int{},
+			"reserved": map[string]int{},
 		}
 	}
 	c.mu.Lock()
@@ -233,7 +503,11 @@ func (c *accountConcurrency) Snapshot() map[string]any {
 	for accountID, queue := range c.waiters {
 		waiting[accountID] = len(queue)
 	}
-	return map[string]any{"limit": c.limit, "inflight": inflight, "waiting": waiting}
+	reserved := make(map[string]int, len(c.reservedCount))
+	for accountID, count := range c.reservedCount {
+		reserved[accountID] = count
+	}
+	return map[string]any{"limit": c.limit, "inflight": inflight, "waiting": waiting, "reserved": reserved}
 }
 
 // accountAvailable is the combined health gate: the account must be scheduled

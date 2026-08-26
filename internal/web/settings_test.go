@@ -170,3 +170,62 @@ func TestAdaptiveToolCallLimitAllowsIndependentReadOnlyCalls(t *testing.T) {
 		t.Fatalf("got %d, want 4", got)
 	}
 }
+
+func TestAccountWarmSessionSecondsDefaultResolution(t *testing.T) {
+	t.Setenv("M365_ACCOUNT_WARM_SESSION_SECONDS", "")
+	t.Setenv("M365_ACCOUNT_WARM_SESSION_WINDOW", "")
+	if got := accountWarmSessionSecondsDefault(); got != defaultAccountWarmSessionSeconds {
+		t.Fatalf("default = %d, want %d", got, defaultAccountWarmSessionSeconds)
+	}
+	t.Setenv("M365_ACCOUNT_WARM_SESSION_SECONDS", "45")
+	if got := accountWarmSessionSecondsDefault(); got != 45 {
+		t.Fatalf("integer env = %d, want 45", got)
+	}
+	t.Setenv("M365_ACCOUNT_WARM_SESSION_SECONDS", "")
+	t.Setenv("M365_ACCOUNT_WARM_SESSION_WINDOW", "90s")
+	if got := accountWarmSessionSecondsDefault(); got != 90 {
+		t.Fatalf("duration env = %d, want 90", got)
+	}
+}
+
+func TestAccountWarmSessionSettingsDefaultsAndValidation(t *testing.T) {
+	t.Setenv("M365_ACCOUNT_WARM_SESSION_SECONDS", "")
+	t.Setenv("M365_ACCOUNT_WARM_SESSION_WINDOW", "")
+	v := defaultRuntimeSettings()
+	if v.AccountWarmSessionSeconds != defaultAccountWarmSessionSeconds {
+		t.Fatalf("default warm seconds = %d, want %d", v.AccountWarmSessionSeconds, defaultAccountWarmSessionSeconds)
+	}
+	if v.CacheOnAccountSwitch {
+		t.Fatal("cacheOnAccountSwitch must default to false")
+	}
+	if err := validateSettings(v); err != nil {
+		t.Fatalf("defaults failed validation: %v", err)
+	}
+	v.AccountWarmSessionSeconds = 0
+	if err := validateSettings(v); err == nil {
+		t.Fatal("zero warm seconds accepted")
+	}
+	v.AccountWarmSessionSeconds = 86401
+	if err := validateSettings(v); err == nil {
+		t.Fatal("warm seconds above 86400 accepted")
+	}
+}
+
+func TestAccountQueueTimeoutSettingsDefaultsAndValidation(t *testing.T) {
+	t.Setenv("M365_ACCOUNT_QUEUE_TIMEOUT_SECONDS", "")
+	v := defaultRuntimeSettings()
+	if v.AccountQueueTimeoutSeconds != defaultAccountQueueTimeoutSeconds {
+		t.Fatalf("default queue timeout = %d, want %d", v.AccountQueueTimeoutSeconds, defaultAccountQueueTimeoutSeconds)
+	}
+	if err := validateSettings(v); err != nil {
+		t.Fatalf("defaults failed validation: %v", err)
+	}
+	v.AccountQueueTimeoutSeconds = 0
+	if err := validateSettings(v); err == nil {
+		t.Fatal("zero queue timeout accepted")
+	}
+	v.AccountQueueTimeoutSeconds = 86401
+	if err := validateSettings(v); err == nil {
+		t.Fatal("queue timeout above 86400 accepted")
+	}
+}

@@ -272,6 +272,19 @@ type runtimeSettings struct {
 	// are "available-first" and "round-robin". Existing sessions remain sticky
 	// to their assigned account while that account is available.
 	AccountRoutingRule string `json:"accountRoutingRule"`
+	// AccountWarmSessionSeconds is how long a session keeps its concurrency slot
+	// reserved after releasing it (default 180 = 3 min). During this window the
+	// returning warm session gets its slot back immediately; new/cold sessions
+	// cannot use the reserved slot.
+	AccountWarmSessionSeconds int `json:"accountWarmSessionSeconds"`
+	// CacheOnAccountSwitch controls whether, when a session switches accounts
+	// (failover / old-session restart), the gateway still estimates the cached
+	// input tokens from the original conversation and reports them downstream.
+	CacheOnAccountSwitch bool `json:"cacheOnAccountSwitch"`
+	// AccountQueueTimeoutSeconds bounds how long a cold session may sit in a
+	// per-account FIFO queue before the request fails with HTTP 429 (default
+	// 10). 0 disables the bound (queue indefinitely).
+	AccountQueueTimeoutSeconds int `json:"accountQueueTimeoutSeconds"`
 	// TimeZone controls server-side calendar boundaries and frontend time display.
 	// It defaults to Asia/Shanghai and must be a valid IANA time zone name.
 	TimeZone string `json:"timeZone"`
@@ -290,6 +303,22 @@ func envInt(name string, fallback int) int {
 	}
 	return fallback
 }
+
+// accountWarmSessionSecondsDefault resolves the warm/reservation window default
+// from environment configuration, honoring M365_ACCOUNT_WARM_SESSION_SECONDS
+// (integer seconds) and the legacy M365_ACCOUNT_WARM_SESSION_WINDOW (Go
+// duration like "3m") forms.
+func accountWarmSessionSecondsDefault() int {
+	if sec := envInt("M365_ACCOUNT_WARM_SESSION_SECONDS", 0); sec > 0 {
+		return sec
+	}
+	if raw := strings.TrimSpace(os.Getenv("M365_ACCOUNT_WARM_SESSION_WINDOW")); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return int(d.Seconds())
+		}
+	}
+	return defaultAccountWarmSessionSeconds
+}
 func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
 		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
@@ -304,6 +333,9 @@ func defaultRuntimeSettings() runtimeSettings {
 		TraceMaxRecords:    defaultTraceMaxRecords,
 		AccountConcurrency: envInt("M365_ACCOUNT_DEFAULT_CONCURRENCY", defaultAccountConcurrency),
 		AccountRoutingRule: "available-first",
+		AccountWarmSessionSeconds: accountWarmSessionSecondsDefault(),
+		CacheOnAccountSwitch: false,
+		AccountQueueTimeoutSeconds: envInt("M365_ACCOUNT_QUEUE_TIMEOUT_SECONDS", defaultAccountQueueTimeoutSeconds),
 		TimeZone:           firstNonEmptySetting(os.Getenv("M365_TIME_ZONE"), "Asia/Shanghai"),
 	}
 }
@@ -332,6 +364,12 @@ var openSettingsStore = sync.OnceValue(func() *settingsStore {
 	}
 	if s.v.AccountRoutingRule == "" {
 		s.v.AccountRoutingRule = "available-first"
+	}
+	if s.v.AccountWarmSessionSeconds < 1 {
+		s.v.AccountWarmSessionSeconds = accountWarmSessionSecondsDefault()
+	}
+	if s.v.AccountQueueTimeoutSeconds < 1 {
+		s.v.AccountQueueTimeoutSeconds = defaultAccountQueueTimeoutSeconds
 	}
 	if strings.TrimSpace(s.v.TimeZone) == "" {
 		s.v.TimeZone = "Asia/Shanghai"
@@ -390,6 +428,12 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.AccountRoutingRule != "available-first" && v.AccountRoutingRule != "round-robin" {
 		return fmt.Errorf("账号轮询规则必须为 available-first 或 round-robin")
+	}
+	if v.AccountWarmSessionSeconds < 1 || v.AccountWarmSessionSeconds > 86400 {
+		return fmt.Errorf("会话优先级保留时长必须为 1-86400 秒")
+	}
+	if v.AccountQueueTimeoutSeconds < 1 || v.AccountQueueTimeoutSeconds > 86400 {
+		return fmt.Errorf("排队超时时间必须为 1-86400 秒")
 	}
 	if strings.TrimSpace(v.TimeZone) == "" {
 		return fmt.Errorf("时区不能为空")
