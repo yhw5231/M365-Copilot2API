@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -457,13 +458,31 @@ func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 		}
 		rc := &traceResponseWriter{ResponseWriter: w}
 		start := time.Now()
-		next.ServeHTTP(rc, r.WithContext(context.WithValue(r.Context(), traceKey{}, rec)))
+		// Recover any handler panic so the trace record is always finalized
+		// (DownstreamResp, StatusCode, DurationMs, Status) instead of staying
+		// stuck in_progress with downstream — and status 0. The panic is
+		// re-raised after the update so recoverPanics (outermost middleware)
+		// still writes the 500 error to the client.
+		var panicVal any
+		func() {
+			defer func() {
+				if v := recover(); v != nil {
+					panicVal = v
+				}
+			}()
+			next.ServeHTTP(rc, r.WithContext(context.WithValue(r.Context(), traceKey{}, rec)))
+		}()
 		s.trace.update(rec.ID, func(x *traceRecord) {
 			x.DownstreamResp = redactBody(rc.body.Bytes())
 			x.StatusCode = rc.status
 			x.DurationMs = time.Since(start).Milliseconds()
 		})
 		s.trace.finish(rec.ID, func(x *traceRecord) {
+			if panicVal != nil {
+				x.Error = fmt.Sprintf("handler panic: %v", panicVal)
+				x.Status = "error"
+				return
+			}
 			if x.StatusCode >= 400 || x.Error != "" {
 				x.Status = "error"
 			}
@@ -475,6 +494,9 @@ func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 				}
 			}
 		})
+		if panicVal != nil {
+			panic(panicVal)
+		}
 	})
 }
 
@@ -510,4 +532,13 @@ func (t *traceResponseWriter) Write(b []byte) (int, error) {
 		t.body.Write(b)
 	}
 	return t.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.NewResponseController reach the real underlying writer so
+// SetWriteDeadline (used by writeSSE / sseDataRaw / emitText) is applied to
+// the actual socket instead of silently failing. Without it a write to a dead
+// or stalled client can block the handler goroutine indefinitely, leaving the
+// trace record stuck in_progress with no downstream response.
+func (t *traceResponseWriter) Unwrap() http.ResponseWriter {
+	return t.ResponseWriter
 }
