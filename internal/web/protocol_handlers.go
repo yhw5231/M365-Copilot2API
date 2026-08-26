@@ -3,6 +3,7 @@ package web
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,6 +75,10 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	pr, pw := io.Pipe()
 	irw := &pipeResponseWriter{h: make(http.Header), w: pw}
 	innerDone := make(chan struct{})
+	// If the main goroutine returns early (client disconnect, first emit
+	// failure), close the read side so the inner goroutine's blocked pipe
+	// writes fail instead of leaking a goroutine against a dead socket.
+	defer pr.CloseWithError(context.Canceled)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -89,12 +94,22 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, _ := w.(http.Flusher)
+	var abortErr error
 	emit := func(name string, v any) error {
-		return writeSSE(r, w, flusher, name, v)
+		if abortErr != nil {
+			return abortErr
+		}
+		if err := writeSSE(r, w, flusher, name, v); err != nil {
+			abortErr = err
+			return err
+		}
+		return nil
 	}
 	id := "resp_" + uuid.NewString()
 	created := time.Now().Unix()
-	emit("response.created", map[string]any{"type": "response.created", "response": map[string]any{"id": id, "object": "response", "status": "in_progress", "model": model, "output": []any{}}})
+	if err := emit("response.created", map[string]any{"type": "response.created", "response": map[string]any{"id": id, "object": "response", "status": "in_progress", "model": model, "output": []any{}}}); err != nil {
+		return
+	}
 
 	var text strings.Builder
 	messageID := "msg_" + uuid.NewString()
@@ -117,7 +132,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
 	for scanner.Scan() {
-		if r.Context().Err() != nil {
+		if r.Context().Err() != nil || abortErr != nil {
 			return
 		}
 		line := scanner.Text()
@@ -166,6 +181,13 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			emit("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "output_index": msgIndex, "content_index": 0, "item_id": messageID, "delta": content})
 		}
 		if rawCalls, ok := delta["tool_calls"].([]any); ok {
+			// When reasoning is present the reasoning item occupies
+			// output_index 0; tool call items must follow at index 1, 2, ...
+			// to avoid colliding with it.
+			callOffset := 0
+			if reasoningStarted {
+				callOffset = 1
+			}
 			for _, raw := range rawCalls {
 				tc, ok := raw.(map[string]any)
 				if !ok {
@@ -207,7 +229,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 							item["name"] = v
 						}
 					}
-					emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": idx, "item": item})
+					emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": idx + callOffset, "item": item})
 				}
 				if v, ok := tc["id"].(string); ok {
 					st.ID = v
@@ -219,7 +241,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 				if v, ok := fn["arguments"].(string); ok {
 					st.Args += v
 					if st.Type != "custom" {
-						emit("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "output_index": idx, "item_id": st.ItemID, "delta": v})
+						emit("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "output_index": idx + callOffset, "item_id": st.ItemID, "delta": v})
 					}
 				}
 			}
@@ -283,6 +305,12 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			keys = append(keys, k)
 		}
 		sort.Ints(keys)
+		// Keep the output_index sequence consistent with the streaming phase:
+		// reasoning item holds index 0 when present, tool calls follow after it.
+		callOffset := 0
+		if reasoningStarted {
+			callOffset = 1
+		}
 		for _, i := range keys {
 			st := calls[i]
 			if st == nil {
@@ -317,15 +345,15 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 				input := customToolInput(st.Args)
 				item := map[string]any{"type": "custom_tool_call", "id": st.ItemID, "call_id": callID, "name": st.Name, "input": input, "status": "completed"}
 				output = append(output, item)
-				emit("response.custom_tool_call_input.delta", map[string]any{"type": "response.custom_tool_call_input.delta", "output_index": i, "item_id": item["id"], "delta": input})
-				emit("response.custom_tool_call_input.done", map[string]any{"type": "response.custom_tool_call_input.done", "output_index": i, "item_id": item["id"], "input": input})
-				emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
+				emit("response.custom_tool_call_input.delta", map[string]any{"type": "response.custom_tool_call_input.delta", "output_index": i + callOffset, "item_id": item["id"], "delta": input})
+				emit("response.custom_tool_call_input.done", map[string]any{"type": "response.custom_tool_call_input.done", "output_index": i + callOffset, "item_id": item["id"], "input": input})
+				emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i + callOffset, "item": item})
 				continue
 			}
 			item := map[string]any{"type": "function_call", "id": st.ItemID, "call_id": callID, "name": st.Name, "arguments": st.Args, "status": "completed"}
 			output = append(output, item)
-			emit("response.function_call_arguments.done", map[string]any{"type": "response.function_call_arguments.done", "output_index": i, "item_id": st.ItemID, "arguments": st.Args})
-			emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
+			emit("response.function_call_arguments.done", map[string]any{"type": "response.function_call_arguments.done", "output_index": i + callOffset, "item_id": st.ItemID, "arguments": st.Args})
+			emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i + callOffset, "item": item})
 		}
 	} else {
 		msgIndex := 0
