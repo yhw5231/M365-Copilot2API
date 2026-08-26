@@ -2164,7 +2164,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// not a keyword match.
 	if task != nil {
 		cur, max, ok := goalRoundCounter(body.Messages)
-		if ok && cur >= max && !task.IsComplete() && task.GoalID != "" {
+		if ok && cur >= max && !task.IsComplete() && (task.GoalID != "" || goalRoundRequest(body.Messages, task, body.Tools)) {
 			note := fmt.Sprintf("\n\n[TASK_LEDGER] ROUND_BUDGET_EXHAUSTED: %d/%d rounds used. "+
 				"Stop continuing the goal, report the current status and any unverified steps, and close the goal with update_goal(action=complete) if the work is done.", cur, max)
 			answerPrompt += note

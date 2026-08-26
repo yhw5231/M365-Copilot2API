@@ -130,20 +130,28 @@ func (t *taskLedger) Context() string {
 	if t.GoalID != "" {
 		fmt.Fprintf(&b, "GOAL_ID: %s\n", t.GoalID)
 	}
-	// Emit the lifecycle state so the model knows whether it should keep
-	// working or wrap up. A completed goal must never be re-opened by the
-	// generic "continue the goal" rule below.
-	status := t.Status
-	if status == "" {
-		status = "active"
-	}
-	fmt.Fprintf(&b, "GOAL_STATUS: %s\n", status)
-	if status == taskStatusComplete {
+	// A closed ledger always emits the terminal rule regardless of whether a goal
+	// id was recorded, so a completed task can never be re-opened by a later
+	// round or by the generic "continue the goal" rule.
+	if t.Status == taskStatusComplete {
+		fmt.Fprintf(&b, "GOAL_STATUS: complete\n")
 		if t.CompletedReason != "" {
 			fmt.Fprintf(&b, "COMPLETION_REASON: %s\n", compactTaskText(t.CompletedReason, 300))
 		}
 		b.WriteString("TASK_COMPLETE_RULE: The goal is complete. Do not continue working on it, do not repeat executed steps, and do not report outstanding work. Restate the outcome and stop.")
 		return strings.TrimSpace(b.String())
+	}
+	// Only goal-protocol sessions (a goal id was actually created) receive the
+	// goal lifecycle framing and the "continue the original goal" directive. An
+	// ordinary conversation that merely passes through the gateway must not be
+	// nudged into treating a one-off question as an ongoing goal.
+	isGoalSession := t.GoalID != ""
+	if isGoalSession {
+		status := t.Status
+		if status == "" {
+			status = "active"
+		}
+		fmt.Fprintf(&b, "GOAL_STATUS: %s\n", status)
 	}
 	if len(t.Constraints) > 0 {
 		fmt.Fprintf(&b, "CONSTRAINTS: %s\n", mustJSON(trimLines(t.Constraints, maxTaskLedgerLines)))
@@ -177,7 +185,11 @@ func (t *taskLedger) Context() string {
 	if len(t.Switches) > 0 {
 		fmt.Fprintf(&b, "ACCOUNT_SWITCH_LOG: %s\n", mustJSON(trimLines(t.Switches, 8)))
 	}
-	b.WriteString("TASK_RULE: Continue the original goal from where the evidence left off. Never restart the task or re-ask what it is. A completed step must not be repeated.")
+	if isGoalSession {
+		b.WriteString("TASK_RULE: Continue the original goal from where the evidence left off. Never restart the task or re-ask what it is. A completed step must not be repeated.")
+	} else {
+		b.WriteString("TASK_CONTEXT: The above records the original request and any progress so far. Use it to stay on track without re-asking the task.")
+	}
 	return strings.TrimSpace(b.String())
 }
 
@@ -542,8 +554,17 @@ func (t *taskLedger) goalRoundInjectedContext() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n\n[TASK_LEDGER] GOAL_STATUS: complete — this goal is already closed on the server. ")
-	b.WriteString("State the recorded outcome and do not start new work. The goal state has been persisted; no further update_goal call is required.")
+	b.WriteString("\n\n[TASK_LEDGER] GOAL_STATUS: complete — the work is verified done and the server-side goal is closed. ")
+	if strings.Contains(t.CompletedReason, "server-side correction") {
+		// The server closed its ledger from the model's final answer, but the
+		// client-side goal may still be active. Ask the model to close it so the
+		// goal round loop terminates instead of repeating status reports.
+		b.WriteString("If the client-side goal is still active, close it now with update_goal(action=complete) and the recorded goal id, then restate the outcome. Do not start new work.")
+	} else {
+		// Closed by explicit update_goal(action=complete) tool evidence, so the
+		// client-side goal is already done; only the outcome needs restating.
+		b.WriteString("State the recorded outcome and do not start new work. The goal state has been persisted; no further update_goal call is required.")
+	}
 	return b.String()
 }
 
@@ -593,6 +614,14 @@ var goalStrongCompletionPatterns = []string{
 	"implemented and verified", "completed successfully", "finished successfully",
 	"work is complete", "goal is complete", "task is complete",
 	"全部功能", "所有功能", "功能实现与验证",
+	// Common whole-project completion phrasings that the upstream model uses in
+	// its closing report. "已完成" alone stays excluded because it also appears
+	// in mid-task progress reports ("第一步已完成"); the phrases below are
+	// holistic enough to be safe.
+	"项目已完成", "项目已全部完成", "项目已完成并验证", "已完成全部功能",
+	"全部功能已实现", "已全部实现", "已全部完成", "全已完成", "已完成并验证",
+	"完成并验证通过", "全部完成并验证", "项目完成", "project completed",
+	"project is complete", "completed and verified", "implementation and verification are complete",
 }
 
 // goalCompletionSignal is the server-side "state correction" detector: the goal

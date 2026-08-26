@@ -33,6 +33,7 @@ func TestBuildTaskLedgerCapturesGoalAndConstraints(t *testing.T) {
 func TestTaskLedgerContextAnchorsGoal(t *testing.T) {
 	task := &taskLedger{
 		OriginalGoal:   "Deploy the service",
+		GoalID:         "goal-anchor-1",
 		Constraints:    []string{"no downtime"},
 		Executed:       []string{"build binary", "upload artifact"},
 		AccountID:      "acc-2",
@@ -129,6 +130,7 @@ func TestTaskLedgerCompleteLifecycle(t *testing.T) {
 	task := buildTaskLedger(&oaiReq{Messages: []oaiMsg{
 		{Role: "user", Content: "Refactor and verify the auth module"},
 	}})
+	task.GoalID = "goal-lifecycle-1" // goal-protocol session
 	if task.IsComplete() {
 		t.Fatal("fresh ledger must not be complete")
 	}
@@ -276,6 +278,18 @@ func TestGoalRoundContextOnComplete(t *testing.T) {
 	if suffix == "" || !strings.Contains(suffix, "no further update_goal call is required") {
 		t.Fatalf("completion context missing: %s", suffix)
 	}
+	// Server-side correction branch: the reason starts with "server-side
+	// correction" → the injected context must tell the model to call
+	// update_goal(complete) to close the client-side goal.
+	scTask := &taskLedger{OriginalGoal: "x", GoalID: "goal-sc-1"}
+	scTask.markComplete("server-side correction: final answer states completion with tool evidence")
+	scSuffix := scTask.goalRoundInjectedContext()
+	if !strings.Contains(scSuffix, "update_goal(action=complete)") {
+		t.Fatalf("server-side correction context must ask for update_goal call: %s", scSuffix)
+	}
+	if strings.Contains(scSuffix, "no further update_goal call is required") {
+		t.Fatalf("server-side correction context must not say no call needed: %s", scSuffix)
+	}
 	incomplete := &taskLedger{OriginalGoal: "x"}
 	if incomplete.goalRoundInjectedContext() != "" {
 		t.Fatal("active goal must not inject completion context")
@@ -313,3 +327,67 @@ func TestGoalRoundStructuredSignals(t *testing.T) {
 		t.Fatal("goalRoundCounter must not match without Round:")
 	}
 }
+
+// TestNonGoalSessionNeutralContext verifies the Q1 fix: an ordinary session
+// that never created a goal must NOT receive the "continue the original goal"
+// directive or a GOAL_STATUS line, only a neutral task context.
+func TestNonGoalSessionNeutralContext(t *testing.T) {
+	task := &taskLedger{
+		OriginalGoal: "请解释什么是 HTTP",
+		Constraints:  []string{"no downtime"},
+		Executed:     []string{"read source"},
+	}
+	ctx := task.Context()
+	if strings.Contains(ctx, "GOAL_STATUS") {
+		t.Fatalf("non-goal session must not inject GOAL_STATUS: %s", ctx)
+	}
+	if strings.Contains(ctx, "continue the original goal") || strings.Contains(ctx, "TASK_RULE") {
+		t.Fatalf("non-goal session must not inject the continue rule: %s", ctx)
+	}
+	if !strings.Contains(ctx, "ORIGINAL_GOAL: 请解释什么是 HTTP") {
+		t.Fatalf("original goal context missing: %s", ctx)
+	}
+	if !strings.Contains(ctx, "TASK_CONTEXT") {
+		t.Fatalf("neutral task context missing: %s", ctx)
+	}
+	// A completed non-goal ledger still emits the terminal rule so it cannot be
+	// re-opened by a later round.
+	task.markComplete("answered")
+	completeCtx := task.Context()
+	if !strings.Contains(completeCtx, "GOAL_STATUS: complete") || !strings.Contains(completeCtx, "TASK_COMPLETE_RULE") {
+		t.Fatalf("completed non-goal ledger must still close: %s", completeCtx)
+	}
+}
+
+// TestGoalStrongCompletionPhrasesNew verifies the expanded completion patterns
+// that the upstream model commonly uses in its closing report.
+func TestGoalStrongCompletionPhrasesNew(t *testing.T) {
+	withEvidence := agentLedger{Completed: []toolEvidence{
+		{ID: "c1", Name: "exec", Arguments: `{}`, Result: "ok"},
+	}}
+	cases := []string{
+		"项目已完成",
+		"项目已全部完成并验证通过",
+		"已完成全部功能并验证通过",
+		"全部功能已实现，验证结果正常",
+		"已全部实现并通过验证",
+		"implementation and verification are complete",
+	}
+	for _, c := range cases {
+		if !goalCompletionSignal(c, withEvidence) {
+			t.Errorf("holistic completion must count: %q", c)
+		}
+	}
+	// Mid-task wording must still be excluded.
+	denied := []string{
+		"第一步已完成，继续下一步",
+		"项目已完成一半，尚未完成",
+		"已完成但尚未验证",
+	}
+	for _, c := range denied {
+		if goalCompletionSignal(c, withEvidence) {
+			t.Errorf("mid-task answer must not close the goal: %q", c)
+		}
+	}
+}
+
