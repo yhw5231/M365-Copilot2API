@@ -23,7 +23,17 @@ func usageWithCache(pt, ct, cached int64) map[string]any {
 		"prompt_tokens":     pt,
 		"completion_tokens": ct,
 		"total_tokens":      pt + ct,
+		"cached_tokens":     cached,
 		"prompt_tokens_details": map[string]any{
+			"cached_tokens": cached,
+			"text_tokens":   pt - cached,
+		},
+		// Responses-format aliases so relays that consume the chat-completion
+		// usage as a generic usage map see the cache details regardless of
+		// which spelling they parse.
+		"input_tokens":     pt,
+		"output_tokens":    ct,
+		"input_tokens_details": map[string]any{
 			"cached_tokens": cached,
 			"text_tokens":   pt - cached,
 		},
@@ -131,5 +141,8 @@ func withInputCacheDetails(usage map[string]any, cached int64) map[string]any {
 		"cached_tokens": cached,
 		"text_tokens":   input - cached,
 	}
+	// Top-level cached_tokens: some relays (one-api / Kimi / xAI style) read
+	// usage.cached_tokens directly rather than the nested details format.
+	usage["cached_tokens"] = cached
 	return usage
 }
