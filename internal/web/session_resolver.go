@@ -218,7 +218,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	defer sr.mu.Unlock()
 	sr.evictLocked()
 
-	explicitID := r.Header.Get("X-M365-Session-Id")
+	explicitID := sessionIDFromRequest(r)
 	key := extractAPIKey(r)
 
 	// 瀹㈡埛绔樉寮忔寚瀹氱殑浼氳瘽 ID 鏄渶楂樹紭鍏堢殑缁帴璇箟锛氫笉鍙備笌浠讳綍韬唤鍒ゅ畾锛?
@@ -348,7 +348,7 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 	if strings.TrimSpace(assistantText) != "" && !isWorkspaceToolMisjudgmentForTools(assistantText, toolMapsFromChatHubTools(body.Tools)) {
 		history = append(history, oaiMsg{Role: "assistant", Content: assistantText})
 	}
-	explicitID := strings.TrimSpace(r.Header.Get("X-M365-Session-Id"))
+	explicitID := sessionIDFromRequest(r)
 	key := extractAPIKey(r)
 	// The caller-provided session ID is the stable downstream identity. Keep it
 	// separate from the upstream session ID returned by ChatHub so two callers
@@ -427,7 +427,8 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 }
 
 // ResolveTaskLedger returns the task ledger for the downstream session that the
-// request explicitly identifies (X-M365-Session-Id header or body.session_id).
+// request explicitly identifies (session_id / x-session-id header or
+// body.session_id).
 // Content-similarity fallback is deliberately NOT performed: a client that does
 // not send an explicit session id starts a fresh session/ledger every request,
 // exactly like conversation reuse. It is a read-only lookup and does not mutate
@@ -439,7 +440,7 @@ func (sr *sessionResolver) ResolveTaskLedger(r *http.Request, body *oaiReq) *tas
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	key := extractAPIKey(r)
-	explicitID := strings.TrimSpace(r.Header.Get("X-M365-Session-Id"))
+	explicitID := sessionIDFromRequest(r)
 	if explicitID == "" {
 		explicitID = strings.TrimSpace(body.SessionID)
 	}

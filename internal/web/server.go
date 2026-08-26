@@ -1942,7 +1942,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Serialize requests that explicitly target the same logical session. Hold
 	// the lock through the complete request so a later turn cannot resolve or
 	// update the session while the preceding turn is still in flight.
-	sessionLockID := firstNonEmpty(r.Header.Get(sessionHeaderName), body.SessionKey, body.SessionID, body.ConversationID)
+	sessionLockID := firstNonEmpty(sessionIDFromRequest(r), body.SessionKey, body.SessionID, body.ConversationID)
 	releaseSession, err := s.sessionConcurrency.Acquire(r.Context(), sessionLockID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusRequestTimeout, "request_cancelled", err.Error())
@@ -2166,8 +2166,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Conversation continuation is driven ONLY by explicit session identity
-	// (X-M365-Session-Id header, body session_key/session_id/conversation_id,
-	// or /v1/responses previous_response_id), never by content similarity.
+	// (session_id / x-session-id header, body session_key/session_id/
+	// conversation_id, or /v1/responses previous_response_id), never by content
+	// similarity.
 	// A request without an explicit identifier starts a fresh upstream
 	// conversation even when its messages match a previous request, so distinct
 	// conversations (and distinct users) can never silently merge.
@@ -2287,8 +2288,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		// Expose the stable downstream session id so a client that echoes it
-		// back (X-M365-Session-Id header / body.session_id) keeps its task
-		// ledger and goal state across rounds.
+		// back (session_id / x-session-id header / body.session_id) keeps its
+		// task ledger and goal state across rounds.
 		if resolved := s.sessionResolver.Resolve(r, &body); !resolved.IsNew {
 			w.Header().Set(sessionHeaderName, resolved.SessionID)
 		}
@@ -3223,7 +3224,23 @@ func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.
 
 const defaultPublicModelName = "m365-copilot"
 
-const sessionHeaderName = "X-M365-Session-Id"
+// sessionHeaderName 是承载显式会话 ID 的首选请求头。标准 OpenAI 兼容客户端
+// （如 DSH / pi-ai）默认发送 session_id，网关以它作为默认会话标识。
+const sessionHeaderName = "session_id"
+
+// sessionHeaderAlt 是同一会话标识的另一命名：部分客户端（pi-ai 的 openrouter
+// 格式、OpenAI-internal 风格）使用 x-session-id 发送相同的会话 ID，网关兼容读取。
+const sessionHeaderAlt = "x-session-id"
+
+// sessionIDFromRequest 提取请求头中的显式会话 ID。session_id（默认，DSH/pi-ai
+// 发送）优先；x-session-id 作为兼容别名校验。两者都不存在时返回空串，
+// 调用方按「无显式会话 ID」处理（新开对话，绝不复用）。
+func sessionIDFromRequest(r *http.Request) string {
+	if id := strings.TrimSpace(r.Header.Get(sessionHeaderName)); id != "" {
+		return id
+	}
+	return strings.TrimSpace(r.Header.Get(sessionHeaderAlt))
+}
 
 // bindConversation 在请求完成后登记会话解析器索引与缓存统计，流式与非流式
 // 路径共用。finalRound 为 false 时跳过服务端状态修正（工具调用轮无法安全

@@ -117,7 +117,7 @@ func resolverTestRequest(ip, ua, user string) *http.Request {
 
 func resolverTestRequestWithSID(ip, ua, user, sid string) *http.Request {
 	r := resolverTestRequest(ip, ua, user)
-	r.Header.Set("X-M365-Session-Id", sid)
+	r.Header.Set(sessionHeaderName, sid)
 	return r
 }
 
@@ -125,7 +125,7 @@ func TestResolverIncrementalBoundary(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()
 	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req1.Header.Set("X-M365-Session-Id", "sid-inc")
+	req1.Header.Set(sessionHeaderName, "sid-inc")
 	sr.Bind("", "conv-inc", "acc1",
 		&oaiReq{Messages: []oaiMsg{
 			{Role: "user", Content: "第一轮问题"},
@@ -136,7 +136,7 @@ func TestResolverIncrementalBoundary(t *testing.T) {
 
 	// 第二轮携带同一显式会话 ID，历史为前缀 → HistoryLen=2，只发增量。
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req2.Header.Set("X-M365-Session-Id", "sid-inc")
+	req2.Header.Set(sessionHeaderName, "sid-inc")
 	res := sr.Resolve(req2,
 		&oaiReq{Messages: []oaiMsg{
 			{Role: "user", Content: "第一轮问题"},
@@ -186,7 +186,7 @@ func TestResolverPersistsExplicitSessionAcrossReload(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", path)
 
 	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req1.Header.Set("X-M365-Session-Id", "sid-persist")
+	req1.Header.Set(sessionHeaderName, "sid-persist")
 	sr1 := openSessionResolver()
 	sr1.Bind("", "conv-persist", "acc1",
 		&oaiReq{Messages: []oaiMsg{
@@ -202,7 +202,7 @@ func TestResolverPersistsExplicitSessionAcrossReload(t *testing.T) {
 	// 模拟重启：重新打开同一缓存文件，显式会话 ID 的绑定与历史仍在 → 可续用。
 	sr2 := openSessionResolver()
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req2.Header.Set("X-M365-Session-Id", "sid-persist")
+	req2.Header.Set(sessionHeaderName, "sid-persist")
 	res := sr2.Resolve(req2,
 		&oaiReq{Messages: []oaiMsg{
 			{Role: "user", Content: "persisted question"},
@@ -221,7 +221,7 @@ func TestResolverPersistsExplicitSessionAcrossReload(t *testing.T) {
 
 	// 同一会话 ID 但多消息内容不再延续历史 → 保留会话 ID，但要求重建上游对话（不误续）。
 	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req3.Header.Set("X-M365-Session-Id", "sid-persist")
+	req3.Header.Set(sessionHeaderName, "sid-persist")
 	res3 := sr2.Resolve(req3,
 		&oaiReq{Messages: []oaiMsg{
 			{Role: "user", Content: "全新问题完全无关"},
@@ -274,11 +274,11 @@ func TestExplicitDownstreamSessionMapsToSeparateUpstreamSession(t *testing.T) {
 	body := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "hello"}}}
 
 	reqA := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	reqA.Header.Set("X-M365-Session-Id", "downstream-a")
+	reqA.Header.Set(sessionHeaderName, "downstream-a")
 	sr.Bind("upstream-session-a", "conversation-a", "account-a", body, "", reqA)
 
 	reqB := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	reqB.Header.Set("X-M365-Session-Id", "downstream-b")
+	reqB.Header.Set(sessionHeaderName, "downstream-b")
 	sr.Bind("upstream-session-b", "conversation-b", "account-a", body, "", reqB)
 
 	resolvedA := sr.Resolve(reqA, body)
@@ -301,7 +301,7 @@ func TestExplicitSessionDetectsCompactedContext(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.Header.Set("X-M365-Session-Id", "downstream-compacted")
+	req.Header.Set(sessionHeaderName, "downstream-compacted")
 
 	original := &oaiReq{Messages: []oaiMsg{
 		{Role: "user", Content: "first question"},
@@ -334,7 +334,7 @@ func TestExplicitSessionTreatsSingleMessageAsIncremental(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.Header.Set("X-M365-Session-Id", "downstream-incremental")
+	req.Header.Set(sessionHeaderName, "downstream-incremental")
 
 	original := &oaiReq{Messages: []oaiMsg{
 		{Role: "user", Content: "first question"},
@@ -362,7 +362,7 @@ func TestExplicitSessionUsesStrictPrefixForIncrementalSlice(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.Header.Set("X-M365-Session-Id", "downstream-prefix")
+	req.Header.Set(sessionHeaderName, "downstream-prefix")
 
 	original := &oaiReq{Messages: []oaiMsg{
 		{Role: "user", Content: "hello"},
@@ -384,5 +384,40 @@ func TestExplicitSessionUsesStrictPrefixForIncrementalSlice(t *testing.T) {
 	}
 	if resolved.MatchedBy != "explicit_prefix_2" {
 		t.Fatalf("unexpected match mode %q", resolved.MatchedBy)
+	}
+}
+
+// TestResolveAcceptsAltSessionHeaderName verifies the client compatibility
+// contract: the session identity is the explicit ID VALUE, regardless of
+// whether the client sent it via the canonical "session_id" header or the
+// alternative "x-session-id" header (pi-ai openrouter format). Both names must
+// resolve to the same persisted session, and a different value under either
+// name must stay a fresh session.
+func TestResolveAcceptsAltSessionHeaderName(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	body := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "hello"}}}
+
+	// Bind via the canonical session_id header.
+	reqA := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqA.Header.Set(sessionHeaderName, "shared-session")
+	sr.Bind("upstream-a", "conversation-a", "account-a", body, "", reqA)
+
+	// Resolve via the alternative x-session-id header with the same value.
+	reqB := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqB.Header.Set(sessionHeaderAlt, "shared-session")
+	resolvedB := sr.Resolve(reqB, body)
+	if resolvedB.IsNew {
+		t.Fatal("x-session-id header must resolve the same session as session_id")
+	}
+	if resolvedB.ConversationID != "conversation-a" {
+		t.Fatalf("alt header resolved conversation %q", resolvedB.ConversationID)
+	}
+
+	// A different value under either header is a different session.
+	reqC := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqC.Header.Set(sessionHeaderAlt, "other-session")
+	if resolvedC := sr.Resolve(reqC, body); !resolvedC.IsNew {
+		t.Fatalf("different session value must stay new, got %+v", resolvedC)
 	}
 }

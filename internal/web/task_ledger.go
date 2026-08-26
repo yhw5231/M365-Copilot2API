@@ -376,7 +376,7 @@ func (s *Server) sessionTaskLedger(r *http.Request, body *oaiReq) *taskLedger {
 	if s == nil || s.sessionResolver == nil {
 		return nil
 	}
-	if id := strings.TrimSpace(r.Header.Get(sessionHeaderName)); id != "" {
+	if id := sessionIDFromRequest(r); id != "" {
 		if b, ok := s.sessionResolver.GetSession(id); ok {
 			return b.Task
 		}
@@ -394,7 +394,7 @@ func (s *Server) sessionTaskLedger(r *http.Request, body *oaiReq) *taskLedger {
 		}
 	}
 	// Explicit session identifiers only: the task ledger (and goal state)
-	// survives across rounds when the client sends X-M365-Session-Id or
+	// survives across rounds when the client sends session_id / x-session-id or
 	// body.session_id. Content-similarity inheritance is deliberately not
 	// performed, so a brand-new conversation never silently carries an old
 	// session's task ledger.

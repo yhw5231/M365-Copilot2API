@@ -56,8 +56,8 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 | Anthropic 兼容 `/v1/messages` | Claude Code / Cursor 直连 |
 | SSE 流式输出 | 逐字实时返回，`stream: true` |
 | 工具调用转换 | OpenAI function calling ⇄ M365 工具协议，`router` / `native` 两种规划模式 |
-| 内容键会话复用 | 以对话上下文为键复用云端对话，命中时只发送增量消息（类似 DeepSeek 上下文缓存） |
-| 会话显式绑定 | `X-M365-Session-Id` 请求头精确指定要继续的会话 |
+| 会话显式续用 | 仅凭显式会话 ID 续用云端对话（无 ID 请求一律新建对话，绝不按聊天记录相似度复用）；命中时只发送增量消息 |
+| 会话显式绑定 | `session_id` / `x-session-id` 请求头精确指定要继续的会话（标准 OpenAI 兼容客户端默认发送，如 DSH / pi-ai） |
 | 自动清理 | 按闲置时间（默认 2h）或保留数量回收云端对话 |
 | 多账号管理 | PKCE 授权 + 账号轮询 + 故障自动转移 |
 | API Key 管理 | 控制台创建 / 撤销 / 回读 |
@@ -353,15 +353,15 @@ curl http://127.0.0.1:9090/v1/chat/completions \
   }'
 ```
 
-### 显式指定会话（内容键复用 + 增量发送）
+### 显式指定会话（会话 ID + 增量发送）
 
-携带同一 `X-M365-Session-Id` 的请求会被绑定到同一条云端对话，命中时网关只把新增历史部分发送给上游：
+携带同一 `session_id`（或 `x-session-id`）请求头的请求会被绑定到同一条云端对话，命中时网关只把新增历史部分发送给上游。会话 ID 由客户端持有并回传（标准 OpenAI 兼容客户端如 DSH / pi-ai 默认发送 `session_id`）：
 
 ```bash
 curl http://127.0.0.1:9090/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "X-M365-Session-Id: my-project-session" \
+  -H "session_id: my-project-session" \
   -d '{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"继续我们刚才的讨论"}]}'
 ```
 
@@ -463,21 +463,21 @@ curl http://127.0.0.1:9090/v1/messages \
 - 请求未携带 `reasoning_effort` 时，网关采用该模型配置的默认推理等级；请求可随时用 `reasoning_effort` 参数覆盖。
 - M365 订阅会上线的新模型名（如 `gpt-5.2`、`gpt-5.4`、`codex` 系）以实际目录为准，可在控制台路由界面添加配置。
 
-## 内容键会话复用原理
+## 会话续用原理
 
-多账号场景下，网关会用「内容键（context key）」把请求复用到已有云端对话上，机制对标 DeepSeek 式上下文缓存：**同一个对话上下文只维护一条云端会话，命中时只把增量新消息发给上游**，不仅省去重建上下文的开销，也更贴近多轮工具的体验。核心实现在 `internal/web/session_resolver.go`。
+会话续用**只认显式会话 ID**，绝不做任何内容相似度匹配（多用户/新对话靠聊天记录猜会话极易串话）。会话 ID 由客户端持有并随请求回传，核心实现在 `internal/web/session_resolver.go`。
 
-客户端请求到达后，`.Resolve()` 按以下优先级决定重用哪个会话：
+`.Resolve()` 只按一个优先级决定续用哪个会话：
 
-1. **显式会话（`X-M365-Session-Id`）**：请求头显式指定的会话 ID 优先级最高，不参与任何身份判定，由调用方主动决定要连接到哪条云端对话。
-2. **内容键前缀命中**：当请求的消息序列与某条已记录会话的历史**完全一致**（按最近 3 条消息计算内容指纹）时，直接复用该会话及其云端对话。此时返回的 `HistoryLen` 表示「云端对话已包含的消息条数」，上层据此只发送 `messages[HistoryLen:]` 增量。
-3. **相似度兜底**：若消息不是严格前缀，但与某条最近活跃（`M365_CONTEXT_TTL_MINUTES` 窗口内）会话的最后消息相似度超过阈值（`M365_CONTEXT_SIMILARITY`，默认 0.6），仍复用该会话（此时增量边界未知，发送全量）。
-4. **兜底新建**：都未命中时，按 `user` 字段 / IP+UA 指纹或轮询绑到合适的账号与轮询逻辑新建会话。
+1. **显式会话（`session_id` / `x-session-id` 请求头，或 `body.session_id`）**：请求头显式指定的会话 ID 优先级最高，不参与任何身份判定，由调用方主动决定要连接到哪条云端对话。同一 ID 的后续请求绑定到同一条云端对话。
+2. **兜底新建**：没有任何显式会话 ID 的请求一律新建云端对话——即使它与之前的请求内容完全相同，也绝不复用历史会话（新开对话、不同用户天然隔离）。
 
 几个特性由此而来：
 
-- **跨 IP / 跨账号复用**：内容指纹作为键全局唯一主键，不关心发起方是谁——换一台机器、换一个 M365 账号，只要对话上下文一致就能接上同一条云端会话。
-- **只发增量**：严格前缀命中时上层只补发新消息，等价于把云端对话当作上下文缓存用。
+- **无 ID = 无状态**：不携带会话 ID 的请求每次都是全新对话，`cached_tokens` 为 `0`，多用户之间不可能串话。
+- **标准客户端即插即用**：OpenAI 兼容客户端（DSH / pi-ai、Cherry Studio、NextChat 等）默认携带 `session_id` 头；`x-session-id` 作为兼容别名同样识别（同一 ID 值不论用哪个头名都映射到同一条会话）。
+- **只发增量**：显式会话命中且消息历史延续时，网关只补发新消息（`HistoryLen` 表示「云端对话已包含的消息条数」），等价于把云端对话当作上下文缓存用。
+- **`/v1/responses` 用原生 `previous_response_id`**：Responses 协议的会话续用走标准字段，无需自定义头。
 - **线程与清理联动**：会话绑定持久化在 `sessions.json`（0600），过期时间由 `M365_SESSION_TTL_MINUTES` 控制；长期无命中的会话会随自动清理按同一窗口（默认 2 小时）被回收。
 
 ### 缓存信息如何返回给下游
@@ -498,9 +498,9 @@ curl http://127.0.0.1:9090/v1/messages \
 }
 ```
 
-- `cached_tokens` = 完整逻辑 prompt 中被复用的历史部分（会话复用命中时未重新发送给 ChatHub 的 token 估算，等价于把云端对话当作上下文缓存）。
+- `cached_tokens` = 完整逻辑 prompt 中被复用的历史部分（会话续用命中时未重新发送给 ChatHub 的 token 估算，等价于把云端对话当作上下文缓存）。
 - `text_tokens` = 本次新提交的增量输入；`prompt_tokens` = `cached_tokens + text_tokens`。
-- 复用未命中（新建会话、全量重发）时 `cached_tokens` 为 `0`，字段仍然返回，便于下游统一解析。
+- 续用未命中（新建会话、全量重发）时 `cached_tokens` 为 `0`，字段仍然返回，便于下游统一解析。
 
 下游转发层（如 sub2api / one-api / new-api）和客户端（NextChat、Cherry Studio、LobeChat 等）读取该标准字段即可展示「缓存命中」与节省量，无需额外协议。工具调用响应（`finish_reason: tool_calls`）的 `usage` 同样携带该字段。
 
@@ -610,9 +610,9 @@ M365-Copilot2API/
 
 通常是系统环境变量残留了 `ANTHROPIC_API_KEY`，或同时配置了 `ANTHROPIC_AUTH_TOKEN` 导致两种认证方式冲突。只保留 `~/.claude/settings.json` 中的 `ANTHROPIC_API_KEY`（settings 会覆盖系统级变量），并删除系统级残留或 `AUTH_TOKEN`。
 
-**Q4：X-M365-Session-Id 是什么？**
+**Q4：session_id / x-session-id 是什么？**
 
-网关默认按内容（上下文前缀 / 相似度）自动复用会话；当你希望在客户端侧显式控制会话与云端对话的对应关系时，携带 `X-M365-Session-Id` 请求头，网关直接绑定到该 ID（本地内容指纹不再参与优先级判定）。
+会话续用的唯一依据是客户端携带的显式会话 ID（请求头 `session_id` 或 `x-session-id`，或 `body.session_id`，或 `/v1/responses` 的 `previous_response_id`）。不携带会话 ID 的请求一律新建云端对话——即使内容与之前完全相同也绝不复用，从根本上避免多用户/新对话串话。标准 OpenAI 兼容客户端（DSH / pi-ai 等）默认发送 `session_id` 头，无需额外配置。
 
 **Q5：对话出现串号 / 上下文错乱？**
 

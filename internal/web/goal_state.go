@@ -178,8 +178,9 @@ func (s *Server) handleGoalState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve the downstream session that owns the goal.
-	// Prefer X-M365-Session-Id; fallback to the API key's most recent session.
-	sessionID := strings.TrimSpace(r.Header.Get(sessionHeaderName))
+	// Prefer the explicit session ID header (session_id / x-session-id);
+	// fallback to the API key's most recent session.
+	sessionID := sessionIDFromRequest(r)
 	if sessionID == "" {
 		sessionID = r.URL.Query().Get("session_id")
 	}
