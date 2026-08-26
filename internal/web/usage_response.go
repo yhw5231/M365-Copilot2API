@@ -92,11 +92,24 @@ func numberToInt64(v any) int64 {
 // withInputCacheDetails stamps the OpenAI Responses / Anthropic style
 // input_tokens_details.cached_tokens breakdown onto a usage map. cached is
 // clamped to the input size so text_tokens can never go negative.
+//
+// It also stamps the Chat Completions aliases (prompt_tokens / completion_tokens
+// / prompt_tokens_details.cached_tokens) with the same values: downstream
+// relays such as sub2api / one-api / new-api and billing panels read the chat
+// format even on a Responses endpoint and would otherwise fall back to their own
+// token count (showing a different total and no cache) when only input_tokens
+// is present.
 func withInputCacheDetails(usage map[string]any, cached int64) map[string]any {
 	input := int64(0)
 	if v, ok := usage["input_tokens"]; ok {
 		if n := numberToInt64(v); n > 0 {
 			input = n
+		}
+	}
+	output := int64(0)
+	if v, ok := usage["output_tokens"]; ok {
+		if n := numberToInt64(v); n > 0 {
+			output = n
 		}
 	}
 	if cached < 0 {
@@ -105,7 +118,16 @@ func withInputCacheDetails(usage map[string]any, cached int64) map[string]any {
 	if cached > input {
 		cached = input
 	}
-	usage["input_tokens_details"] = map[string]any{
+	details := map[string]any{
+		"cached_tokens": cached,
+		"text_tokens":   input - cached,
+	}
+	usage["input_tokens_details"] = details
+	// Chat Completions aliases (see doc comment above).
+	usage["prompt_tokens"] = input
+	usage["completion_tokens"] = output
+	usage["total_tokens"] = input + output
+	usage["prompt_tokens_details"] = map[string]any{
 		"cached_tokens": cached,
 		"text_tokens":   input - cached,
 	}

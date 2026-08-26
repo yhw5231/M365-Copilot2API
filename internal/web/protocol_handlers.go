@@ -455,9 +455,8 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	if innerCachedTokens > cached {
 		cached = innerCachedTokens
 	}
-	if cached > 0 {
-		withInputCacheDetails(estimate.Values, cached)
-	}
+	// Always stamp both spellings (see the non-streaming responses() path).
+	withInputCacheDetails(estimate.Values, cached)
 	resp := map[string]any{"id": id, "object": "response", "created_at": created, "status": "completed", "model": model, "output": output, "usage": estimate.Values, "m365": localUsageMetadata(estimate.Source)}
 	// Store the response for subsequent previous_response_id (same semantics as
 	// the non-streaming path in responses()).
@@ -615,9 +614,12 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	if inner := cachedTokensFromUsage(out["usage"]); inner > cached {
 		cached = inner
 	}
-	if cached > 0 {
-		withInputCacheDetails(estimate.Values, cached)
-	}
+	// Always stamp both the Responses (input_tokens_details) and Chat Completions
+	// (prompt_tokens / prompt_tokens_details) spellings so downstream relays
+	// (sub2api / one-api / new-api) and billing panels read the cache breakdown
+	// regardless of which format they parse. cached is 0 for a fresh
+	// conversation and the aliases still resolve to the same input count.
+	withInputCacheDetails(estimate.Values, cached)
 	out["usage"] = estimate.Values
 	out["m365_usage_source"] = estimate.Source
 	if body.Store != nil {
