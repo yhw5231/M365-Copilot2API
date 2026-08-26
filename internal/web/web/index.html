@@ -1618,7 +1618,7 @@ async function loadRecentRequests(){
   }catch(e){showEmpty();}
 }
 
-let _accountsCache=[],_accountFilter='all',_accountSort={key:'importOrder',direction:'asc'};
+let _accountsCache=[],_accountFilter='all',_accountSort={key:'identity',direction:'asc'};
 const _selectedAccountIds=new Set();
 function setAccountFilter(f){_accountFilter=f;document.querySelectorAll('#accountFilter button').forEach(b=>b.classList.toggle('active',b.dataset.f===f));renderAccounts();}
 function accountSearchText(x){return [x.displayName,x.email,x.id,x.boundProxy].map(v=>String(v||'').toLowerCase()).join(' ');}
@@ -1754,11 +1754,12 @@ function renderAccounts(){
     identityTd.appendChild(accountCell);
 
     const idTd=document.createElement('td');
-    idTd.style.cssText='font-size:11px;color:var(--muted);max-width:180px;word-break:break-all';
+    idTd.style.cssText='font-size:11px;color:var(--muted);width:180px;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
     idTd.textContent=x.id||'-';
+    idTd.title=String(x.id||'');
 
     const queueTd=document.createElement('td');
-    queueTd.style.cssText='font-size:12px;white-space:nowrap';
+    queueTd.style.cssText='font-size:12px;white-space:nowrap;text-align:center';
     queueTd.textContent=Number(x.queuePosition)>0?String(x.queuePosition):'-';
 
     const concurrencyTd=document.createElement('td');
