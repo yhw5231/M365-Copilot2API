@@ -30,7 +30,7 @@ type apiKeyRecord struct {
 }
 type apiKeyStore struct {
 	mu      sync.Mutex
-	Path    string
+	Path    string         `json:"-"` // runtime file path only; never persisted (a stale cross-platform path must not override the configured one)
 	Keys    []apiKeyRecord `json:"keys"`
 	persist *persistStore
 }
@@ -49,6 +49,14 @@ func openAPIKeys() *apiKeyStore {
 	s := newAPIKeyStore(p)
 	b, e := os.ReadFile(p)
 	if e == nil && json.Unmarshal(b, s) == nil {
+		// The persisted file may carry a stale Path field (e.g. an absolute
+		// Windows path written by a previous host run). It must never override
+		// the configured runtime path: on Linux, filepath.Dir of a
+		// backslash-separated path is ".", so atomic flushes would try to create
+		// the temp file in the process working directory and fail with
+		// permission denied (breaking session/conversation continuity).
+		s.Path = p
+		_ = s.flush()
 		migrated := false
 		for i := range s.Keys {
 			k := &s.Keys[i]

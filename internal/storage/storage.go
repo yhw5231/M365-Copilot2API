@@ -89,7 +89,7 @@ func WriteFileAtomic(path string, b []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".m365-copilot2api-*")
 	if err != nil {
-		return fmt.Errorf("create temporary runtime file: %w", err)
+		return fmt.Errorf("create temporary runtime file: %w (path=%q dir=%q)", err, path, dir)
 	}
 	tmp := f.Name()
 	removeTmp := true
