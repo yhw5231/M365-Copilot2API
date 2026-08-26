@@ -98,6 +98,65 @@ func TestStreamingResponsesResultIncludesUsage(t *testing.T) {
 	}
 }
 
+func TestResponsesResultIncludesReasoningItem(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeResponsesResult(rr, "gpt-5.6-reasoning", false, map[string]any{
+		"choices": []any{map[string]any{"message": map[string]any{"content": "answer", "reasoning_content": "think step by step"}}},
+		"usage":   estimateResponsesUsage("gpt-5.6-reasoning", []oaiMsg{{Role: "user", Content: "prompt"}}, nil, nil, "answer").Values,
+	})
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	output, _ := response["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("expected reasoning + message output, got %#v", output)
+	}
+	rs, _ := output[0].(map[string]any)
+	if rs["type"] != "reasoning" {
+		t.Fatalf("first output item must be reasoning, got %#v", rs)
+	}
+	summary, _ := rs["summary"].([]any)
+	if len(summary) != 1 {
+		t.Fatalf("reasoning item missing summary: %#v", rs)
+	}
+	s, _ := summary[0].(map[string]any)
+	if s["text"] != "think step by step" {
+		t.Fatalf("reasoning summary text=%v", s["text"])
+	}
+	msg, _ := output[1].(map[string]any)
+	if msg["type"] != "message" {
+		t.Fatalf("second output item must be message, got %#v", msg)
+	}
+}
+
+func TestStreamingResponsesResultEmitsReasoningDelta(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeResponsesResult(rr, "gpt-5.6-reasoning", true, map[string]any{
+		"choices": []any{map[string]any{"message": map[string]any{"content": "answer", "reasoning_content": "think step by step"}}},
+		"usage":   estimateResponsesUsage("gpt-5.6-reasoning", []oaiMsg{{Role: "user", Content: "prompt"}}, nil, nil, "answer").Values,
+	})
+	body := rr.Body.String()
+	if !strings.Contains(body, "event: response.reasoning_summary_text.delta") || !strings.Contains(body, `"delta":"think step by step"`) {
+		t.Fatalf("stream missing reasoning delta: %s", body)
+	}
+	if !strings.Contains(body, `"type":"reasoning"`) {
+		t.Fatalf("stream missing reasoning item: %s", body)
+	}
+}
+
+func TestResponsesOutputHasContentCountsReasoning(t *testing.T) {
+	if !responsesOutputHasContent(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "", "reasoning_content": "   think  "}}}}) {
+		t.Fatal("expected reasoning-only to count as content")
+	}
+	if !responsesOutputHasContent(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "hi"}}}}) {
+		t.Fatal("expected text content to count")
+	}
+	if responsesOutputHasContent(map[string]any{"choices": []any{map[string]any{"message": map[string]any{}}}}) {
+		t.Fatal("expected empty message not to count")
+	}
+}
+
 func TestSplitResponsesInputTokensForPreviousResponse(t *testing.T) {
 	newInput, cachedInput := splitResponsesInputTokens(1250, 1000)
 	if newInput != 250 || cachedInput != 1000 {

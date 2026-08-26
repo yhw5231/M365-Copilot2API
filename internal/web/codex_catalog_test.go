@@ -199,6 +199,21 @@ func TestReasoningEffortRouting(t *testing.T) {
 	}
 }
 
+func TestIsReasoningTone(t *testing.T) {
+	reasoning := []string{"Gpt_5_2_Reasoning", "Gpt_5_3_Reasoning", "Gpt_5_4_Reasoning", "Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning", "Claude_Sonnet_Reasoning"}
+	for _, tone := range reasoning {
+		if !isReasoningTone(tone) {
+			t.Fatalf("isReasoningTone(%q) = false, want true", tone)
+		}
+	}
+	plain := []string{"Gpt_5_2_Chat", "Gpt_5_3_Chat", "Gpt_5_4_Chat", "Gpt_5_5_Chat", "Claude_Sonnet", "magic", ""}
+	for _, tone := range plain {
+		if isReasoningTone(tone) {
+			t.Fatalf("isReasoningTone(%q) = true, want false", tone)
+		}
+	}
+}
+
 func TestResolveReasoningEffort(t *testing.T) {
 	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "xhigh"}}
 	// A requested level is trusted.

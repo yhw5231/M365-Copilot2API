@@ -16,6 +16,9 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 	msg, _ := openAIChoice(src)
 	sanitizePublicAssistantMessage(msg, model)
 	var output []any
+	if reasoning, _ := msg["reasoning_content"].(string); reasoning != "" {
+		output = append(output, map[string]any{"type": "reasoning", "id": "rs_" + uuid.NewString(), "summary": []any{map[string]any{"type": "summary_text", "text": reasoning, "annotations": []any{}}}})
+	}
 	if calls, ok := msg["tool_calls"].([]any); ok {
 		for _, raw := range calls {
 			tc, _ := raw.(map[string]any)
@@ -110,6 +113,13 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 			input, _ := m["input"].(string)
 			emit("response.custom_tool_call_input.delta", map[string]any{"type": "response.custom_tool_call_input.delta", "output_index": i, "item_id": m["id"], "delta": input})
 			emit("response.custom_tool_call_input.done", map[string]any{"type": "response.custom_tool_call_input.done", "output_index": i, "item_id": m["id"], "input": input})
+		} else if m["type"] == "reasoning" {
+			summary, _ := m["summary"].([]any)
+			if len(summary) > 0 {
+				s, _ := summary[0].(map[string]any)
+				txt, _ := s["text"].(string)
+				emit("response.reasoning_summary_text.delta", map[string]any{"type": "response.reasoning_summary_text.delta", "output_index": i, "content_index": 0, "item_id": m["id"], "delta": txt})
+			}
 		}
 		emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
 	}

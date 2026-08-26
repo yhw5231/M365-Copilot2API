@@ -98,6 +98,10 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	messageID := "msg_" + uuid.NewString()
 	contentID := "txt_" + uuid.NewString()
 	textStarted := false
+	var reasoning strings.Builder
+	reasoningID := "rs_" + uuid.NewString()
+	reasoningContentID := "rs_summary_" + uuid.NewString()
+	reasoningStarted := false
 	type tcState struct {
 		ID, Name, Args, Type string
 		ItemID               string
@@ -148,13 +152,25 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		}
 		choice, _ := choices[0].(map[string]any)
 		delta, _ := choice["delta"].(map[string]any)
+		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+			reasoning.WriteString(rc)
+			if !reasoningStarted {
+				reasoningStarted = true
+				emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "reasoning", "id": reasoningID, "status": "in_progress", "summary": []any{map[string]any{"type": "summary_text", "id": reasoningContentID, "text": "", "annotations": []any{}}}}})
+			}
+			emit("response.reasoning_summary_text.delta", map[string]any{"type": "response.reasoning_summary_text.delta", "output_index": 0, "content_index": 0, "item_id": reasoningID, "delta": rc})
+		}
 		if content, ok := delta["content"].(string); ok && content != "" {
 			text.WriteString(content)
+			msgIndex := 0
+			if reasoningStarted {
+				msgIndex = 1
+			}
 			if !textStarted {
 				textStarted = true
-				emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "message", "id": messageID, "role": "assistant", "status": "in_progress", "content": []any{map[string]any{"type": "output_text", "id": contentID, "text": "", "annotations": []any{}}}}})
+				emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": msgIndex, "item": map[string]any{"type": "message", "id": messageID, "role": "assistant", "status": "in_progress", "content": []any{map[string]any{"type": "output_text", "id": contentID, "text": "", "annotations": []any{}}}}})
 			}
-			emit("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "item_id": messageID, "delta": content})
+			emit("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "output_index": msgIndex, "content_index": 0, "item_id": messageID, "delta": content})
 		}
 		if rawCalls, ok := delta["tool_calls"].([]any); ok {
 			for _, raw := range rawCalls {
@@ -248,7 +264,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		})
 		return
 	}
-	if len(calls) == 0 && strings.TrimSpace(text.String()) == "" {
+	if len(calls) == 0 && strings.TrimSpace(text.String()) == "" && reasoning.Len() == 0 {
 		// Never leave a Responses stream after response.created without a
 		// terminal event: clients otherwise render this as a successful blank
 		// answer and may reuse an incomplete response on the next turn.
@@ -262,6 +278,12 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	output := []any{}
+	if reasoningStarted {
+		output = append(output, map[string]any{"type": "reasoning", "id": reasoningID, "status": "completed", "summary": []any{map[string]any{"type": "summary_text", "id": reasoningContentID, "text": reasoning.String(), "annotations": []any{}}}})
+		// OpenAI emits output_item.done in output_index order; the reasoning
+		// item (index 0) completes before the message or tool items that follow.
+		emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": 0, "item": output[0]})
+	}
 	if len(calls) > 0 {
 		keys := make([]int, 0, len(calls))
 		for k := range calls {
@@ -313,18 +335,22 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
 		}
 	} else {
+		msgIndex := 0
+		if reasoningStarted {
+			msgIndex = 1
+		}
 		item := map[string]any{"type": "message", "id": messageID, "role": "assistant", "status": "in_progress", "content": []any{map[string]any{"type": "output_text", "id": contentID, "text": "", "annotations": []any{}}}}
 		output = append(output, item)
 		if !textStarted {
-			emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item})
-			emit("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "item_id": messageID, "delta": text.String()})
+			emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": msgIndex, "item": item})
+			emit("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "output_index": msgIndex, "content_index": 0, "item_id": messageID, "delta": text.String()})
 		}
-		emit("response.output_text.done", map[string]any{"type": "response.output_text.done", "output_index": 0, "content_index": 0, "item_id": messageID, "text": text.String()})
+		emit("response.output_text.done", map[string]any{"type": "response.output_text.done", "output_index": msgIndex, "content_index": 0, "item_id": messageID, "text": text.String()})
 		item["status"] = "completed"
 		item["content"] = []any{map[string]any{"type": "output_text", "id": contentID, "text": text.String(), "annotations": []any{}}}
-		emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item})
+		emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": msgIndex, "item": item})
 	}
-	usageOutput := text.String()
+	usageOutput := reasoning.String() + text.String()
 	for _, call := range calls {
 		usageOutput += call.Name + call.Args
 	}
@@ -527,8 +553,13 @@ func responsesOutputHasContent(src map[string]any) bool {
 	if calls, ok := msg["tool_calls"].([]any); ok && len(calls) > 0 {
 		return true
 	}
-	text, _ := msg["content"].(string)
-	return strings.TrimSpace(text) != ""
+	if text, _ := msg["content"].(string); strings.TrimSpace(text) != "" {
+		return true
+	}
+	if reasoning, _ := msg["reasoning_content"].(string); strings.TrimSpace(reasoning) != "" {
+		return true
+	}
+	return false
 }
 
 func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {

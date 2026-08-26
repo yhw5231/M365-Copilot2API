@@ -2280,12 +2280,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), cachedInputTokens(prompt, answerPrompt), calls, routeRes)
+			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), cachedTokens(), calls, routeRes)
 			s.recordToolUsage(r, acc, &body, routeRes, startedAt)
 			return
 		}
 	}
-	if body.Stream {
+	if body.Stream && !isReasoningTone(tone) {
 		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL)
 		answerReq.TraceID = requestID
 		answerReq.BindAccount = acc.ID
@@ -2558,7 +2558,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ask the upstream model to select and validate the next tool. The gateway
 	// remains tool-agnostic; it only validates and serializes the decision.
-	if planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
+	// Stream requests (content or reasoning) are routed by the streaming tool
+	// router above, which returns before this point; guard with !body.Stream so
+	// a reasoning stream that fell through the content-stream block does not
+	// run this non-stream router (it would emit tool SSE before the stream
+	// preamble is written).
+	if !body.Stream && planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
 		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 		if routeErr != nil {
@@ -2771,13 +2776,13 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
-			if content := contentFilter.Push(res.Text) + contentFilter.Flush(); content != "" {
-				if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
+			if reasoning := reasoningFilter.Push(res.Reasoning) + reasoningFilter.Flush(); reasoning != "" {
+				if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
 					return
 				}
 			}
-			if reasoning := reasoningFilter.Push(res.Reasoning) + reasoningFilter.Flush(); reasoning != "" {
-				if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
+			if content := contentFilter.Push(res.Text) + contentFilter.Flush(); content != "" {
+				if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
 					return
 				}
 			}
@@ -2826,6 +2831,12 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}, "usage": usageWithCache(pt, ct, cached)}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+		if body.User != "" && res.ConversationID != "" {
+			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+		}
+		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		return
 	} else {
 		res, err = s.chatWithAccount(ctx, acc.ID, account, answerReq)
 		if IsEmptyCompletion(err) && tone != "magic" {

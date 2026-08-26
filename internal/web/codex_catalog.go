@@ -362,6 +362,15 @@ func compatibilityAliasModel(id string) bool {
 	return false
 }
 
+// isReasoningTone reports whether a ChatHub tone drives the multi-step
+// ChainOfThought transcript that ChatHub surfaces as reasoning_content. Every
+// built-in reasoning tone ends with "_Reasoning" (Gpt_5_2_Reasoning ...,
+// Claude_Sonnet_Reasoning); a custom reasoning tone must keep that suffix for
+// streaming reasoning_content to be delivered.
+func isReasoningTone(tone string) bool {
+	return strings.HasSuffix(tone, "_Reasoning")
+}
+
 func modelCatalog() []map[string]any {
 	l := configuredModelLimits()
 	models := configuredModelSpecs(currentSettings().ModelMappings)
