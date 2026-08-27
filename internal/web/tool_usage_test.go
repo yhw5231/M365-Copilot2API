@@ -21,6 +21,9 @@ func TestRecordToolUsageRecordsInputAndCachedTokens(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer sk-tool-usage-test")
+	// An explicit session ID makes history eligible as cached tokens (the
+	// resolver only reuses upstream conversations when a session ID is sent).
+	req.Header.Set(sessionHeaderName, "tool-usage-session")
 	res := chathub.Result{Text: "tool routing result"}
 
 	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second))
@@ -61,5 +64,35 @@ func TestRecordToolUsageSingleMessageHasNoCachedTokens(t *testing.T) {
 	}
 	if rec.CacheTokens != 0 {
 		t.Fatalf("single current message cache tokens=%d want 0", rec.CacheTokens)
+	}
+}
+
+// TestRecordToolUsageWithoutSessionIDHasNoCachedTokens guards against the
+// false-positive cache reporting that DSH/pi-ai triggers: it sends full history
+// every turn but no session_id header, so the resolver never reuses and the
+// history must NOT be reported as cached tokens.
+func TestRecordToolUsageWithoutSessionIDHasNoCachedTokens(t *testing.T) {
+	s := &Server{usage: &usageLog{persist: &persistStore{flush: func() error { return nil }}}}
+	body := &oaiReq{
+		Model: "gpt-5.6-sol",
+		Messages: []oaiMsg{
+			{Role: "system", Content: "persistent system instructions"},
+			{Role: "user", Content: "previous user message"},
+			{Role: "assistant", Content: "previous assistant response"},
+			{Role: "user", Content: "current request"},
+		},
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer sk-tool-usage-test")
+	res := chathub.Result{Text: "tool routing result"}
+
+	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second))
+
+	rec := s.usage.records[0]
+	if rec.CacheTokens != 0 {
+		t.Fatalf("no session_id: cache tokens=%d want 0 (history must not be counted as cached)", rec.CacheTokens)
+	}
+	if rec.InputTokens == 0 {
+		t.Fatalf("no session_id: input tokens must include all messages, got 0")
 	}
 }

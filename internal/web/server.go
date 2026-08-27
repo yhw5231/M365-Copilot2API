@@ -269,7 +269,12 @@ func (s *Server) routeUpstreamTrace(traceID, stage string, meta map[string]any) 
 				"events":       meta["events"],
 				"text_preview": meta["text_preview"],
 			}
-			rec.Status = "success"
+			// Do NOT mark the record "success" here. This stage fires as soon
+			// as the upstream (ChatHub) response is complete, but the handler
+			// may still be streaming deltas downstream (SSE) or running
+			// post-processing (tool validation / clean-branch repair). The
+			// record must stay "in_progress" until the trace middleware's
+			// finish callback runs after the handler returns.
 		case "upstream_error":
 			rec.UpstreamError = fmt.Sprint(meta["error"])
 			rec.Error = fmt.Sprint(meta["error"])
@@ -277,6 +282,23 @@ func (s *Server) routeUpstreamTrace(traceID, stage string, meta map[string]any) 
 			rec.StatusCode = http.StatusBadGateway
 		}
 	})
+}
+
+// markTraceError records a terminal error state on the request trace when the
+// handler fails after the upstream response completed (for example a streaming
+// workspace/tool repair failure). Without it the trace middleware would default
+// an HTTP-200 streaming response to "success" even though an SSE error event
+// was sent downstream.
+func (s *Server) markTraceError(r *http.Request, err error, statusCode int) {
+	if tr := traceFromRequest(r); tr != nil {
+		s.trace.update(tr.ID, func(rec *traceRecord) {
+			if err != nil {
+				rec.Error = truncatedError(err)
+			}
+			rec.Status = "error"
+			rec.StatusCode = statusCode
+		})
+	}
 }
 
 func (s *Server) StartConvCacheGC() {
@@ -2828,11 +2850,13 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				if correctionErr != nil {
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "code": "workspace_tool_correction_failed"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+					s.markTraceError(r, correctionErr, http.StatusBadGateway)
 					return
 				}
 				if needsWorkspaceToolMisjudgmentCorrection(res2.Text, toolMaps, prompt, ledger) {
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream repeatedly misidentified workspace or tool availability", "code": "workspace_tool_misjudgment"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+					s.markTraceError(r, errors.New("upstream repeatedly misidentified workspace or tool availability"), http.StatusBadGateway)
 					return
 				}
 				res = res2
@@ -3297,23 +3321,31 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	}
 
 	apiKey := extractAPIKey(r)
+	// Only count history tokens when the request carries an explicit session ID
+	// header AND the session was actually reused upstream. Without a session_id
+	// header the resolver always returns IsNew, so there is no upstream reuse
+	// and counting history tokens as "cached" would be misleading (DSH/pi-ai
+	// sends full history every turn but does not send session_id by default).
 	historyTokens := int64(0)
-	upper := len(body.Messages) - 1
-	if upper < 0 {
-		upper = 0
-	}
-	for _, msg := range body.Messages[:upper] {
-		historyTokens += EstimateTokens(contentToString(msg.Content))
-	}
-	// Single-turn incremental reuse (explicit_incremental): the request carried
-	// only the current turn, but the upstream conversation already held the
-	// persisted history. Account those pre-existing tokens as cached history so
-	// the server-side usage record matches the cached_tokens reported to the
-	// client. A first turn has no session binding yet, so this stays zero.
-	if upper == 0 && body.SessionID != "" {
-		if sess, ok := s.sessionResolver.GetSession(body.SessionID); ok && len(sess.ContextHistory) > 0 {
-			for _, msg := range sess.ContextHistory {
-				historyTokens += EstimateTokens(contentToString(msg.Content))
+	explicitID := sessionIDFromRequest(r)
+	if explicitID != "" {
+		upper := len(body.Messages) - 1
+		if upper < 0 {
+			upper = 0
+		}
+		for _, msg := range body.Messages[:upper] {
+			historyTokens += EstimateTokens(contentToString(msg.Content))
+		}
+		// Single-turn incremental reuse (explicit_incremental): the request carried
+		// only the current turn, but the upstream conversation already held the
+		// persisted history. Account those pre-existing tokens as cached history so
+		// the server-side usage record matches the cached_tokens reported to the
+		// client. A first turn has no session binding yet, so this stays zero.
+		if upper == 0 && body.SessionID != "" {
+			if sess, ok := s.sessionResolver.GetSession(body.SessionID); ok && len(sess.ContextHistory) > 0 {
+				for _, msg := range sess.ContextHistory {
+					historyTokens += EstimateTokens(contentToString(msg.Content))
+				}
 			}
 		}
 	}
@@ -3365,11 +3397,13 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *oaiReq, res chathub.Result, startedAt time.Time) {
 	// Tool-call short-circuits do not pass through bindConversation, so calculate
 	// their request and cached-history tokens here instead of leaving them zero.
+	// Only count history as cached when the request carries an explicit session
+	// ID (the resolver never reuses without it), matching bindConversation.
 	var inputTokens, cacheTokens int64
 	last := len(body.Messages) - 1
 	for i, msg := range body.Messages {
 		tokens := EstimateTokens(contentToString(msg.Content))
-		if i < last {
+		if i < last && sessionIDFromRequest(r) != "" {
 			cacheTokens += tokens
 		} else {
 			inputTokens += tokens

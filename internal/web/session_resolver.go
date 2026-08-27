@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +70,12 @@ func openSessionResolver() *sessionResolver {
 		}
 	}
 	path := configuredPath("M365_SESSION_CACHE", "sessions.json")
+	maxSessions := defaultMaxSessions
+	if v := os.Getenv("M365_SESSION_MAX"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxSessions = n
+		}
+	}
 	sr := &sessionResolver{
 		path:        path,
 		sessions:    map[string]sessionBinding{},
@@ -78,7 +85,7 @@ func openSessionResolver() *sessionResolver {
 		byContext:   map[string]string{},
 		ttl:         ttl,
 		contextTTL:  contextTTL,
-		maxSessions: defaultMaxSessions,
+		maxSessions: maxSessions,
 	}
 	sr.persist = &persistStore{flush: sr.flush}
 	sr.loadLocked()
@@ -564,8 +571,14 @@ func (sr *sessionResolver) UnbindByConversation(conversationID string) int {
 }
 
 func cloneMessages(msgs []oaiMsg) []oaiMsg {
-	if len(msgs) > 512 {
-		msgs = msgs[len(msgs)-512:]
+	max := 512
+	if v := os.Getenv("M365_SESSION_HISTORY_MAX"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			max = n
+		}
+	}
+	if len(msgs) > max {
+		msgs = msgs[len(msgs)-max:]
 	}
 	out := make([]oaiMsg, len(msgs))
 	copy(out, msgs)
