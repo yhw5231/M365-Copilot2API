@@ -112,7 +112,7 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 		jsonOut(w, out)
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
+	setSSEHeaders(w)
 	f, _ := w.(http.Flusher)
 	aborted := false
 	emit := func(n string, v any) {

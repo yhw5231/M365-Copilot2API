@@ -74,9 +74,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	emitEvent := func(raw json.RawMessage) error {
 		if !headersWritten {
 			headersWritten = true
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Connection", "keep-alive")
+			setSSEHeaders(w)
 		}
 		norm := chathub.NormalizeEvents([]json.RawMessage{raw})
 		for _, ev := range norm {
@@ -119,9 +117,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 
 	if !headersWritten {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		setSSEHeaders(w)
 	}
 	if err := writeSSE(r, w, flusher, "done", map[string]any{
 		"type": "done", "text": res.Text,

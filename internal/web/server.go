@@ -85,7 +85,7 @@ func (s *Server) confirmRateLimitNotice(ctx context.Context, acc auth.AccountTok
 		Text:    rateLimitProbePrompt,
 		Tone:    "magic",
 		Started: true,
-		// 探测走同一账号绑定的节点，避免 RateLimit 探测串到其它账号的节点。
+		// 鎺㈡祴璧板悓涓€璐﹀彿缁戝畾鐨勮妭鐐癸紝閬垮厤 RateLimit 鎺㈡祴涓插埌鍏跺畠璐﹀彿鐨勮妭鐐广€?
 		BindAccount: acc.ID,
 	})
 	if probeErr == nil {
@@ -128,6 +128,8 @@ type Server struct {
 	trace               *traceStore
 	generatedImages     map[string]*generatedImage
 	generatedImagesMu   sync.Mutex
+	pendingToolsMu      sync.Mutex
+	pendingTools        map[string]map[string]pendingToolCall // tenant -> callID -> pendingToolCall
 }
 
 const maxResponsesPerTenant = 256
@@ -206,6 +208,7 @@ func New() (*Server, error) {
 		debug:               openDebugStore(),
 		settings:            openSettingsStore(),
 		responseMessages:    map[string]map[string]respHistory{},
+		pendingTools:        map[string]map[string]pendingToolCall{},
 		usage:               openUsageLog(),
 		trace:               openTraceStore(),
 		generatedImages:     make(map[string]*generatedImage),
@@ -1158,24 +1161,24 @@ func (s *Server) exchangePKCE(state, code, verifier, redirectURI string) {
 // leaving the user staring at a raw JSON response or a proxy timeout page.
 func servePKCECompletionPage(w http.ResponseWriter, state string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>M365 Copilot2API 授权确认</title>
+	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>M365 Copilot2API 鎺堟潈纭</title>
 <style>body{font:16px system-ui;text-align:center;padding:15vh 20px;color:#242424}main{max-width:520px;margin:auto}h1{font-size:24px;margin-bottom:8px}.muted{color:#666;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}#msg{font-size:15px}</style>
-<main><h1>正在确认授权</h1><p id="msg" class="muted">正在向 Microsoft 兑换令牌，请稍候…</p></main>
+<main><h1>姝ｅ湪纭鎺堟潈</h1><p id="msg" class="muted">姝ｅ湪鍚?Microsoft 鍏戞崲浠ょ墝锛岃绋嶅€欌€?/p></main>
 <script>
 (async function(){
   const state=%q,box=document.getElementById('msg');
   for(let i=0;i<180;i++){
     let d={};
     try{const r=await fetch('/api/auth/status?state='+encodeURIComponent(state));d=await r.json();}catch(e){}
-    if(d.status==='authenticated'){box.textContent='授权完成，账号已加入账号池，可以关闭此页面。';box.className='';}
-    else if(d.status==='error'){box.textContent='授权失败：'+(d.error||'未知错误');box.className='muted';box.style.color='#c0392b';}
-    else if(d.status==='expired'){box.textContent='授权已过期，请重新开始授权。';box.className='muted';box.style.color='#b9770e';}
+    if(d.status==='authenticated'){box.textContent='鎺堟潈瀹屾垚锛岃处鍙峰凡鍔犲叆璐﹀彿姹狅紝鍙互鍏抽棴姝ら〉闈€?;box.className='';}
+    else if(d.status==='error'){box.textContent='鎺堟潈澶辫触锛?+(d.error||'鏈煡閿欒');box.className='muted';box.style.color='#c0392b';}
+    else if(d.status==='expired'){box.textContent='鎺堟潈宸茶繃鏈燂紝璇烽噸鏂板紑濮嬫巿鏉冦€?;box.className='muted';box.style.color='#b9770e';}
     else {await new Promise(x=>setTimeout(x,1000));continue;}
     try{if(window.opener)window.opener.postMessage({type:'m365-auth-complete',state:state},window.location.origin);}catch(e){}
     if(d.status==='authenticated'){setTimeout(()=>window.close(),400);}
     return;
   }
-  box.textContent='等待授权超时，请重新开始授权。';box.className='muted';box.style.color='#b9770e';
+  box.textContent='绛夊緟鎺堟潈瓒呮椂锛岃閲嶆柊寮€濮嬫巿鏉冦€?;box.className='muted';box.style.color='#b9770e';
 })();
 </script>`, state)
 }
@@ -1262,7 +1265,7 @@ func (s *Server) nextHealthyAccount(avoidID string) (auth.AccountToken, error) {
 
 // nextProxySafeAccount returns the next account for failover. When the current
 // account lost its proxy node (no unbound healthy node left), it prefers an
-// account whose bound node is healthy — the request moves to that account
+// account whose bound node is healthy 鈥?the request moves to that account
 // instead of reusing another account's node. Falls back to the regular
 // round-robin walk otherwise.
 func (s *Server) nextProxySafeAccount(avoidID string) (auth.AccountToken, error) {
@@ -1381,7 +1384,7 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if acc.OID == "" || acc.TID == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "account_error", "account missing oid/tid — re-login with PKCE browser client")
+		writeOpenAIError(w, http.StatusBadRequest, "account_error", "account missing oid/tid 鈥?re-login with PKCE browser client")
 		return
 	}
 
@@ -1475,8 +1478,8 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dropTransientConversation 异步删除 router/repair 轮创建的一次性云端对话，
-// 避免每请求都往 M365 对话列表塞一条记录。删除失败不阻塞请求，留给 auto_cleanup 兜底。
+// dropTransientConversation 寮傛鍒犻櫎 router/repair 杞垱寤虹殑涓€娆℃€т簯绔璇濓紝
+// 閬垮厤姣忚姹傞兘寰€ M365 瀵硅瘽鍒楄〃濉炰竴鏉¤褰曘€傚垹闄ゅけ璐ヤ笉闃诲璇锋眰锛岀暀缁?auto_cleanup 鍏滃簳銆?
 func (s *Server) dropTransientConversation(conversationID string) {
 	if conversationID == "" || m365CloudClient == nil {
 		return
@@ -1506,6 +1509,8 @@ func (s *Server) recoverWorkspaceToolMisjudgment(
 	toolMaps []map[string]any,
 	tone string,
 	requestID string,
+	userPrompt string,
+	ledger agentLedger,
 ) (chathub.Result, error) {
 	badConversationID := strings.TrimSpace(bad.ConversationID)
 	if badConversationID != "" {
@@ -1544,7 +1549,7 @@ func (s *Server) recoverWorkspaceToolMisjudgment(
 		s.dropTransientConversation(correctedConversationID)
 		return chathub.Result{}, fmt.Errorf("%w: correction returned an empty response", errWorkspaceToolCorrectionFailed)
 	}
-	if isWorkspaceToolMisjudgmentForTools(corrected.Text, toolMaps) {
+	if needsWorkspaceToolMisjudgmentCorrection(corrected.Text, toolMaps, userPrompt, ledger) {
 		s.dropTransientConversation(correctedConversationID)
 		return chathub.Result{}, errWorkspaceToolMisjudgment
 	}
@@ -1588,8 +1593,8 @@ func (s *Server) adminModels(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"object": "list", "data": modelCatalog()})
 }
 
-// adminModelTest 由控制台模型测试调用，通过管理员会话鉴权，不依赖明文 API Key
-// （模型测试走服务端账号池，密钥列表虽可重复显示完整 key，也不回传密钥明文）。
+// adminModelTest 鐢辨帶鍒跺彴妯″瀷娴嬭瘯璋冪敤锛岄€氳繃绠＄悊鍛樹細璇濋壌鏉冿紝涓嶄緷璧栨槑鏂?API Key
+// 锛堟ā鍨嬫祴璇曡蛋鏈嶅姟绔处鍙锋睜锛屽瘑閽ュ垪琛ㄨ櫧鍙噸澶嶆樉绀哄畬鏁?key锛屼篃涓嶅洖浼犲瘑閽ユ槑鏂囷級銆?
 func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -1960,10 +1965,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	ledger := buildAgentLedger(body.Messages)
 	activeLedger := buildAgentLedger(activeMessages(body.Messages))
 	if err := activeLedger.CanContinue(maxToolRounds()); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "tool_round_limit", "message": err.Error(), "completed_calls": len(activeLedger.Completed)}})
-		return
+		// Graceful termination for round-limit: the model has exhausted its
+		// tool round budget. Inject a summary-request instead of a hard 409
+		// so the model can finalize its answer gracefully.
+		if strings.Contains(err.Error(), "round limit") {
+			body.Messages = append(body.Messages,
+				oaiMsg{Role: "system", Content: fmt.Sprintf("Tool round limit reached (%d). You must now summarize your work and provide a final answer. Do NOT call any more tools.", maxToolRounds())},
+			)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "tool_round_limit", "message": err.Error(), "completed_calls": len(activeLedger.Completed)}})
+			return
+		}
 	}
 	// Preserve role boundaries when adapting OpenAI messages to ChatHub's
 	// single message.text field. This keeps system/developer instructions,
@@ -2119,7 +2133,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[account-route] selected id=%q email=%q token_present=%t oid_present=%t tid_present=%t", acc.ID, acc.Email, acc.AccessToken != "", acc.OID != "", acc.TID != "")
-	// Old-session restart ("重新发起对话"): a returning session whose warm
+	// Old-session restart ("閲嶆柊鍙戣捣瀵硅瘽"): a returning session whose warm
 	// window has lapsed (no reserved slot) and whose bound account has no idle
 	// unreserved capacity must not block in the queue. Re-initiate the
 	// conversation on another account that has idle concurrency; when no
@@ -2298,7 +2312,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
 		// Bound the per-account queue wait BEFORE the stream preamble: if the
-		// request would only sit in the FIFO queue, fail with HTTP 429 (排队超时)
+		// request would only sit in the FIFO queue, fail with HTTP 429 (鎺掗槦瓒呮椂)
 		// instead of sending ": connected" and then silence.
 		if body.SessionID != "" {
 			if err := s.accountConcurrency.WaitForSlot(r.Context(), acc.ID, body.SessionID); err != nil {
@@ -2307,9 +2321,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		setSSEHeaders(w)
 		// Expose the stable downstream session id so a client that echoes it
 		// back (session_id / x-session-id header / body.session_id) keeps its
 		// task ledger and goal state across rounds.
@@ -2321,7 +2333,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "stream unsupported")
 			return
 		}
-		if err := sseRaw(r.Context(), w, flusher, ": connected\n\n"); err != nil {
+		keepalive := startSSEKeepalive(w, flusher, 0)
+		defer keepalive.stop()
+		if err := keepalive.lockedWrite(": connected\n\n"); err != nil {
 			return
 		}
 		var text strings.Builder
@@ -2349,13 +2363,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				first = false
 			}
 			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}}
-			rc := http.NewResponseController(w)
-			_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk)); err != nil {
-				return err
-			}
-			flusher.Flush()
-			return nil
+			return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
 		}
 		flushText := func() error {
 			if part := identityFilter.Flush(); part != "" {
@@ -2365,12 +2373,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					first = false
 				}
 				chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}}
-				rc := http.NewResponseController(w)
-				_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
-				if _, err := fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk)); err != nil {
-					return err
-				}
-				flusher.Flush()
+				return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
 			}
 			return nil
 		}
@@ -2495,8 +2498,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			} else if text.Len() > 0 {
 				_ = emitText(text.String())
 			}
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
-			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 			return
 		}
 		s.accountPool.MarkSuccess(acc.ID)
@@ -2506,8 +2509,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// calls, surface a clear error instead of an empty successful response.
 		if text.Len() == 0 && strings.TrimSpace(res.Text) == "" && len(streamedTools) == 0 {
 			msg := "upstream returned empty completion; the requested model may be unavailable for this tenant"
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "upstream_error"}})+"\n\n")
-			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "upstream_error"}})+"\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 			return
 		}
 		// Some ChatHub updates contain no text event and place the completed
@@ -2561,8 +2564,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(calls) == 0 {
 				log.Printf("[tool-validation] id=%s stage=stream-repair failed", requestID)
-				_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream selected an undeclared tool and repair failed", "code": "invalid_tool_call"}})+"\n\n")
-				_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+				_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream selected an undeclared tool and repair failed", "code": "invalid_tool_call"}})+"\n\n")
+				_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 				return
 			}
 		}
@@ -2599,11 +2602,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
 			ct := EstimateTokens(res.Text)
 			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedTokens())}
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
 		}
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
-		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finishChunk)+"\n\n")
-		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+		_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(finishChunk)+"\n\n")
+		_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
 		return
 	}
@@ -2725,15 +2728,14 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				return
 			}
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("X-Accel-Buffering", "no")
+		setSSEHeaders(w)
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "stream unsupported")
 			return
 		}
+		keepalive := startSSEKeepalive(w, flusher, 0)
+		defer keepalive.stop()
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
 		firstDelta := true
@@ -2752,13 +2754,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				delta = withRole
 			}
 			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta}}}
-			rc := http.NewResponseController(w)
-			_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk)); err != nil {
-				return err
-			}
-			flusher.Flush()
-			return nil
+			return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
 		}
 		contentFilter := newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
 		reasoningFilter := newPublicReasoningStreamFilter()
@@ -2783,7 +2779,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 			return nil
 		}
-		if err := sseRaw(r.Context(), w, flusher, ": connected\n\n"); err != nil {
+		if err := keepalive.lockedWrite(": connected\n\n"); err != nil {
 			return
 		}
 		res, err = s.chatWithAccountReasoning(ctx, acc.ID, account, answerReq, onDelta, onReasoning)
@@ -2825,18 +2821,18 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if bufferedReasoning.Len() > 0 {
 				res.Reasoning = bufferedReasoning.String()
 			}
-			if len(toolMaps) > 0 && isWorkspaceToolMisjudgmentForTools(res.Text, toolMaps) {
+			if len(toolMaps) > 0 && needsWorkspaceToolMisjudgmentCorrection(res.Text, toolMaps, prompt, ledger) {
 				correctionReq := answerReq
 				correctionReq.Text = unifiedSandboxCorrection(toolMaps, prompt)
 				res2, correctionErr := s.chatWithAccount(ctx, acc.ID, account, correctionReq)
 				if correctionErr != nil {
-					_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "code": "workspace_tool_correction_failed"}})+"\n\n")
-					_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "code": "workspace_tool_correction_failed"}})+"\n\n")
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 					return
 				}
-				if isWorkspaceToolMisjudgmentForTools(res2.Text, toolMaps) {
-					_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream repeatedly misidentified workspace or tool availability", "code": "workspace_tool_misjudgment"}})+"\n\n")
-					_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+				if needsWorkspaceToolMisjudgmentCorrection(res2.Text, toolMaps, prompt, ledger) {
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream repeatedly misidentified workspace or tool availability", "code": "workspace_tool_misjudgment"}})+"\n\n")
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 					return
 				}
 				res = res2
@@ -2896,8 +2892,8 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					_ = writeChunk(map[string]any{"content": content})
 				}
 			}
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
-			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 			return
 		}
 		pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
@@ -2912,15 +2908,15 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		log.Printf("[usage] stream id=%s pt=%d ct=%d cached=%d res.Text=%d", id, pt, ct, cached, len(res.Text))
 		if err == nil && ct == 0 {
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned empty completion; the requested model may be unavailable for this tenant", "code": "upstream_error"}})+"\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned empty completion; the requested model may be unavailable for this tenant", "code": "upstream_error"}})+"\n\n")
 		}
 		finish := "stop"
 		if err != nil {
 			finish = "stop"
 		}
 		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}, "usage": usageWithCache(pt, ct, cached)}
-		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
-		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+		_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
+		_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
 		return
 	} else {
@@ -3004,8 +3000,8 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// any conversation binding, cache update, or client output. The shared helper
 	// always creates a clean upstream branch and accepts only a distinct, valid
 	// replacement conversation.
-	if len(toolMaps) > 0 && isWorkspaceToolMisjudgmentForTools(res.Text, toolMaps) {
-		res, err = s.recoverWorkspaceToolMisjudgment(ctx, acc, account, &body, res, answerReq, toolMaps, tone, requestID)
+	if len(toolMaps) > 0 && needsWorkspaceToolMisjudgmentCorrection(res.Text, toolMaps, prompt, ledger) {
+		res, err = s.recoverWorkspaceToolMisjudgment(ctx, acc, account, &body, res, answerReq, toolMaps, tone, requestID, prompt, ledger)
 		if err != nil {
 			log.Printf("[workspace-tool-eject] id=%s clean-branch correction failed: %v", requestID, err)
 			writeOpenAIError(w, http.StatusBadGateway, workspaceToolCorrectionErrorCode(err), workspaceToolCorrectionPublicMessage(err))
@@ -3068,7 +3064,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy blocked this request; try again or switch account")
 		return
 	}
-	if len(toolMaps) > 0 && !completionEvidenceAllows(res.Text, ledger) {
+	if len(toolMaps) > 0 && !completionEvidenceAllowsUpgraded(res.Text, ledger) {
 		res.Text = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
 	}
 	// Honor an explicit output cap on the final answer. Tool-call responses
@@ -3101,15 +3097,13 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	created := time.Now().Unix()
 
 	if body.Stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		setSSEHeaders(w)
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "stream unsupported")
 			return
 		}
-		// one-shot "stream" — emit full content then done
+		// one-shot "stream" 鈥?emit full content then done
 		chunk := map[string]any{
 			"id":      id,
 			"object":  "chat.completion.chunk",
@@ -3149,14 +3143,14 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if res.Reasoning != "" {
 		assistant["reasoning_content"] = res.Reasoning
 	}
-	// 上游 ChatHub 不返回 token 计数，按请求/回复文本本地估算填充
-	// OpenAI 要求的 usage 字段。
+	// 涓婃父 ChatHub 涓嶈繑鍥?token 璁℃暟锛屾寜璇锋眰/鍥炲鏂囨湰鏈湴浼扮畻濉厖
+	// OpenAI 瑕佹眰鐨?usage 瀛楁銆?
 	pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
 	ct := EstimateTokens(res.Text)
 	cached := cachedTokens()
 	meta := compatM365Metadata(res)
-	// 调试可见性：m365.cache_hit / m365.cached_tokens 直接标出本次请求是否
-	// 复用了上游会话、复用了多少输入 token（0 = 未命中，新建会话全量发送）。
+	// 璋冭瘯鍙鎬э細m365.cache_hit / m365.cached_tokens 鐩存帴鏍囧嚭鏈璇锋眰鏄惁
+	// 澶嶇敤浜嗕笂娓镐細璇濄€佸鐢ㄤ簡澶氬皯杈撳叆 token锛? = 鏈懡涓紝鏂板缓浼氳瘽鍏ㄩ噺鍙戦€侊級銆?
 	meta["cache_hit"] = cached > 0
 	meta["cached_tokens"] = cached
 	if params, ok := ignoredSamplingParams(&body); ok {
@@ -3174,9 +3168,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			"finish_reason": "stop",
 		}},
 		"m365": meta,
-		// 把「增量请求中被上游会话复用的输入」以标准字段
-		// usage.prompt_tokens_details.cached_tokens 返回给下游（sub2api 等
-		// 转发层与客户端据此识别缓存命中）。
+		// 鎶娿€屽閲忚姹備腑琚笂娓镐細璇濆鐢ㄧ殑杈撳叆銆嶄互鏍囧噯瀛楁
+		// usage.prompt_tokens_details.cached_tokens 杩斿洖缁欎笅娓革紙sub2api 绛?
+		// 杞彂灞備笌瀹㈡埛绔嵁姝よ瘑鍒紦瀛樺懡涓級銆?
 		"usage": usageWithCache(pt, ct, cached),
 	}
 	if len(body.Metadata) > 0 {
@@ -3247,17 +3241,17 @@ func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.
 
 const defaultPublicModelName = "m365-copilot"
 
-// sessionHeaderName 是承载显式会话 ID 的首选请求头。标准 OpenAI 兼容客户端
-// （如 DSH / pi-ai）默认发送 session_id，网关以它作为默认会话标识。
+// sessionHeaderName 鏄壙杞芥樉寮忎細璇?ID 鐨勯閫夎姹傚ご銆傛爣鍑?OpenAI 鍏煎瀹㈡埛绔?
+// 锛堝 DSH / pi-ai锛夐粯璁ゅ彂閫?session_id锛岀綉鍏充互瀹冧綔涓洪粯璁や細璇濇爣璇嗐€?
 const sessionHeaderName = "session_id"
 
-// sessionHeaderAlt 是同一会话标识的另一命名：部分客户端（pi-ai 的 openrouter
-// 格式、OpenAI-internal 风格）使用 x-session-id 发送相同的会话 ID，网关兼容读取。
+// sessionHeaderAlt 鏄悓涓€浼氳瘽鏍囪瘑鐨勫彟涓€鍛藉悕锛氶儴鍒嗗鎴风锛坧i-ai 鐨?openrouter
+// 鏍煎紡銆丱penAI-internal 椋庢牸锛変娇鐢?x-session-id 鍙戦€佺浉鍚岀殑浼氳瘽 ID锛岀綉鍏冲吋瀹硅鍙栥€?
 const sessionHeaderAlt = "x-session-id"
 
-// sessionIDFromRequest 提取请求头中的显式会话 ID。session_id（默认，DSH/pi-ai
-// 发送）优先；x-session-id 作为兼容别名校验。两者都不存在时返回空串，
-// 调用方按「无显式会话 ID」处理（新开对话，绝不复用）。
+// sessionIDFromRequest 鎻愬彇璇锋眰澶翠腑鐨勬樉寮忎細璇?ID銆俿ession_id锛堥粯璁わ紝DSH/pi-ai
+// 鍙戦€侊級浼樺厛锛泋-session-id 浣滀负鍏煎鍒悕鏍￠獙銆備袱鑰呴兘涓嶅瓨鍦ㄦ椂杩斿洖绌轰覆锛?
+// 璋冪敤鏂规寜銆屾棤鏄惧紡浼氳瘽 ID銆嶅鐞嗭紙鏂板紑瀵硅瘽锛岀粷涓嶅鐢級銆?
 func sessionIDFromRequest(r *http.Request) string {
 	if id := strings.TrimSpace(r.Header.Get(sessionHeaderName)); id != "" {
 		return id
@@ -3265,9 +3259,9 @@ func sessionIDFromRequest(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get(sessionHeaderAlt))
 }
 
-// bindConversation 在请求完成后登记会话解析器索引与缓存统计，流式与非流式
-// 路径共用。finalRound 为 false 时跳过服务端状态修正（工具调用轮无法安全
-// 判断完成措辞的真实意图）。
+// bindConversation 鍦ㄨ姹傚畬鎴愬悗鐧昏浼氳瘽瑙ｆ瀽鍣ㄧ储寮曚笌缂撳瓨缁熻锛屾祦寮忎笌闈炴祦寮?
+// 璺緞鍏辩敤銆俧inalRound 涓?false 鏃惰烦杩囨湇鍔＄鐘舵€佷慨姝ｏ紙宸ュ叿璋冪敤杞棤娉曞畨鍏?
+// 鍒ゆ柇瀹屾垚鎺緸鐨勭湡瀹炴剰鍥撅級銆?
 func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time, task *taskLedger, finalRound bool) {
 	if res.ConversationID == "" {
 		return
@@ -3282,7 +3276,7 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 		// merged evidence already handles explicit update_goal(action=complete);
 		// this catches the "work is done, but I could not call update_goal"
 		// case the agent reports as the last remaining step. Only final-round
-		// answers are eligible — a tool-call round must never close the goal
+		// answers are eligible 鈥?a tool-call round must never close the goal
 		// (the model may still be mid-implementation).
 		if finalRound && !task.IsComplete() && goalRoundRequest(body.Messages, task, body.Tools) && goalCompletionSignal(res.Text, buildAgentLedger(body.Messages)) {
 			task.markComplete("server-side correction: final answer states completion with tool evidence")

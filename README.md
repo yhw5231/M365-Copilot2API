@@ -54,8 +54,8 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 | OpenAI 兼容 `/v1/chat/completions` | 支持流式输出与 function calling |
 | OpenAI Responses `/v1/responses` | 兼容 Responses 协议（Codex 等客户端） |
 | Anthropic 兼容 `/v1/messages` | Claude Code / Cursor 直连 |
-| SSE 流式输出 | 逐字实时返回，`stream: true` |
-| 工具调用转换 | OpenAI function calling ⇄ M365 工具协议，`router` / `native` 两种规划模式 |
+| SSE 流式输出 | 逐字实时返回，`stream: true`；预检期/推理静默期自动心跳保活（5s keep-alive），并携带 `X-M365-Execution-Environment` 环境标识头 |
+| 工具调用转换 | OpenAI function calling ⇄ M365 工具协议，`router` / `native` 两种规划模式；本地执行类工具（exec_command 等）仅对 Codex 类客户端开放 |
 | 会话显式续用 | 仅凭显式会话 ID 续用云端对话（无 ID 请求一律新建对话，绝不按聊天记录相似度复用）；命中时只发送增量消息 |
 | 会话显式绑定 | `session_id` / `x-session-id` 请求头精确指定要继续的会话（标准 OpenAI 兼容客户端默认发送，如 DSH / pi-ai） |
 | 自动清理 | 按闲置时间（默认 2h）或保留数量回收云端对话 |
@@ -644,6 +644,12 @@ PRs Welcome！提交前请留意：
 4. 描述行为变化，涉及新逻辑时附上对应测试。
 
 详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 更新日志
+
+完整的版本变更与修复记录见 [CHANGELOG.md](CHANGELOG.md)；对标上游
+M365-Gateway-Cloudflare 的修复项对比与本地实现说明见
+[docs/m365-gateway-fixes-comparison.md](docs/m365-gateway-fixes-comparison.md)。
 
 ## 许可证
 

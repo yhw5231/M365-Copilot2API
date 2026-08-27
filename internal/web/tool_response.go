@@ -21,9 +21,7 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sen
 	}
 	ct := EstimateTokens(res.Text)
 	if stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		setSSEHeaders(w)
 		flusher, _ := w.(http.Flusher)
 		emit := func(v any) {
 			if err := sseDataRaw(w, flusher, mustJSON(v)); err != nil {

@@ -67,6 +67,7 @@ type innerStreamError struct {
 // history prepend) so the adapter can compute cached_tokens = input_tokens - new_input_tokens.
 func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, o oaiReq, model string, newMessages []oaiMsg, startedAt time.Time, storeHistory *bool) {
 	o.Stream = true
+	tenant := extractAPIKey(r)
 	b, _ := json.Marshal(o)
 	r2 := r.Clone(r.Context())
 	r2.Method = http.MethodPost
@@ -90,9 +91,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		s.openaiChat(irw, r2)
 	}()
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
+	setSSEHeaders(w)
 	flusher, _ := w.(http.Flusher)
 	var abortErr error
 	emit := func(name string, v any) error {
@@ -376,6 +375,9 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		if reasoningStarted {
 			callOffset = 1
 		}
+		// The emitted call ids become the pending registry for the next
+		// stateless Responses continuation turn.
+		pending := make([]detectedToolCall, 0, len(keys))
 		for _, i := range keys {
 			st := calls[i]
 			if st == nil {
@@ -421,7 +423,9 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			output = append(output, item)
 			emit("response.function_call_arguments.done", map[string]any{"type": "response.function_call_arguments.done", "output_index": i + callOffset, "item_id": st.ItemID, "arguments": st.Args})
 			emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i + callOffset, "item": item})
+			pending = append(pending, detectedToolCall{ID: callID, Type: "function", Name: st.Name, Arguments: json.RawMessage(st.Args)})
 		}
+		s.recordPendingToolCalls(tenant, pending)
 	} else {
 		msgIndex := 0
 		if reasoningStarted {
@@ -460,7 +464,6 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	resp := map[string]any{"id": id, "object": "response", "created_at": created, "status": "completed", "model": model, "output": output, "usage": estimate.Values, "m365": localUsageMetadata(estimate.Source)}
 	// Store the response for subsequent previous_response_id (same semantics as
 	// the non-streaming path in responses()).
-	tenant := extractAPIKey(r)
 	if shouldStoreResponsesHistory(storeHistory) && (text.Len() > 0 || len(calls) > 0 || reasoning.Len() > 0) {
 		stored := append([]oaiMsg(nil), o.Messages...)
 		if len(calls) > 0 {
@@ -555,6 +558,11 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant := extractAPIKey(r)
+	// Stateless Responses continuation: the client may send function_call_output
+	// without replaying the matching function_call and without
+	// previous_response_id. Back-fill the pending function_call from the registry
+	// so the tool conversation stays valid (see pending_tools.go).
+	o.Messages = s.restoreStatelessToolCalls(tenant, o.Messages)
 	// Capture the current request's own messages before the previous_response_id
 	// history prepend: they are the "new" input for the cache breakdown, while
 	// the restored history is what the downstream should report as cached.
@@ -595,6 +603,37 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msg, _ := openAIChoice(out)
+	// Record any emitted tool calls as pending so a later stateless Responses
+	// continuation (function_call_output without previous_response_id) can be
+	// validated against the actual call (see pending_tools.go).
+	if msg != nil {
+		if calls, ok := msg["tool_calls"].([]any); ok {
+			pending := make([]detectedToolCall, 0, len(calls))
+			for _, raw := range calls {
+				tc, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				id, _ := tc["id"].(string)
+				if id == "" {
+					continue
+				}
+				var name string
+				var args json.RawMessage
+				if fn, ok := tc["function"].(map[string]any); ok {
+					name, _ = fn["name"].(string)
+					if a, ok := fn["arguments"].(string); ok {
+						args = json.RawMessage(a)
+					}
+				}
+				if name == "" {
+					continue
+				}
+				pending = append(pending, detectedToolCall{ID: id, Type: "function", Name: name, Arguments: args})
+			}
+			s.recordPendingToolCalls(tenant, pending)
+		}
+	}
 	outputForUsage := ""
 	if msg != nil {
 		outputForUsage = fmt.Sprint(msg["content"])

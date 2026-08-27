@@ -94,7 +94,7 @@ func buildAgentLedger(messages []oaiMsg) agentLedger {
 			l.Completed = append(l.Completed, e)
 			continue
 		}
-		sig := e.Name + "\x00" + e.Arguments
+		sig := e.Name + "\x00" + canonicalToolArguments(e.Arguments)
 		seenCall[sig]++
 		if seenCall[sig] >= 2 {
 			l.RepeatedCall = true
@@ -108,7 +108,7 @@ func buildAgentLedger(messages []oaiMsg) agentLedger {
 		} else {
 			l.Completed = append(l.Completed, e)
 			if e.Failed {
-				fs := e.Name + "\x00" + e.Arguments + "\x00" + normalizeFailure(e.Result)
+				fs := e.Name + "\x00" + canonicalToolArguments(e.Arguments) + "\x00" + normalizeFailure(e.Result)
 				seenFailure[fs]++
 				if seenFailure[fs] >= 2 {
 					l.RepeatedFailure = true

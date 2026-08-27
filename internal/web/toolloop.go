@@ -519,3 +519,65 @@ func cleanWorkspaceToolMisjudgments(messages []oaiMsg, toolMaps []map[string]any
 	}
 	return cleaned
 }
+
+// workspaceEchoTerms are the environment-substitution vocabulary that, when the
+// user's own question already contains them, makes the model's repetition of
+// them a legitimate answer rather than a misjudgment (e.g. the user asks about
+// "Linux容器 / /mnt/data / 无法访问工作区" and the model explains it).
+var workspaceEchoTerms = []string{
+	"linux", "container", "容器", "/mnt/data", "sandbox", "沙箱",
+	"无法访问工作区", "只提供 linux", "只有 linux", "linux only",
+}
+
+// userPromptMentionsWorkspace reports whether the user's own prompt already
+// contains the environment-substitution vocabulary. When it does, the model may
+// legitimately repeat those terms while answering; the correction is only worth
+// running when the user did not introduce them first.
+func userPromptMentionsWorkspace(userPrompt string) bool {
+	low := strings.ToLower(userPrompt)
+	for _, term := range workspaceEchoTerms {
+		if strings.Contains(low, term) {
+			return true
+		}
+	}
+	return false
+}
+
+// needsWorkspaceToolMisjudgmentCorrection applies the protocol-first gate before
+// consulting the text detector. The correction only fires when:
+//
+//  1. the caller actually declared an execution or file tool — a caller with no
+//     execution tool makes a "no shell" claim literally true, and there is no
+//     local channel for the model to substitute away from;
+//  2. no tool call has completed yet in the current turn — a model that already
+//     executed a tool successfully cannot simultaneously claim the tools are
+//     unavailable;
+//  3. the user's own prompt does not already contain the workspace vocabulary —
+//     answering a question about "Linux容器 / /mnt/data / 无法访问工作区" legitimately
+//     repeats those terms, so the response is not a misjudgment.
+//
+// Only when all protocol gates pass does the layered text detector run, so
+// ordinary conversation about containers or paths cannot trigger a correction.
+func needsWorkspaceToolMisjudgmentCorrection(text string, toolMaps []map[string]any, userPrompt string, ledger agentLedger) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	// Protocol gate 1: the caller must have declared tools. Without a shell/exec
+	// or file tool there is nothing to substitute and no misjudgment to repair.
+	hasExec := hasDeclaredTools(toolMaps, append(append([]string{}, knownShellNames...), knownExecToolNames...))
+	hasFiles := hasDeclaredTools(toolMaps, knownFileToolNames)
+	if !hasExec && !hasFiles {
+		return false
+	}
+	// Protocol gate 2: a model that already ran a tool this turn has proven the
+	// tools exist; a later availability claim is not a substitution to correct.
+	if len(ledger.Completed) > 0 {
+		return false
+	}
+	// Protocol gate 3: echo suppression — if the user asked about the workspace
+	// vocabulary first, the model repeating it is a legitimate answer.
+	if userPromptMentionsWorkspace(userPrompt) {
+		return false
+	}
+	return isWorkspaceToolMisjudgmentForTools(text, toolMaps)
+}
