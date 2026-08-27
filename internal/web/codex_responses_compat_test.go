@@ -27,24 +27,16 @@ func TestResponsesUsageEstimateIsNonZeroForText(t *testing.T) {
 	}
 }
 
-func TestResponsesGPTUsageUsesOfflineTiktoken(t *testing.T) {
+func TestResponsesGPTUsageSkipsBpeTokenizer(t *testing.T) {
+	// BPE tokenization was deliberately skipped; gpt-* models use the same
+	// heuristic estimator as every other model, reported as such.
 	input := "杩欐槸鐢ㄤ簬楠岃瘉 GPT tokenizer 鐨勪腑鏂囧拰 code: func main() {}"
 	estimate := estimateResponsesUsage("gpt-5.5", []oaiMsg{{Role: "user", Content: input}}, nil, nil, "")
-	enc, err := getGPTTokenizer()
-	if err != nil {
-		t.Fatal(err)
+	if estimate.Source != usageSourceHeuristic {
+		t.Fatalf("source=%q, want heuristic (BPE tokenizer skipped)", estimate.Source)
 	}
-	roleIDs, _, err := enc.Encode("user")
-	if err != nil {
-		t.Fatal(err)
-	}
-	inputIDs, _, err := enc.Encode(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := requestProtocolTokens + replyPrimingTokens + messageProtocolTokens + len(roleIDs) + len(inputIDs)
-	if estimate.Source != usageSourceTiktoken || estimate.Values["input_tokens"] != want {
-		t.Fatalf("estimate=%#v want=%d", estimate, want)
+	if estimate.Values["input_tokens"].(int) <= 0 || estimate.Values["total_tokens"].(int) <= 0 {
+		t.Fatalf("estimate=%#v", estimate)
 	}
 }
 

@@ -26,6 +26,20 @@ func (w *streamingWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+// Flush implements http.Flusher so SSE frames actually reach the client as
+// they are produced. Without it the outermost wrapper silently breaks the
+// flush chain (captureWriter -> traceResponseWriter -> traceWriter -> here),
+// and every SSE frame stays buffered by the underlying bufio writer until the
+// handler returns — streaming would effectively become non-streaming.
+func (w *streamingWriter) Flush() {
+	if !w.headerWritten {
+		w.headerWritten = true
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // recoverPanics 捕获 handler panic，已开始流式时不写错误体，否则返回 JSON 500。
 func recoverPanics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

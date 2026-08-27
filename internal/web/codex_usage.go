@@ -3,16 +3,14 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
-	"sync"
 	"unicode"
-
-	tiktoken "github.com/tiktoken-go/tokenizer"
 
 	"m365-copilot2api/internal/chathub"
 )
 
 const (
+	// usageSourceTiktoken is retained for reporting compatibility only; the
+	// BPE tokenizer behind it was skipped (see tokenEstimator).
 	usageSourceTiktoken  = "tiktoken_o200k_base_estimate"
 	usageSourceHeuristic = "heuristic_character_estimate"
 
@@ -25,20 +23,6 @@ const (
 	replyPrimingTokens       = 3
 	outputProtocolTokens     = 3
 )
-
-var (
-	gptTokenizerOnce sync.Once
-	gptTokenizer     tiktoken.Codec
-	gptTokenizerErr  error
-)
-
-func getGPTTokenizer() (tiktoken.Codec, error) {
-	gptTokenizerOnce.Do(func() {
-		// The vocabulary is embedded in the binary, so this never needs network or cache state.
-		gptTokenizer, gptTokenizerErr = tiktoken.Get(tiktoken.O200kBase)
-	})
-	return gptTokenizer, gptTokenizerErr
-}
 
 func heuristicTokenCount(text string) int {
 	ascii, other := 0, 0
@@ -63,18 +47,9 @@ type responsesUsageEstimate struct {
 	Source string
 }
 
-func tokenEstimator(model string) (func(string) int, string) {
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-") {
-		if enc, err := getGPTTokenizer(); err == nil {
-			return func(text string) int {
-				ids, _, err := enc.Encode(text)
-				if err != nil {
-					return heuristicTokenCount(text)
-				}
-				return len(ids)
-			}, usageSourceTiktoken
-		}
-	}
+func tokenEstimator(_ string) (func(string) int, string) {
+	// BPE tokenization (o200k_base) was deliberately skipped: per-message
+	// encoding on large contexts cost seconds for marginal estimate accuracy.
 	return heuristicTokenCount, usageSourceHeuristic
 }
 
