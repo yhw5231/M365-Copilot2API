@@ -242,6 +242,19 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 			}
 			typ, _ := m["type"].(string)
 			switch typ {
+			case "reasoning":
+				// OpenAI Responses clients (e.g. the DSH harness) replay a prior
+				// assistant turn's reasoning as a standalone "reasoning" item in
+				// the input array. It carries no "role" field, so the default
+				// branch below would otherwise turn it into a spurious user
+				// message, shifting the message sequence and defeating the
+				// session resolver's prefix match: every turn would then look
+				// like a context reset, force a new upstream conversation, and
+				// destroy prompt caching. Reasoning is thinking metadata, not
+				// conversation content — skip it. The following message item
+				// carries the assistant's actual output, and the resumed
+				// upstream conversation already holds its own reasoning state.
+				continue
 			case "function_call_progress":
 				// Progress is deliberately not converted into an assistant/tool
 				// message. It is transport metadata from a long-running client-side

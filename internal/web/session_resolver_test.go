@@ -422,6 +422,49 @@ func TestResolveAcceptsAltSessionHeaderName(t *testing.T) {
 	}
 }
 
+// TestResolveAcceptsClientRequestIDHeader verifies that pi-ai's
+// "x-client-request-id" header (sent alongside session_id for the openai
+// affinity format) is also accepted as a session identity fallback. It must
+// resolve the same persisted session as session_id and must be isolated from
+// other values under the same header.
+func TestResolveAcceptsClientRequestIDHeader(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	body := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "hello"}}}
+
+	// Bind via the canonical session_id header.
+	reqA := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqA.Header.Set(sessionHeaderName, "shared-session")
+	sr.Bind("upstream-a", "conversation-a", "account-a", body, "", reqA)
+
+	// Resolve via pi-ai's x-client-request-id header with the same value.
+	reqB := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqB.Header.Set(sessionHeaderClientRequestID, "shared-session")
+	resolvedB := sr.Resolve(reqB, body)
+	if resolvedB.IsNew {
+		t.Fatal("x-client-request-id header must resolve the same session as session_id")
+	}
+	if resolvedB.ConversationID != "conversation-a" {
+		t.Fatalf("x-client-request-id header resolved conversation %q", resolvedB.ConversationID)
+	}
+
+	// A different value under the same header is a different session.
+	reqC := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqC.Header.Set(sessionHeaderClientRequestID, "other-session")
+	if resolvedC := sr.Resolve(reqC, body); !resolvedC.IsNew {
+		t.Fatalf("different x-client-request-id value must stay new, got %+v", resolvedC)
+	}
+
+	// A per-request correlation id that never repeats (e.g. a random UUID used
+	// by some HTTP clients) must NOT silently hijack a session: it is only a
+	// fallback, so it must resolve to a fresh session, never a stale one.
+	reqD := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqD.Header.Set(sessionHeaderClientRequestID, "uuid-request-0001")
+	if resolvedD := sr.Resolve(reqD, body); !resolvedD.IsNew {
+		t.Fatalf("unmatched x-client-request-id must stay new, got %+v", resolvedD)
+	}
+}
+
 // TestExplicitIncrementalCarriesStoredContext verifies that a single-message
 // incremental reuse (explicit_incremental, HistoryLen == 0) surfaces the
 // upstream conversation's persisted history through ResolveResult.StoredContext.

@@ -3273,14 +3273,24 @@ const sessionHeaderName = "session_id"
 // 鏍煎紡銆丱penAI-internal 椋庢牸锛変娇鐢?x-session-id 鍙戦€佺浉鍚岀殑浼氳瘽 ID锛岀綉鍏冲吋瀹硅鍙栥€?
 const sessionHeaderAlt = "x-session-id"
 
+// sessionHeaderClientRequestID 鏄悓涓€浼氳瘽鏍囪瘑鐨勭涓夊懡鍚嶏細pi-ai 鍦?openai
+// 浼氳瘽鍜屽舰寮忎笅浼氶櫎浜?session_id 澶栭『甯﹀彂閫?x-client-request-id
+// 锛堝€间笌 sessionId 鐩稿悓锛夈€傚皢瀹冧綔涓哄洖閫€鍙栧彇锛屼繚璇佷笉鍙戝彂
+// session_id 鐨勫鎴风涔熻兘鎸佺画浼氳瘽鍙嶇敤銆?
+const sessionHeaderClientRequestID = "x-client-request-id"
+
 // sessionIDFromRequest 鎻愬彇璇锋眰澶翠腑鐨勬樉寮忎細璇?ID銆俿ession_id锛堥粯璁わ紝DSH/pi-ai
-// 鍙戦€侊級浼樺厛锛泋-session-id 浣滀负鍏煎鍒悕鏍￠獙銆備袱鑰呴兘涓嶅瓨鍦ㄦ椂杩斿洖绌轰覆锛?
-// 璋冪敤鏂规寜銆屾棤鏄惧紡浼氳瘽 ID銆嶅鐞嗭紙鏂板紑瀵硅瘽锛岀粷涓嶅鐢級銆?
+// 鍙戦€侊級浼樺厛锛泋-session-id 浣滀负鍏煎鍒悕鏍￠獙锛宨-client-request-id 浣滀负
+// pi-ai 鐨勫叾浣欏洖閫€銆備笁鑰呴兘涓嶅瓨鍦ㄦ椂杩斿洖绌轰覆锛岃皟鐢ㄦ柟鎸夈€屾棤鏄惧紡浼氳瘽
+// ID銆嶅鐞嗭紙鏂板紑瀵硅瘽锛岀粷涓嶅鐢級銆?
 func sessionIDFromRequest(r *http.Request) string {
 	if id := strings.TrimSpace(r.Header.Get(sessionHeaderName)); id != "" {
 		return id
 	}
-	return strings.TrimSpace(r.Header.Get(sessionHeaderAlt))
+	if id := strings.TrimSpace(r.Header.Get(sessionHeaderAlt)); id != "" {
+		return id
+	}
+	return strings.TrimSpace(r.Header.Get(sessionHeaderClientRequestID))
 }
 
 // bindConversation 鍦ㄨ姹傚畬鎴愬悗鐧昏浼氳瘽瑙ｆ瀽鍣ㄧ储寮曚笌缂撳瓨缁熻锛屾祦寮忎笌闈炴祦寮?
