@@ -204,14 +204,18 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		// Capture the inner conversation-reuse cache from the usage chunk: it
 		// reflects what the upstream actually held (session resolver / conv
 		// cache hit), which stays valid even when the client did not send
-		// previous_response_id.
+		// previous_response_id. The inner streaming chat emits the usage chunk
+		// with an empty choices array (choices:[{index:0,delta:{},finish_reason:
+		// nil}]), so capture usage BEFORE branching on choices — otherwise the
+		// cache signal is silently lost and the downstream Responses usage
+		// always reports cached_tokens=0 on the streaming path.
+		if u, ok := chunk["usage"]; ok {
+			if c := cachedTokensFromUsage(u); c > 0 {
+				innerCachedTokens = c
+			}
+		}
 		choices, _ := chunk["choices"].([]any)
 		if len(choices) == 0 {
-			if u, ok := chunk["usage"]; ok {
-				if c := cachedTokensFromUsage(u); c > 0 {
-					innerCachedTokens = c
-				}
-			}
 			continue
 		}
 		choice, _ := choices[0].(map[string]any)

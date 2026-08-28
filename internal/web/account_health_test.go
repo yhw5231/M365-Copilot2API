@@ -180,6 +180,41 @@ func TestWriteUpstreamErrorHeaders(t *testing.T) {
 	}
 }
 
+// TestWriteUpstreamErrorLocalCapacity verifies that a gateway-local "no account
+// has free concurrency" 429 is surfaced with a distinct message instead of the
+// generic "upstream is rate limiting" text, so clients can tell the pool being
+// full from a real upstream throttle.
+func TestWriteUpstreamErrorLocalCapacity(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeUpstreamError(w, &UpstreamHTTPError{Status: 429, RetryAfter: 5, LocalCapacity: true})
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d want 429", w.Code)
+	}
+	if got := w.Header().Get("Retry-After"); got != "5" {
+		t.Fatalf("Retry-After=%q want 5", got)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "upstream is rate limiting") {
+		t.Fatalf("local-capacity error must not say upstream is rate limiting: %q", body)
+	}
+	if !strings.Contains(body, "concurrency is at capacity") {
+		t.Fatalf("local-capacity error should say concurrency is at capacity: %q", body)
+	}
+
+	// A plain upstream 429 (no LocalCapacity) keeps the original wording.
+	w = httptest.NewRecorder()
+	writeUpstreamError(w, &UpstreamHTTPError{Status: 429, RetryAfter: 90})
+	if !strings.Contains(w.Body.String(), "upstream is rate limiting") {
+		t.Fatalf("upstream 429 should keep the upstream wording: %q", w.Body.String())
+	}
+	if !IsLocalCapacity(&UpstreamHTTPError{Status: 429, LocalCapacity: true}) {
+		t.Fatal("IsLocalCapacity must match LocalCapacity errors")
+	}
+	if IsLocalCapacity(&UpstreamHTTPError{Status: 429}) {
+		t.Fatal("IsLocalCapacity must not match plain upstream 429s")
+	}
+}
+
 func TestResolveAccountSkipsUnhealthy(t *testing.T) {
 	store := testAccountFiles(t)
 	s := &Server{tokens: store, accountPool: newAccountHealth()}

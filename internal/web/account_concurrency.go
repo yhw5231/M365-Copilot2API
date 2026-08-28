@@ -68,6 +68,9 @@ type accountConcurrency struct {
 	// queueTimeoutOverride lets tests bound the queue wait without touching the
 	// global settings store; zero means "use the configured setting".
 	queueTimeoutOverride time.Duration
+	// lastSweep tracks per-account last-expiry-sweep time so the cold path
+	// does not scan the warm-session map on every unreserved-capacity check.
+	lastSweep map[string]time.Time
 }
 
 func newAccountConcurrency() *accountConcurrency {
@@ -85,6 +88,7 @@ func newAccountConcurrency() *accountConcurrency {
 		warmSessions:  map[string]time.Time{},
 		reservedCount: map[string]int{},
 		changed:       make(chan struct{}),
+		lastSweep:     map[string]time.Time{},
 	}
 }
 
@@ -180,7 +184,54 @@ func stopTimer(t *time.Timer) {
 	}
 }
 
+// sweepInterval bounds how often the expiry sweep scans the warm-session map
+// for one account. The window is minutes long, so scanning once per second is
+// plenty and keeps the cold path cheap.
+const sweepInterval = time.Second
+
+// sweepExpiredReservationsLocked releases warm-slot reservations whose window
+// has lapsed so their capacity returns to the unreserved pool. Without this,
+// a session that never comes back would hold its slot forever and starve all
+// new (cold) sessions on the account. It is throttled to at most one scan per
+// account per sweepInterval; when it frees anything it wakes blocked waiters
+// so queued cold sessions can re-evaluate availability immediately.
+func (c *accountConcurrency) sweepExpiredReservationsLocked(accountID string) {
+	if c.warmSessions == nil || len(c.warmSessions) == 0 {
+		return
+	}
+	if c.lastSweep == nil {
+		c.lastSweep = map[string]time.Time{}
+	}
+	now := time.Now()
+	if last, ok := c.lastSweep[accountID]; ok && now.Sub(last) < sweepInterval {
+		return
+	}
+	c.lastSweep[accountID] = now
+	prefix := accountSessionKey(accountID, "")
+	freed := false
+	for key, until := range c.warmSessions {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if until.After(now) {
+			continue
+		}
+		delete(c.warmSessions, key)
+		if c.reservedCount[accountID] > 0 {
+			c.reservedCount[accountID]--
+		}
+		freed = true
+	}
+	if freed {
+		// Wake blocked cold waiters so they re-check unreserved capacity
+		// without waiting for the next Acquire probe or queue timeout.
+		close(c.changed)
+		c.changed = make(chan struct{})
+	}
+}
+
 func (c *accountConcurrency) unreservedLocked(accountID string) int {
+	c.sweepExpiredReservationsLocked(accountID)
 	return c.limit - c.inflight[accountID] - c.reservedCount[accountID]
 }
 
@@ -359,6 +410,7 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 				}, nil
 			}
 			timer, timerC := queueWaitTimer(timeout, ticket, queuedAt)
+			sweepTick := time.After(sweepInterval)
 			changed := c.changed
 			c.mu.Unlock()
 			select {
@@ -374,6 +426,10 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 				return nil, ctx.Err()
 			case <-changed:
 				stopTimer(timer)
+			case <-sweepTick:
+				stopTimer(timer)
+				// Periodically re-evaluate: an expired warm reservation frees a
+				// slot without any other event firing, so wake up and check.
 			case <-timerC:
 				c.mu.Lock()
 				if ticket != 0 {
@@ -455,6 +511,7 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 			}, nil
 		}
 		timer, timerC := queueWaitTimer(timeout, ticket, queuedAt)
+		sweepTick := time.After(sweepInterval)
 		changed := c.changed
 		c.mu.Unlock()
 		select {
@@ -470,6 +527,10 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 			return nil, ctx.Err()
 		case <-changed:
 			stopTimer(timer)
+		case <-sweepTick:
+			stopTimer(timer)
+			// Periodically re-evaluate: an expired warm reservation frees a
+			// slot without any other event firing, so wake up and check.
 		case <-timerC:
 			c.mu.Lock()
 			if ticket != 0 {

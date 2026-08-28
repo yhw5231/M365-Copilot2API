@@ -17,6 +17,12 @@ type UpstreamHTTPError struct {
 	Status     int
 	RetryAfter int
 	Body       string
+	// LocalCapacity marks a 429 that is NOT an upstream throttle: the gateway
+	// itself has no account with free concurrency right now (all enabled
+	// accounts are at their concurrency limit or cooling down). Clients get a
+	// different message so they can tell "our pool is full" from "M365 is
+	// throttling you", and the request never counts against any account.
+	LocalCapacity bool
 }
 
 func (e *UpstreamHTTPError) Error() string {
@@ -64,6 +70,15 @@ func IsAuthFailure(err error) bool {
 		return dialErr.Status == 401 || dialErr.Status == 403
 	}
 	return false
+}
+
+// IsLocalCapacity reports whether err is a gateway-local "no account has free
+// concurrency right now" rejection, as opposed to a genuine upstream throttle.
+// Both surface as HTTP 429, but the client-visible message (and the treatment
+// in writeUpstreamError) differ.
+func IsLocalCapacity(err error) bool {
+	var httpErr *UpstreamHTTPError
+	return errors.As(err, &httpErr) && httpErr.LocalCapacity
 }
 
 // RetryAfterSeconds returns the upstream Retry-After hint for a rate-limited

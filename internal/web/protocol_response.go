@@ -123,7 +123,7 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 			aborted = true
 		}
 	}
-	emit("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": []any{}, "stop_reason": nil, "usage": map[string]any{"input_tokens": inputTokens, "output_tokens": 0}}})
+	emit("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": []any{}, "stop_reason": nil, "usage": out["usage"]}})
 	for i, b := range blocks {
 		m, _ := b.(map[string]any)
 		startBlock := b

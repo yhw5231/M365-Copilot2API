@@ -80,6 +80,13 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 	}
 	status := upstreamStatus(err)
 	if status == http.StatusTooManyRequests {
+		if IsLocalCapacity(err) {
+			if w.Header().Get("Retry-After") == "" {
+				w.Header().Set("Retry-After", "1")
+			}
+			writeOpenAIError(w, status, "rate_limit_error", "gateway concurrency is at capacity; no account is currently available, please retry shortly")
+			return
+		}
 		if w.Header().Get("Retry-After") == "" {
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(rateLimitCooldown.Seconds())))
 		}

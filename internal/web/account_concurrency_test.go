@@ -505,6 +505,40 @@ func TestReservationExpiryFreesCapacity(t *testing.T) {
 	rel1()
 }
 
+// TestExpiredReservationAutoSweptUnblocksWaiter verifies the automatic expiry
+// sweep: once a warm reservation lapses, unreserved capacity returns AND a
+// blocked cold waiter is woken immediately (no queue-timeout wait), so new
+// sessions enter the freed slot and re-arm the warm window.
+func TestExpiredReservationAutoSweptUnblocksWaiter(t *testing.T) {
+	c := testConcurrency(1)
+	rel0, err := c.Acquire(context.Background(), "a", "s0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel0() // release -> slot reserved for s0 for the warm window
+	// Expire s0's reservation in the background shortly after the waiter blocks.
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		c.mu.Lock()
+		c.warmSessions[accountSessionKey("a", "s0")] = time.Now().Add(-time.Second)
+		c.lastSweep = map[string]time.Time{} // force the next sweep to run
+		c.mu.Unlock()
+	}()
+	acquired := make(chan error, 1)
+	go func() {
+		_, err := c.Acquire(context.Background(), "a", "s1") // cold, must queue then proceed
+		acquired <- err
+	}()
+	select {
+	case err := <-acquired:
+		if err != nil {
+			t.Fatalf("cold session should acquire after reservation expiry, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cold waiter never woken after reservation expired (sweep did not run)")
+	}
+}
+
 // TestSessionAcquireExpiredWarmTreatedAsCold verifies that an expired
 // reservation does not get priority.
 func TestSessionAcquireExpiredWarmTreatedAsCold(t *testing.T) {

@@ -1244,7 +1244,7 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			if retry < 1 {
 				retry = 1
 			}
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "no account is currently available; all enabled accounts are cooling down or at their concurrency limit"}
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, LocalCapacity: true, Body: "no account is currently available; all enabled accounts are cooling down or at their concurrency limit"}
 		}
 	}
 
@@ -1256,10 +1256,10 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			return auth.AccountToken{}, fmt.Errorf("account is disabled for scheduling")
 		}
 		if !s.accountPool.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 5, Body: "account is cooling down; try another account"}
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 5, LocalCapacity: true, Body: "account is cooling down; try another account"}
 		}
 		if !s.accountConcurrency.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "account is at its concurrency limit; try another account"}
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, LocalCapacity: true, Body: "account is at its concurrency limit; try another account"}
 		}
 	}
 	return s.tokens.EnsureValid(accountID)
