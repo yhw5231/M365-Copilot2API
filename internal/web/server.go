@@ -3463,7 +3463,18 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 		Content:          res.Text,
 		ReasoningContent: res.Reasoning,
 	})
-	s.sessionResolver.BindWithTask(res.SessionID, res.ConversationID, acc.ID, &historyBody, "", r, task)
+	// Persist the task ledger only for goal-protocol requests (the client
+	// declares create_goal/get_goal/update_goal) or when a goal id already
+	// exists. A non-goal request — such as the DSH session-title generation
+	// pass that carries no tools — must not pin its transient "goal" (e.g.
+	// "Generate the session title") onto the session; otherwise the next
+	// request in the same session re-injects that goal into the upstream
+	// prompt and the model answers with a title instead of the real task.
+	bindTask := task
+	if task != nil && !toolsDeclareGoal(body.Tools) && task.GoalID == "" {
+		bindTask = nil
+	}
+	s.sessionResolver.BindWithTask(res.SessionID, res.ConversationID, acc.ID, &historyBody, "", r, bindTask)
 	s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
 	if s.conversationManager.ShouldCleanup() {
 		if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {
