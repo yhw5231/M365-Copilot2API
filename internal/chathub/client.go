@@ -105,6 +105,21 @@ type Request struct {
 	// to the account ID (account-node binding in the outbound pool). Empty
 	// keeps the pool's default round-robin behavior.
 	BindAccount string
+	// ReasoningGateWindow, when > 0, holds back the first text deltas for up
+	// to this duration so a reasoning (ChainOfThought) frame arriving just
+	// after the first content can still be emitted before the answer text.
+	// This trades a bounded TTFT increase for "think, then answer" ordering on
+	// streams where ChatHub emits the content frame before the reasoning card.
+	// Zero (default) streams text inline with no buffering.
+	ReasoningGateWindow time.Duration
+	// ReasoningQuietWindow, when > 0 and ReasoningGateWindow > 0, is the
+	// trailing-quiet interval used to decide when a reasoning stream has
+	// finished. Reasoning events restart the quiet timer; when no new reasoning
+	// arrives within this window, the buffered answer text is released AFTER
+	// the complete reasoning transcript. This makes the client see the full
+	// "think" block before the answer. Zero falls back to releasing text as
+	// soon as the first reasoning event arrives.
+	ReasoningQuietWindow time.Duration
 }
 
 // StreamEvent is the protocol-neutral event exposed while ChatHub is still
@@ -429,6 +444,58 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	var deltas []string
 	var streamed strings.Builder
 	var firstDeltaAt time.Time
+
+	// Reasoning-first gate: ChatHub can deliver the first visible text frame
+	// before the ChainOfThought reasoning card for the same turn. The gate has
+	// two phases:
+	//
+	// Phase 1 — wait for the first reasoning event (gateTimer, window =
+	// ReasoningGateWindow). If no reasoning arrives within the window, the
+	// leading text is released (no thinking to wait for).
+	//
+	// Phase 2 — after reasoning arrives, wait for the reasoning stream to
+	// finish (quietTimer, window = ReasoningQuietWindow). Each reasoning event
+	// restarts the quiet timer. When the timer elapses, the reasoning is
+	// considered complete, and the buffered answer text is released AFTER the
+	// full reasoning transcript. This makes the client see the complete "think"
+	// block before the answer.
+	gateActive := req.ReasoningGateWindow > 0
+	var reasoningComplete bool
+	var gateText strings.Builder
+	var gateTimer *time.Timer
+	var gateTimerCh <-chan time.Time
+	var quietTimer *time.Timer
+	var quietCh <-chan time.Time
+	// releaseGate flushes any buffered gate text through onDelta and disarms
+	// all wait timers. It is called from the select loop (timeout / quiet), and
+	// at completion.
+	releaseGate := func() error {
+		if !gateActive {
+			return nil
+		}
+		gateActive = false
+		reasoningComplete = true
+		if gateTimer != nil {
+			gateTimer.Stop()
+			gateTimer = nil
+		}
+		gateTimerCh = nil
+		if quietTimer != nil {
+			quietTimer.Stop()
+			quietTimer = nil
+		}
+		quietCh = nil
+		if gateText.Len() == 0 {
+			return nil
+		}
+		s := gateText.String()
+		gateText.Reset()
+		if onDelta != nil {
+			return onDelta(s)
+		}
+		return nil
+	}
+
 	emitDelta := func(d string) error {
 		if d == "" {
 			return nil
@@ -445,6 +512,20 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					"len":            len(d),
 				})
 			}
+		}
+		// Gate the leading text: while the reasoning is still pending (not yet
+		// seen, or seen but not yet complete), buffer every text delta so the
+		// full reasoning card is emitted before the answer text on the wire.
+		if gateActive && !reasoningComplete {
+			gateText.WriteString(d)
+			if gateTimer == nil {
+				gateTimer = time.NewTimer(req.ReasoningGateWindow)
+				gateTimerCh = gateTimer.C
+				log.Printf("chathub reasoning-gate armed window=%v first_text_len=%d", req.ReasoningGateWindow, len(d))
+			}
+			streamed.WriteString(d)
+			deltas = append(deltas, d)
+			return nil
 		}
 		streamed.WriteString(d)
 		deltas = append(deltas, d)
@@ -528,6 +609,25 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": ctx.Err().Error()})
 			}
 			return Result{}, ctx.Err()
+		case <-gateTimerCh:
+			// Wait window elapsed without a reasoning frame: release the held
+			// leading text so content still streams (at a bounded delay).
+			log.Printf("chathub reasoning-gate timeout window=%v held=%d", req.ReasoningGateWindow, gateText.Len())
+			if err := releaseGate(); err != nil {
+				returnConn = false
+				return Result{}, err
+			}
+			continue
+		case <-quietCh:
+			// Reasoning stream has gone quiet: treat it as complete and
+			// release the held answer text so it follows the full reasoning
+			// transcript (think, then answer).
+			log.Printf("chathub reasoning-gate quiet elapsed held=%d reasoning=%d", gateText.Len(), reasoningBuf.Len())
+			if err := releaseGate(); err != nil {
+				returnConn = false
+				return Result{}, err
+			}
+			continue
 		case read = <-readCh:
 		}
 		if read.err != nil {
@@ -594,6 +694,42 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 							if err := onEvent(ev); err != nil {
 								returnConn = false
 								return Result{}, err
+							}
+						}
+						// Reasoning was just emitted (via onEvent above). Hold
+						// the answer text until the reasoning stream completes —
+						// a quiet window with no new reasoning events — so the
+						// client sees the full "think" block before the answer.
+						// An empty reasoning card has nothing to wait for:
+						// release at once.
+						if ev.Kind == "reasoning" && gateActive {
+							if ev.Text != "" {
+								// Stop the phase-1 gate timer: reasoning has
+								// arrived, so we now wait for the stream to
+								// finish before releasing the answer.
+								if gateTimer != nil {
+									gateTimer.Stop()
+									gateTimer = nil
+									gateTimerCh = nil
+								}
+								qw := req.ReasoningQuietWindow
+								if qw <= 0 {
+									qw = 800 * time.Millisecond
+								}
+								if quietTimer == nil {
+									quietTimer = time.NewTimer(qw)
+									quietCh = quietTimer.C
+								} else {
+									quietTimer.Reset(qw)
+								}
+								log.Printf("chathub reasoning-gate reasoning_seen quiet_window=%v reasoning_buf=%d", qw, reasoningBuf.Len())
+							} else {
+								// Empty reasoning: nothing to wait for. Release
+								// the answer text immediately.
+								if err := releaseGate(); err != nil {
+									returnConn = false
+									return Result{}, err
+								}
 							}
 						}
 					}
@@ -663,6 +799,15 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
 				}
 				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events))
+				// Completion can arrive before the reasoning-gate window
+				// elapses (e.g. a short answer with no reasoning card): flush
+				// any held text so the final result is not truncated.
+				if gateActive {
+					if err := releaseGate(); err != nil {
+						returnConn = false
+						return Result{}, err
+					}
+				}
 				text := streamed.String()
 				// The visible text can be truncated when ChatHub rewrites the
 				// answer buffer: writeAtCursor snapshots that do not extend the

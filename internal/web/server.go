@@ -2728,6 +2728,17 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL)
 	answerReq.TraceID = requestID
 	answerReq.BindAccount = acc.ID
+	// Reasoning gate and output for the ChainOfThought transcript.
+	// The user has chosen to drop reasoning (no think block) and the
+	// second content, and to stream the first content directly as the
+	// answer. When gate is disabled (window=0) and reasoning is discarded,
+	// the model behaves like a non-reasoning stream: content flows inline
+	// with no buffering and no duplicate output.
+	if isReasoningTone(tone) && body.Stream {
+		// Reasoning gate is intentionally disabled (ReasoningGateWindow = 0)
+		// so the first content streams immediately without buffering.
+		// Reasoning content is discarded — the client sees only the answer.
+	}
 	// Preserve the true incremental prompt before the full answer request text
 	// overwrites it (see the streaming path above).
 	if sentPrompt == "" {
@@ -2825,10 +2836,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return nil
 		}
 		onReasoning := func(reasoning string) error {
+			// Reasoning (think block) is intentionally dropped: the client sees
+			// only the answer content stream. Still accumulate for res.Reasoning
+			// so the request record / trace retains the transcript for debugging.
 			bufferedReasoning.WriteString(reasoning)
-			if rc := reasoningFilter.Push(reasoning); rc != "" {
-				return writeChunk(map[string]any{"reasoning_content": rc})
-			}
 			return nil
 		}
 		if err := keepalive.lockedWrite(": connected\n\n"); err != nil {

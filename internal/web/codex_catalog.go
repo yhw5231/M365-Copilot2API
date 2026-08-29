@@ -371,6 +371,30 @@ func isReasoningTone(tone string) bool {
 	return strings.HasSuffix(tone, "_Reasoning")
 }
 
+// reasoningGateWindow returns how long to hold the leading answer text on a
+// reasoning stream so a late ChainOfThought frame can still be emitted before
+// the answer. M365_REASONING_GATE_MS (integer milliseconds) overrides the
+// built-in default of 1500ms; 0 disables the gate.
+func reasoningGateWindow() time.Duration {
+	if ms := envInt("M365_REASONING_GATE_MS", 0); ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return 1500 * time.Millisecond
+}
+
+// reasoningQuietWindow returns the trailing-quiet interval used to decide when
+// a reasoning stream has finished. When reasoning arrives, the answer text is
+// held until no new reasoning is seen within this window, so the client sees
+// the complete "think" block before the answer. M365_REASONING_QUIET_MS
+// (integer milliseconds) overrides the built-in default of 800ms; 0 falls back
+// to releasing the answer as soon as the first reasoning event arrives.
+func reasoningQuietWindow() time.Duration {
+	if ms := envInt("M365_REASONING_QUIET_MS", 0); ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return 800 * time.Millisecond
+}
+
 func modelCatalog() []map[string]any {
 	l := configuredModelLimits()
 	models := configuredModelSpecs(currentSettings().ModelMappings)
