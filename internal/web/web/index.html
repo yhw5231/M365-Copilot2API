@@ -1,4 +1,4 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>M365 Copilot2API</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"><script src="/vendor/lucide.js"></script><style>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>M365 Copilot2API</title><script src="/vendor/lucide.js"></script><style>
 :root{color-scheme:light dark;--bg:#f5f5f7;--surface:rgba(255,255,255,0.72);--surface-solid:#fff;--surface-border:rgba(255,255,255,0.5);--line:rgba(0,0,0,0.06);--line-strong:rgba(0,0,0,0.1);--text:#1d1d1f;--muted:#86868b;--accent:#0071e3;--accent-hover:#0077ed;--primary:#1d1d1f;--primary-hover:#000;--green:#34c759;--red:#ff3b30;--orange:#ff9f0a;--purple:#bf5af2;--sidebar-w:240px;--shadow-sm:0 2px 8px rgba(0,0,0,0.04);--shadow:0 8px 32px rgba(0,0,0,0.06);--shadow-lg:0 16px 48px rgba(0,0,0,0.1);--radius:14px;--radius-sm:10px;--ease-out:cubic-bezier(0.23,1,0.32,1);--ease-in-out:cubic-bezier(0.77,0,0.175,1);--ease-spring:cubic-bezier(0.32,0.72,0,1)}
 @media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--surface:rgba(44,44,46,0.75);--surface-solid:#2c2c2e;--surface-border:rgba(255,255,255,0.06);--line:rgba(255,255,255,0.06);--line-strong:rgba(255,255,255,0.12);--text:#f5f5f7;--muted:#98989d;--accent:#0a84ff;--accent-hover:#409cff;--primary:#f5f5f7;--primary-hover:#fff;--green:#30d158;--red:#ff453a;--orange:#ff9f0a;--purple:#bf5af2;--shadow-sm:0 2px 8px rgba(0,0,0,0.15);--shadow:0 8px 32px rgba(0,0,0,0.2);--shadow-lg:0 16px 48px rgba(0,0,0,0.3)}}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -116,7 +116,8 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .trace-detail pre{box-sizing:border-box;width:100%;max-width:100%;margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
 .trace-token-cell,.trace-latency-cell{font-size:12px;color:var(--muted);white-space:normal!important;min-width:0}
 .trace-token-cell{width:170px}
-.trace-latency-cell{width:105px}
+.trace-latency-cell{width:105px;text-align:center}
+.usage-table th:nth-child(5){text-align:center}
 .trace-token-cell div,.trace-latency-cell div{display:flex;align-items:center;justify-content:flex-start;gap:6px;line-height:1.7;text-align:left}
 .trace-token-cell b,.trace-latency-cell b{font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap}
 .trace-token-cell span,.trace-latency-cell span{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:left}
@@ -338,26 +339,8 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 </head>
 <body>
 
-<!-- Login -->
-<div id="login" style="min-height:100vh;display:grid;place-items:center">
-  <div style="width:min(400px,calc(100vw - 32px));animation:scaleIn .5s var(--ease-out)">
-    <div style="text-align:center;margin-bottom:24px">
-      <div class="logo" style="display:flex;align-items:center;gap:10px;justify-content:center;margin:0 auto 12px;padding:0"><div class="logo-mark" style="width:32px;height:32px"><span></span><span></span><span></span><span></span></div><span style="font-size:24px;font-weight:700;letter-spacing:-0.02em">M365 Copilot2API</span></div>
-      <p style="color:var(--muted);font-size:14px;margin-top:4px">Administrator Login</p>
-    </div>
-    <form id="loginForm" style="background:var(--surface);-webkit-backdrop-filter:blur(40px) saturate(180%);backdrop-filter:blur(40px) saturate(180%);border:1px solid var(--surface-border);border-radius:var(--radius);padding:32px;box-shadow:var(--shadow-lg)">
-      <div class="form-group">
-        <label class="form-label">Password</label>
-        <input class="form-input" id="loginPassword" type="password" placeholder="请输入管理员密码（默认：admin123）" autofocus>
-        <div class="form-hint" style="margin-top:4px">默认密码为 <code>admin123</code>，首次登录后需修改密码。</div>
-      </div>
-      <button type="submit" class="btn primary" style="width:100%;margin-top:8px">Log in</button>
-    </form>
-  </div>
-</div>
-
 <!-- App -->
-<div class="app" id="app" style="display:none">
+<div class="app" id="app" style="display:flex">
   <aside class="sidebar">
     <div class="logo"><div class="logo-mark"><span></span><span></span><span></span><span></span></div><span>M365 Copilot2API</span></div>
     <div class="nav-label">Overview</div>
@@ -674,6 +657,11 @@ if (response.output_text) {
               <label class="form-label" for="accountQueueTimeoutSeconds">排队超时（秒）</label>
               <input class="form-input" id="accountQueueTimeoutSeconds" type="number" min="1" max="86400" step="1" value="10" inputmode="numeric">
               <p class="form-hint">冷会话在 FIFO 队列中等待超过该时长后，直接返回 HTTP 429（默认 10 秒），避免一直排队；可调大以容忍更长的排队。</p>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label class="form-label" for="accountRateLimitCooldownSeconds">限流冷却时长（秒）</label>
+              <input class="form-input" id="accountRateLimitCooldownSeconds" type="number" min="5" max="86400" step="1" value="3600" inputmode="numeric">
+              <p class="form-hint">账号触发上游限流后，在此冷却时长内不再调度该账号，请求自动切换到其他健康账号（默认 3600 秒 = 1 小时）。</p>
             </div>
           </div>
         </div>
@@ -1507,6 +1495,13 @@ async function loadOnboarding(){
 async function api(path,opts={}){
   opts.headers={'Content-Type':'application/json',...(opts.headers||{})};
   const r=await fetch(path,opts);
+  if(r.status===401){
+    // Administrator session expired, revoked, or the password was changed
+    // elsewhere. Redirect to the login page instead of surfacing an opaque
+    // auth error inside the dashboard.
+    if(!location.pathname.startsWith('/login'))location.replace('/login');
+    throw Error('会话已过期，请重新登录');
+  }
   const t=await r.text();
   let d;try{d=t?JSON.parse(t):{}}catch{d={error:{message:t}}};
   if(!r.ok)throw Error(d?.error?.message||t||'Request failed');
@@ -1518,17 +1513,6 @@ async function api(path,opts={}){
 // finishes. Refresh the account list so the pool reflects the new account.
 window.addEventListener('message',e=>{
   if(e.data&&e.data.type==='m365-auth-complete'){loadAccounts();}
-});
-
-$('loginForm')?.addEventListener('submit',async e=>{
-  e.preventDefault();
-  try{
-    const d=await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:$('loginPassword').value})});
-if(d.must_change_password){location.replace('/login');return;}
-    $('login').style.display='none';$('app').style.display='flex';
-    showPage(savedPage());
-    showNotice('登录成功','success');
-  }catch(e){showNotice(e.message,'error');}
 });
 
 async function logout(){
@@ -1847,12 +1831,15 @@ async function loadAccountSchedulingSettings(){
     $('cacheOnAccountSwitch').checked=!!s.cacheOnAccountSwitch;
     const queueTimeoutSeconds=Number(s.accountQueueTimeoutSeconds??10);
     $('accountQueueTimeoutSeconds').value=Number.isInteger(queueTimeoutSeconds)&&queueTimeoutSeconds>0?queueTimeoutSeconds:10;
+    const rateLimitCooldownSeconds=Number(s.accountRateLimitCooldownSeconds??3600);
+    $('accountRateLimitCooldownSeconds').value=Number.isInteger(rateLimitCooldownSeconds)&&rateLimitCooldownSeconds>0?rateLimitCooldownSeconds:3600;
   }catch(e){
     $('accountConcurrency').value='1';
     $('accountRoutingRule').value='available-first';
     $('accountWarmSessionSeconds').value='180';
     $('cacheOnAccountSwitch').checked=false;
     $('accountQueueTimeoutSeconds').value='10';
+    $('accountRateLimitCooldownSeconds').value='3600';
     showNotice('账号调度设置加载失败：'+e.message,'error');
   }
 }
@@ -1879,12 +1866,19 @@ async function saveAccountSchedulingSettings(){
       $('accountQueueTimeoutSeconds').focus();
       return;
     }
+    const rateLimitCooldownSeconds=Number.parseInt($('accountRateLimitCooldownSeconds').value,10);
+    if(!Number.isInteger(rateLimitCooldownSeconds)||rateLimitCooldownSeconds<5||rateLimitCooldownSeconds>86400){
+      showNotice('限流冷却时长必须是 5-86400 的整数','error');
+      $('accountRateLimitCooldownSeconds').focus();
+      return;
+    }
     $('accountConcurrency').value=String(concurrency);
     $('accountRoutingRule').value=accountRoutingRule;
     $('accountWarmSessionSeconds').value=String(warmSeconds);
     $('cacheOnAccountSwitch').checked=cacheOnAccountSwitch;
     $('accountQueueTimeoutSeconds').value=String(queueTimeoutSeconds);
-    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({accountConcurrency:concurrency,accountRoutingRule,accountWarmSessionSeconds:warmSeconds,cacheOnAccountSwitch,accountQueueTimeoutSeconds:queueTimeoutSeconds})});
+    $('accountRateLimitCooldownSeconds').value=String(rateLimitCooldownSeconds);
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({accountConcurrency:concurrency,accountRoutingRule,accountWarmSessionSeconds:warmSeconds,cacheOnAccountSwitch,accountQueueTimeoutSeconds:queueTimeoutSeconds,accountRateLimitCooldownSeconds:rateLimitCooldownSeconds})});
     showNotice('账号调度设置已保存','success');
   }catch(e){showNotice(e.message,'error');}
 }
@@ -1900,7 +1894,7 @@ function loadAccounts(){
     }
     try{
       const d=await api('/api/accounts');
-      _accountsCache=d.accounts||[];
+      _accountsCache=(d.accounts||[]).map((account,index)=>({...account,_importOrder:index}));
       renderAccounts();
     }catch(e){
       const tr=document.createElement('tr');
@@ -3208,15 +3202,15 @@ async function checkForUpdates(showResult=false){
 setInterval(()=>{if($('page-accounts').style.display!=='none')loadAccounts();},15000);
 
 // Init
+// The server only serves this dashboard to a valid administrator session
+// (unauthenticated and must-change-password requests to / are redirected to
+// /login server-side), so render the app immediately without an extra
+// /api/admin/session round-trip. Session expiry or revocation mid-use is
+// handled by the global 401 redirect in api().
 try{lucide.createIcons();}catch(e){}
-window.addEventListener('hashchange',()=>{
-  if($('login')&&$('login').style.display==='none')showPage(savedPage());
-});
-fetch('/api/admin/session').then(r=>r.json()).then(d=>{
-  if(d.authenticated&&d.must_change_password){location.replace('/login');return;}
-  if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage(savedPage());loadVersion();}
-  else{$('login').style.display='grid';}
-}).catch(()=>{$('login').style.display='grid';});
+window.addEventListener('hashchange',()=>showPage(savedPage()));
+showPage(savedPage());
+loadVersion();
 </script>
 </body>
 </html>

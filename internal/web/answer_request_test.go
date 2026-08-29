@@ -25,6 +25,27 @@ func TestBuildAnswerRequestRouterOmitsNativePlugins(t *testing.T) {
 	if len(req.Tools) != 0 || req.ToolChoice != nil {
 		t.Fatalf("router answer leaked native tools: tools=%d choice=%#v", len(req.Tools), req.ToolChoice)
 	}
+	if !strings.HasSuffix(req.Text, "\n\n[user]\nhello") {
+		t.Fatalf("empty ledger changed answer prompt: %q", req.Text)
+	}
+}
+
+func TestBuildAnswerRequestConcisePolicyInjectedByDefault(t *testing.T) {
+	req := buildAnswerRequest("[user]\nhello", "magic", answerRequestTestBody(), agentLedger{}, "router", "")
+	if !strings.Contains(req.Text, "<output_policy>") || !strings.Contains(req.Text, "NO PROGRESS NARRATION") {
+		t.Fatalf("concise output policy not injected: %q", req.Text)
+	}
+	if !strings.HasPrefix(req.Text, "<output_policy>") {
+		t.Fatalf("concise output policy must be prepended: %q", req.Text)
+	}
+}
+
+func TestBuildAnswerRequestConcisePolicyToggleable(t *testing.T) {
+	t.Setenv("M365_CONCISE_OUTPUT", "0")
+	req := buildAnswerRequest("[user]\nhello", "magic", answerRequestTestBody(), agentLedger{}, "router", "")
+	if strings.Contains(req.Text, "<output_policy>") {
+		t.Fatalf("concise output policy should be disabled with M365_CONCISE_OUTPUT=0: %q", req.Text)
+	}
 	if req.Text != "[user]\nhello" {
 		t.Fatalf("empty ledger changed answer prompt: %q", req.Text)
 	}

@@ -156,13 +156,13 @@ func chdirRepoRoot(t *testing.T) {
 	var root string
 	dir, _ := os.Getwd()
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "web", "index.html")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "internal", "web", "web", "index.html")); err == nil {
 			root = dir
 			break
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Skip("repo root with web/ not found")
+			t.Skip("repo root with internal/web/web/ not found")
 		}
 		dir = parent
 	}

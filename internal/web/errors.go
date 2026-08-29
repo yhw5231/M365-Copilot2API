@@ -88,7 +88,7 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 			return
 		}
 		if w.Header().Get("Retry-After") == "" {
-			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(rateLimitCooldown.Seconds())))
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(rateLimitCooldown().Seconds())))
 		}
 		writeOpenAIError(w, status, "rate_limit_error", "upstream is rate limiting; try again shortly")
 		return

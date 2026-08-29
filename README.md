@@ -314,6 +314,7 @@ server {
 | `M365_BROWSER_CLIENT_ID` / `M365_BROWSER_AUTHORITY` / `M365_BROWSER_REDIRECT_URI` / `M365_BROWSER_SCOPE` | 内置 | 浏览器 PKCE 的 OAuth 配置 |
 | `M365_DEVICE_CLIENT_ID` / `M365_DEVICE_AUTHORITY` / `M365_DEVICE_SCOPE` | 内置 | Device Code 的 OAuth 配置 |
 | `M365_CLIENT_ID` / `M365_AUTHORITY` / `M365_REDIRECT_URI` / `M365_SCOPE` | 内置 | 兼容旧配置；流程专用变量未设置时作为回退 |
+| `M365_CONCISE_OUTPUT` | `1`（开启） | 简洁输出策略：在发给上游的请求里注入指令，压制 M365 在正文里输出"本轮已完成…/尚未…/仍待…/Let me…"之类的过程性叙述，让回复聚焦实际工作与最终结论。设 `0` / `false` / `off` 关闭 |
 
 ### 数据文件
 
@@ -564,6 +565,7 @@ M365-Copilot2API/
 ├── cmd/server/            # 入口，HTTP 服务启动
 ├── internal/
 │   ├── web/               # HTTP 路由、会话解析器、自动清理、管理 API、用量统计
+│   │   ├── web/           # 管理控制台（纯 HTML / JS 单页，go:embed 编译进二进制）
 │   │   ├── session_resolver.go   # 内容键会话复用（四重指纹）
 │   │   ├── auto_cleanup.go        # 云端对话自动清理
 │   │   ├── usage.go               # usage.jsonl 用量统计
@@ -572,7 +574,6 @@ M365-Copilot2API/
 │   ├── auth/              # OAuth / PKCE
 │   ├── mcp/               # MCP 工具网关（SSE / JSON-RPC）
 │   └── outbound/          # HTTP 代理池
-├── web/                   # 管理控制台（纯 HTML / JS 单页，含 conversation.html 会话详情视图）
 ├── scripts/               # 运维脚本
 │   ├── e2e_test.py        # 端到端测试
 │   ├── chathub_probe.py   # ChatHub 协议探针

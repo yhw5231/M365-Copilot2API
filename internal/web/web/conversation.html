@@ -5,9 +5,6 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>对话详情 - M365 Copilot2API</title>
 <link rel="icon" href="data:,">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="/vendor/lucide.js"></script>
 <style>
 :root{color-scheme:light dark;--bg:#f6f7f9;--surface:#fff;--surface-2:#f1f3f6;--line:#e4e7ec;--text:#17191c;--muted:#69707a;--accent:#0969da;--green:#197a45;--orange:#a45400;--red:#c9352b;--shadow:0 8px 26px rgba(20,28,38,.07)}
@@ -106,9 +103,7 @@ const state={data:null,view:'conversation'};
 const $=id=>document.getElementById(id);
 
 function escapeHTML(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
-let systemTimeZone='Asia/Shanghai';
-function formatDate(value){if(!value)return '-';const date=new Date(value);if(Number.isNaN(date.getTime()))return '-';try{return date.toLocaleString(undefined,{timeZone:systemTimeZone});}catch(_){return date.toLocaleString(undefined,{timeZone:'Asia/Shanghai'});}}
-async function loadSystemTimeZone(){try{const response=await fetch('/api/admin/settings',{credentials:'same-origin'});if(response.ok){const data=await response.json();systemTimeZone=data.settings?.timeZone||'Asia/Shanghai';}}catch(_){systemTimeZone='Asia/Shanghai';}}
+function formatDate(value){if(!value)return '-';const date=new Date(value);return Number.isNaN(date.getTime())?'-':date.toLocaleString();}
 function pretty(value){if(typeof value==='string'){try{return JSON.stringify(JSON.parse(value),null,2)}catch(_){return value}}return JSON.stringify(value,null,2);}
 function roleMeta(role){
   if(role==='user')return{name:'用户',icon:'user'};
@@ -189,7 +184,7 @@ function setView(view){state.view=view==='json'?'json':'conversation';$('convers
 async function copyJSON(){if(!state.data)return;try{await navigator.clipboard.writeText(JSON.stringify(state.data,null,2));}catch(_){}}
 function goBack(){if(history.length>1)history.back();else location.href='/?page=conversations';}
 lucide.createIcons();
-(async()=>{await loadSystemTimeZone();await loadConversation();})();
+loadConversation();
 </script>
 </body>
 </html>

@@ -156,12 +156,13 @@ func (h *accountHealth) RateLimited(accountID string) bool {
 }
 
 // MarkFailure records the outcome of a request for one account.
-// rateLimited cools the account down for window; authFailed pins it.
-// When the error carries an upstream Retry-After hint, that value is used
-// instead of the caller-supplied window (capped at 30 minutes).
+// rateLimited cools the account down for at least window (the configured
+// rate-limit cooldown, default 1 hour); when the error carries a longer
+// upstream Retry-After hint, that value is used instead (capped at 24 hours).
+// authFailed pins it for up to 2 minutes.
 func (h *accountHealth) MarkFailure(accountID string, err error, window time.Duration) {
 	if window <= 0 {
-		window = 60 * time.Second
+		window = defaultRateLimitCooldownSeconds * time.Second
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -180,9 +181,12 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		h.limited[accountID] = true
 		cd := window
 		if ra := RetryAfterSeconds(err); ra > 0 {
-			cd = time.Duration(ra) * time.Second
-			if cd > 30*time.Minute {
-				cd = 30 * time.Minute
+			hint := time.Duration(ra) * time.Second
+			if hint > cd {
+				cd = hint
+			}
+			if cd > 24*time.Hour {
+				cd = 24 * time.Hour
 			}
 		}
 		h.cooldown[accountID] = time.Now().Add(cd)

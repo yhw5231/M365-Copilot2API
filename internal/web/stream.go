@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -36,10 +37,21 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	acc, err := s.resolveAccount(body.AccountID)
+	requestedAccountID := body.AccountID
+	acc, err := s.resolveAccount(requestedAccountID)
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
+	}
+	// Session-bound failover: resolveAccount returned a different (healthy)
+	// account because the requested one is cooling down / auth-failed. The
+	// conversation binding belongs to the previous account; clear it so the
+	// request starts a fresh conversation on the new account.
+	if requestedAccountID != "" && acc.ID != requestedAccountID {
+		log.Printf("[account-route] failover requested=%s selected=%s reason=bound_unavailable", requestedAccountID, acc.ID)
+		body.AccountID = acc.ID
+		body.ConversationID = ""
+		body.SessionID = ""
 	}
 	if acc.OID == "" || acc.TID == "" {
 		if o, t := extractOIDTID(acc.AccessToken); o != "" {

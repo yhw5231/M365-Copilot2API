@@ -7,7 +7,7 @@ import (
 )
 
 func TestWebIndexDefaultsToChineseUntilLocaleIsSelected(t *testing.T) {
-	body, err := os.ReadFile("../../web/index.html")
+	body, err := os.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestWebIndexDefaultsToChineseUntilLocaleIsSelected(t *testing.T) {
 }
 
 func TestWebIndexLocalizesTimeZoneOptions(t *testing.T) {
-	body, err := os.ReadFile("../../web/index.html")
+	body, err := os.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestWebIndexLocalizesTimeZoneOptions(t *testing.T) {
 }
 
 func TestWebIndexIncludesAccountMonitoringControls(t *testing.T) {
-	body, err := os.ReadFile("../../web/index.html")
+	body, err := os.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestWebIndexIncludesAccountMonitoringControls(t *testing.T) {
 }
 
 func TestWebIndexIncludesEnhancedAccountManagement(t *testing.T) {
-	body, err := os.ReadFile("../../web/index.html")
+	body, err := os.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}

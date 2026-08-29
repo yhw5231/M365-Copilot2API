@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -415,5 +416,129 @@ func TestErrRateLimitNoticeTriggersMarkFailure(t *testing.T) {
 	h.MarkFailure(id, chathub.ErrRateLimitNotice, 15*time.Minute)
 	if h.Available(id) {
 		t.Fatal("ErrRateLimitNotice must put account in cooldown")
+	}
+}
+
+func TestResolveAccountExplicitFailoverWhenCooling(t *testing.T) {
+	store := testAccountFiles(t)
+	s := &Server{tokens: store, accountPool: newAccountHealth()}
+	// A session-bound request pins u-1; u-1 enters cooldown. resolveAccount must
+	// NOT hand out the cooling account; it fails over to the next healthy one.
+	s.accountPool.MarkFailure("u-1", chathub.ErrRateLimitNotice, 10*time.Minute)
+	acc, err := s.resolveAccount("u-1")
+	if err != nil {
+		t.Fatalf("resolveAccount(u-1) while u-1 cooling must fail over, got err: %v", err)
+	}
+	if acc.ID == "u-1" {
+		t.Fatalf("resolveAccount must not return a cooling account, got %s", acc.ID)
+	}
+	if acc.ID != "u-2" {
+		t.Fatalf("expected failover to u-2, got %s", acc.ID)
+	}
+}
+
+func TestResolveAccountExplicitFailoverAllCooling(t *testing.T) {
+	store := testAccountFiles(t)
+	s := &Server{tokens: store, accountPool: newAccountHealth()}
+	for _, id := range []string{"u-1", "u-2", "u-3"} {
+		s.accountPool.MarkFailure(id, chathub.ErrRateLimitNotice, 10*time.Minute)
+	}
+	var upErr *UpstreamHTTPError
+	if _, err := s.resolveAccount("u-1"); !errors.As(err, &upErr) || upErr.Status != 429 {
+		t.Fatalf("resolveAccount(u-1) with all cooling should return 429 LocalCapacity, got %v", err)
+	}
+}
+
+func TestResolveAccountKeepsSchedulingDisabledExplicit(t *testing.T) {
+	// Regression guard: the scheduling-disabled exemption for explicitly
+	// requested accounts must survive the new cooldown-failover logic.
+	store := testAccountFiles(t)
+	if err := store.SetScheduleEnabled("u-1", false); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{tokens: store, accountPool: newAccountHealth()}
+	explicit, err := s.resolveAccount("u-1")
+	if err != nil {
+		t.Fatalf("explicit scheduling-disabled account must still resolve: %v", err)
+	}
+	if explicit.ID != "u-1" {
+		t.Fatalf("explicit account=%s want u-1", explicit.ID)
+	}
+}
+
+func TestRateLimitCooldownDefaultIsOneHour(t *testing.T) {
+	prior := openSettingsStore().v.AccountRateLimitCooldownSeconds
+	openSettingsStore().mu.Lock()
+	openSettingsStore().v.AccountRateLimitCooldownSeconds = 0
+	openSettingsStore().mu.Unlock()
+	t.Cleanup(func() {
+		openSettingsStore().mu.Lock()
+		openSettingsStore().v.AccountRateLimitCooldownSeconds = prior
+		openSettingsStore().mu.Unlock()
+	})
+	if got := rateLimitCooldown(); got != time.Hour {
+		t.Fatalf("rateLimitCooldown=%s want 1h", got)
+	}
+}
+
+func TestRateLimitCooldownUsesConfiguredValue(t *testing.T) {
+	prior := openSettingsStore().v.AccountRateLimitCooldownSeconds
+	openSettingsStore().mu.Lock()
+	openSettingsStore().v.AccountRateLimitCooldownSeconds = 120
+	openSettingsStore().mu.Unlock()
+	t.Cleanup(func() {
+		openSettingsStore().mu.Lock()
+		openSettingsStore().v.AccountRateLimitCooldownSeconds = prior
+		openSettingsStore().mu.Unlock()
+	})
+	if got := rateLimitCooldown(); got != 2*time.Minute {
+		t.Fatalf("rateLimitCooldown=%s want 2m", got)
+	}
+}
+
+func TestRateLimitCooldownUsesConfiguredWindowInMarkFailure(t *testing.T) {
+	prior := openSettingsStore().v.AccountRateLimitCooldownSeconds
+	openSettingsStore().mu.Lock()
+	openSettingsStore().v.AccountRateLimitCooldownSeconds = 60
+	openSettingsStore().mu.Unlock()
+	t.Cleanup(func() {
+		openSettingsStore().mu.Lock()
+		openSettingsStore().v.AccountRateLimitCooldownSeconds = prior
+		openSettingsStore().mu.Unlock()
+	})
+	h := newAccountHealth()
+	const id = "acct-rl-window"
+	h.MarkFailure(id, chathub.ErrRateLimitNotice, rateLimitCooldown())
+	until, ok := h.CooldownUntil(id)
+	if !ok {
+		t.Fatal("cooldown not recorded")
+	}
+	// No upstream Retry-After hint: cooldown equals the configured window.
+	if d := time.Until(until); d < 50*time.Second || d > 65*time.Second {
+		t.Fatalf("cooldown duration=%s want ~60s", d)
+	}
+}
+
+func TestRateLimitCooldownHonorsUpstreamHint(t *testing.T) {
+	prior := openSettingsStore().v.AccountRateLimitCooldownSeconds
+	openSettingsStore().mu.Lock()
+	openSettingsStore().v.AccountRateLimitCooldownSeconds = 60
+	openSettingsStore().mu.Unlock()
+	t.Cleanup(func() {
+		openSettingsStore().mu.Lock()
+		openSettingsStore().v.AccountRateLimitCooldownSeconds = prior
+		openSettingsStore().mu.Unlock()
+	})
+	h := newAccountHealth()
+	const id = "acct-rl-hint"
+	// Upstream Retry-After (120s) exceeds the configured window (60s): the
+	// longer hint wins so we do not retry before the upstream is ready.
+	h.MarkFailure(id, &UpstreamHTTPError{Status: 429, RetryAfter: 120}, rateLimitCooldown())
+	until, ok := h.CooldownUntil(id)
+	if !ok {
+		t.Fatal("cooldown not recorded")
+	}
+	if d := time.Until(until); d < 110*time.Second || d > 125*time.Second {
+		t.Fatalf("cooldown duration=%s want ~120s (upstream hint)", d)
 	}
 }

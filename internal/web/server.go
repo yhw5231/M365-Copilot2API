@@ -36,7 +36,19 @@ type pendingPKCE struct {
 	RedirectURI string
 }
 
-const rateLimitCooldown = 30 * time.Second
+const defaultRateLimitCooldownSeconds = 3600
+
+// rateLimitCooldown returns the configured per-account rate-limit cooldown
+// window (web-console setting, M365_RATE_LIMIT_COOLDOWN_SECONDS env, or the
+// 1-hour default). During this window the account is not scheduled to avoid
+// hammering the upstream service.
+func rateLimitCooldown() time.Duration {
+	sec := currentSettings().AccountRateLimitCooldownSeconds
+	if sec < 1 {
+		sec = defaultRateLimitCooldownSeconds
+	}
+	return time.Duration(sec) * time.Second
+}
 
 const maxAccountProbe = 16
 
@@ -47,7 +59,7 @@ func (s *Server) markAccountResult(accountID string, err error) {
 		return
 	}
 	if err != nil {
-		s.accountPool.MarkFailure(accountID, err, rateLimitCooldown)
+		s.accountPool.MarkFailure(accountID, err, rateLimitCooldown())
 		// A rate-limited account must immediately release its runtime proxy-pool
 		// binding so another available account can use that proxy node. This does
 		// not alter any manually configured persistent proxy URL.
@@ -95,7 +107,7 @@ func (s *Server) confirmRateLimitNotice(ctx context.Context, acc auth.AccountTok
 	if errors.Is(probeErr, chathub.ErrRateLimitNotice) || IsRateLimited(probeErr) {
 		return true, &UpstreamHTTPError{
 			Status:     http.StatusTooManyRequests,
-			RetryAfter: int(rateLimitCooldown.Seconds()),
+			RetryAfter: int(rateLimitCooldown().Seconds()),
 		}
 	}
 	return false, probeErr
@@ -1256,12 +1268,19 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 		if !s.tokens.ScheduleEnabled(accountID) {
 			return auth.AccountToken{}, fmt.Errorf("account is disabled for scheduling")
 		}
-		if !s.accountPool.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 5, LocalCapacity: true, Body: "account is cooling down; try another account"}
-		}
 		if !s.accountConcurrency.Available(accountID) {
 			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, LocalCapacity: true, Body: "account is at its concurrency limit; try another account"}
 		}
+	}
+	// A cooling-down or auth-failed account must never be handed out, even when
+	// it was explicitly requested (e.g. via a session binding). Fail over to the
+	// next healthy account so a client retrying a session-bound request is not
+	// stuck on a throttled account.
+	if !s.accountPool.Available(accountID) {
+		if next, nerr := s.nextProxySafeAccount(accountID); nerr == nil {
+			return next, nil
+		}
+		return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 5, LocalCapacity: true, Body: "account is cooling down; try another account"}
 	}
 	return s.tokens.EnsureValid(accountID)
 }
@@ -1395,10 +1414,21 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	acc, err := s.resolveAccount(body.AccountID)
+	requestedAccountID := body.AccountID
+	acc, err := s.resolveAccount(requestedAccountID)
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
+	}
+	// Session-bound failover: resolveAccount returned a different (healthy)
+	// account because the requested one is cooling down / auth-failed. The
+	// conversation binding belongs to the previous account; clear it so the
+	// request starts a fresh conversation on the new account.
+	if requestedAccountID != "" && acc.ID != requestedAccountID {
+		log.Printf("[account-route] failover requested=%s selected=%s reason=bound_unavailable", requestedAccountID, acc.ID)
+		body.AccountID = acc.ID
+		body.ConversationID = ""
+		body.SessionID = ""
 	}
 	if acc.OID == "" || acc.TID == "" {
 		if claimsOID, claimsTID := extractOIDTID(acc.AccessToken); claimsOID != "" {
@@ -1870,6 +1900,9 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 	if inst := unifiedWorkspaceInstruction(toolMapsFromChatHubTools(body.Tools)); inst != "" {
 		answerPrompt = inst + "\n\n" + answerPrompt
 	}
+	if conciseOutputEnabled() {
+		answerPrompt = conciseOutputPolicy + "\n\n" + answerPrompt
+	}
 	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments}
 	if planningMode == "native" {
 		req.Tools = body.Tools
@@ -1905,6 +1938,28 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 	return req
 }
 
+// failoverRequest rebuilds the retry request for a different account after a
+// throttled or auth-failed upstream attempt. Fresh unbound requests move to the
+// new account as-is; requests that reused a cloud conversation (resolver-
+// injected session binding) clear the old conversation and resubmit the
+// complete message context, because that conversation belongs to the previous
+// account and cannot be continued on the new one.
+func failoverRequest(base chathub.Request, body oaiReq, resolvedConversationID, tone string, ledger agentLedger, planningMode, mcpServerURL string, task *taskLedger, nextID string) chathub.Request {
+	req := base
+	if body.ConversationID != "" && body.ConversationID == resolvedConversationID {
+		full, atts := flattenPromptMessages(body.Messages, nil)
+		full = withTaskLedger(full, task)
+		req = buildAnswerRequest(full, tone, body, ledger, planningMode, mcpServerURL)
+		req.Attachments = atts
+		req.ConversationID = ""
+		req.SessionID = ""
+		req.TraceID = base.TraceID
+		req.RequestID = base.RequestID
+	}
+	req.BindAccount = nextID
+	return req
+}
+
 func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	requestID := requestIDFrom(r)
 	if requestID == "" {
@@ -1930,6 +1985,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
 		return
 	}
+	// Whether the client explicitly pinned an account in the request body.
+	// Session-bound accounts (session_key / session_id / previous_response_id)
+	// are injected by the gateway below; they must still be eligible for
+	// failover when they go into cooldown, whereas a client-pinned account is
+	// an explicit routing choice that the gateway keeps honoring.
+	clientPinnedAccount := body.AccountID != ""
 	// Debug-mode tracing: the trace middleware owns the lifecycle; enrich the
 	// record with chat-specific metadata as the request progresses.
 	if tr := traceFromRequest(r); tr != nil {
@@ -2156,6 +2217,22 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[account-route] selected id=%q email=%q token_present=%t oid_present=%t tid_present=%t", acc.ID, acc.Email, acc.AccessToken != "", acc.OID != "", acc.TID != "")
+	// Session-bound failover: when the requested account (e.g. one bound by a
+	// session resolver or session_key) is cooling down or auth-failed,
+	// resolveAccount already failed over to another healthy account. The old
+	// conversation/session binding belongs to the previous account and must be
+	// cleared so the request continues on the new account with the full context.
+	if accountID != "" && acc.ID != accountID {
+		if s.settings.get().CacheOnAccountSwitch {
+			cachedOverride = cachedInputTokens(prompt, answerPrompt)
+		}
+		log.Printf("[account-route] failover requested=%s selected=%s reason=bound_unavailable", accountID, acc.ID)
+		body.AccountID = acc.ID
+		body.ConversationID = ""
+		body.SessionID = ""
+		resolvedConversationID = ""
+		answerPrompt, body.Attachments = flattenPromptMessages(body.Messages, nil)
+	}
 	// Old-session restart ("閲嶆柊鍙戣捣瀵硅瘽"): a returning session whose warm
 	// window has lapsed (no reserved slot) and whose bound account has no idle
 	// unreserved capacity must not block in the queue. Re-initiate the
@@ -2419,7 +2496,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			text.WriteString(ev.Text)
 			return nil
 		})
-		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
+		if err != nil && !clientPinnedAccount && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
 			// A throttled stream may retry on the next healthy account: only the
 			// ": connected" preamble reached the client, so the retried stream is
 			// indistinguishable from a fresh request.
@@ -2430,12 +2507,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				if s.settings.get().CacheOnAccountSwitch {
 					cachedOverride = cachedTokens()
 				}
-				failoverReq := answerReq
-				if body.ConversationID == resolvedConversationID {
-					failoverReq.ConversationID = ""
-					failoverReq.SessionID = ""
-				}
-				failoverReq.BindAccount = next.ID
+				failoverReq := failoverRequest(answerReq, body, resolvedConversationID, tone, ledger, planningMode, mcpServerURL, task, next.ID)
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 				defer cancel2()
 				res2, err2 := s.chatWithAccountEvents(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
@@ -2461,13 +2533,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					err = nil
 				} else {
 					err = err2
-					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown)
+					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown())
 				}
 			}
 		}
 		if err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
-			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown())
 			// Record the failed stream so the request log does not show a
 			// zero-token row: the input is known from the prompt, and the
 			// output reflects whatever the upstream produced before failing.
@@ -2644,7 +2716,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 		if routeErr != nil {
-			s.accountPool.MarkFailure(acc.ID, routeErr, rateLimitCooldown)
+			s.accountPool.MarkFailure(acc.ID, routeErr, rateLimitCooldown())
 			if IsRateLimited(routeErr) || IsAuthFailure(routeErr) {
 				next, nerr := s.nextHealthyAccount(acc.ID)
 				if nerr == nil {
@@ -2656,7 +2728,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						acc = next
 						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
 					} else {
-						s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown)
+						s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown())
 					}
 				}
 			}
@@ -2846,7 +2918,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return
 		}
 		res, err = s.chatWithAccountReasoning(ctx, acc.ID, account, answerReq, onDelta, onReasoning)
-		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
+		if err != nil && !clientPinnedAccount && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
 			// Retry a throttled stream on the next healthy account; the client
 			// has only seen the ": connected" preamble so far, so the retry is
 			// indistinguishable from a fresh request.
@@ -2855,12 +2927,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				if s.settings.get().CacheOnAccountSwitch {
 					cachedOverride = cachedTokens()
 				}
-				failoverReq := answerReq
-				if body.ConversationID == resolvedConversationID {
-					failoverReq.ConversationID = ""
-					failoverReq.SessionID = ""
-				}
-				failoverReq.BindAccount = next.ID
+				failoverReq := failoverRequest(answerReq, body, resolvedConversationID, tone, ledger, planningMode, mcpServerURL, task, next.ID)
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 				defer cancel2()
 				if res2, err2 := s.chatWithAccountReasoning(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
@@ -2870,7 +2937,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					err = nil
 				} else {
 					err = err2
-					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown)
+					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown())
 				}
 			}
 		}
@@ -3046,7 +3113,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
-			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown())
 			code := "upstream_error"
 			msg := upstreamError(err)
 			if IsEmptyCompletion(err) {
@@ -3106,7 +3173,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				err = nil
 			}
 		}
-		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
+		if err != nil && !clientPinnedAccount && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
 			// Failover only when nothing pins the request to a conversation or
 			// account; a fresh chat can safely retry on the next healthy account.
 			next, nerr := s.nextProxySafeAccount(acc.ID)
@@ -3114,12 +3181,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				if s.settings.get().CacheOnAccountSwitch {
 					cachedOverride = cachedTokens()
 				}
-				failoverReq := answerReq
-				if body.ConversationID == resolvedConversationID {
-					failoverReq.ConversationID = ""
-					failoverReq.SessionID = ""
-				}
-				failoverReq.BindAccount = next.ID
+				failoverReq := failoverRequest(answerReq, body, resolvedConversationID, tone, ledger, planningMode, mcpServerURL, task, next.ID)
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 				defer cancel2()
 				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
@@ -3136,7 +3198,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	}
 	if err != nil {
-		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown())
 		if task != nil {
 			task.recordFailure(err)
 		}

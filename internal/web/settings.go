@@ -285,6 +285,11 @@ type runtimeSettings struct {
 	// per-account FIFO queue before the request fails with HTTP 429 (default
 	// 10). 0 disables the bound (queue indefinitely).
 	AccountQueueTimeoutSeconds int `json:"accountQueueTimeoutSeconds"`
+	// AccountRateLimitCooldownSeconds is how long an account stays in cooldown
+	// after an upstream rate-limit before it may be scheduled again (default
+	// 3600 = 1 hour). During the cooldown the account is not scheduled; clients
+	// are routed to other healthy accounts.
+	AccountRateLimitCooldownSeconds int `json:"accountRateLimitCooldownSeconds"`
 	// TimeZone controls server-side calendar boundaries and frontend time display.
 	// It defaults to Asia/Shanghai and must be a valid IANA time zone name.
 	TimeZone string `json:"timeZone"`
@@ -336,6 +341,7 @@ func defaultRuntimeSettings() runtimeSettings {
 		AccountWarmSessionSeconds: accountWarmSessionSecondsDefault(),
 		CacheOnAccountSwitch: false,
 		AccountQueueTimeoutSeconds: envInt("M365_ACCOUNT_QUEUE_TIMEOUT_SECONDS", defaultAccountQueueTimeoutSeconds),
+		AccountRateLimitCooldownSeconds: envInt("M365_RATE_LIMIT_COOLDOWN_SECONDS", defaultRateLimitCooldownSeconds),
 		TimeZone:           firstNonEmptySetting(os.Getenv("M365_TIME_ZONE"), "Asia/Shanghai"),
 	}
 }
@@ -370,6 +376,9 @@ var openSettingsStore = sync.OnceValue(func() *settingsStore {
 	}
 	if s.v.AccountQueueTimeoutSeconds < 1 {
 		s.v.AccountQueueTimeoutSeconds = defaultAccountQueueTimeoutSeconds
+	}
+	if s.v.AccountRateLimitCooldownSeconds < 1 {
+		s.v.AccountRateLimitCooldownSeconds = defaultRateLimitCooldownSeconds
 	}
 	if strings.TrimSpace(s.v.TimeZone) == "" {
 		s.v.TimeZone = "Asia/Shanghai"
@@ -434,6 +443,9 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.AccountQueueTimeoutSeconds < 1 || v.AccountQueueTimeoutSeconds > 86400 {
 		return fmt.Errorf("排队超时时间必须为 1-86400 秒")
+	}
+	if v.AccountRateLimitCooldownSeconds < 5 || v.AccountRateLimitCooldownSeconds > 86400 {
+		return fmt.Errorf("限流冷却时长必须为 5-86400 秒")
 	}
 	if strings.TrimSpace(v.TimeZone) == "" {
 		return fmt.Errorf("时区不能为空")

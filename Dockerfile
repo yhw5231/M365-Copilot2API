@@ -15,7 +15,6 @@ RUN apk add --no-cache su-exec tzdata \
     && mkdir -p /data /app
 WORKDIR /app
 COPY --from=build /out/m365-copilot2api /app/m365-copilot2api
-COPY --from=build /src/web /app/web
 # Entrypoint runs as root: it fixes ownership/permissions of the data and
 # secrets mount points (first-deploy issue), then drops to the unprivileged
 # m365 user before exec'ing the server.

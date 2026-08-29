@@ -54,7 +54,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; form-action 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; form-action 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline'")
 		if r.URL.Path == "/" || r.URL.Path == "/login" || r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" {
 			w.Header().Set("Cache-Control", "no-store")
 		}
@@ -78,6 +78,19 @@ func (s *Server) rootPage(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" && !s.validAdminSession(r) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
+	}
+	// A valid session that still owes the default-password change (or a
+	// revoked/expired one) is sent to the dedicated login page too: the
+	// dashboard API calls would otherwise fail with 403 password_change_required
+	// and the embedded login form is no longer part of the dashboard shell.
+	if r.URL.Path == "/" {
+		s.mu.Lock()
+		mustChange := s.mustChangePassword
+		s.mu.Unlock()
+		if mustChange {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
 	}
 
 	name := "index.html"
