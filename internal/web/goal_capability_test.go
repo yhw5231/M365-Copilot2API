@@ -57,7 +57,7 @@ func TestMisjudgmentCorrectionDetection(t *testing.T) {
 func TestCleanWorkspaceMisjudgmentsPreservesUserContent(t *testing.T) {
 	messages := []oaiMsg{
 		{Role: "system", Content: "You can choose to say something here."},
-		{Role: "user", Content: "当前会话没有可用工具，请把代码写好"}, // user says it, must keep
+		{Role: "user", Content: "当前会话没有可用工具，请把代码写好"},      // user says it, must keep
 		{Role: "assistant", Content: "当前会话没有任何可用工具，无法继续"}, // assistant claims it, drop
 		{Role: "tool", Content: `{"name":"read","result":"ok"}`},
 	}

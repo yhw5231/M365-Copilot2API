@@ -28,10 +28,10 @@ func TestGoalStateEndpointRoundTrip(t *testing.T) {
 		CreatedAt: time.Now(),
 	}}
 	s := &Server{
-		sessionResolver: openSessionResolver(),
-		apiKeys:         store,
-		sessions:        openSessionStore(),
-		userSessions:    openUserSessionStore(30 * time.Minute),
+		sessionResolver:     openSessionResolver(),
+		apiKeys:             store,
+		sessions:            openSessionStore(),
+		userSessions:        openUserSessionStore(30 * time.Minute),
 		conversationManager: openConversationManager(),
 	}
 	routes := s.Routes()
@@ -113,10 +113,10 @@ func TestGoalStateEndpointRejectsMismatch(t *testing.T) {
 		CreatedAt: time.Now(),
 	}}
 	s := &Server{
-		sessionResolver: openSessionResolver(),
-		apiKeys:         store,
-		sessions:        openSessionStore(),
-		userSessions:    openUserSessionStore(30 * time.Minute),
+		sessionResolver:     openSessionResolver(),
+		apiKeys:             store,
+		sessions:            openSessionStore(),
+		userSessions:        openUserSessionStore(30 * time.Minute),
 		conversationManager: openConversationManager(),
 	}
 	routes := s.Routes()

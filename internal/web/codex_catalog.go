@@ -347,6 +347,7 @@ func reasoningTone(model, effort string) (string, error) {
 		return "Gpt_5_5_Reasoning", nil
 	}
 }
+
 // compatibilityAliasModel reports whether a public model id is a compatibility
 // alias that funnels into an existing Microsoft 365 ChatHub tone rather than a
 // distinct upstream model with independent capabilities. gpt-5.6-sol (and the
