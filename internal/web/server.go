@@ -16,6 +16,7 @@ import (
 	"m365-copilot2api/internal/chathub"
 	"m365-copilot2api/internal/mcp"
 	"m365-copilot2api/internal/outbound"
+	"m365-copilot2api/internal/storage"
 	"net"
 	"net/http"
 	"os"
@@ -185,6 +186,13 @@ func New() (*Server, error) {
 	password, mustChange := loadAdminPassword()
 	if password == "" {
 		return nil, fmt.Errorf("administrator password is not configured; set M365_ADMIN_PASSWORD, M365_ADMIN_PASSWORD_FILE, or M365_ADMIN_PASSWORD_BOOTSTRAP_FILE")
+	}
+	// Surface a missing/read-only data directory at startup instead of the
+	// first login. Login is still allowed to proceed with an in-memory session
+	// (a restart simply logs the user out), but an explicit warning here makes
+	// the cause unmistakable.
+	if perr := storage.ProbeWritable(defaultDataDir()); perr != nil {
+		log.Printf("[startup] WARNING: data directory is not writable; administrator sessions will not survive a restart: %v", perr)
 	}
 	adminSessions, err := loadAdminSessions(time.Now())
 	if err != nil {
@@ -554,11 +562,14 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		delete(s.adminSessions, oldest)
 	}
 	s.adminSessions[digest] = expires
+	// Persisting the session only keeps the login alive across a restart; the
+	// authoritative session map is s.adminSessions in memory (validAdminSession
+	// reads only memory). A write failure on a read-only or freshly-bind-mounted
+	// data directory must therefore NOT bounce a correct password back as a 500
+	// "login failed" — the cost of that is "must log in again after restart",
+	// far better than being locked out entirely. Log the failure for diagnosis.
 	if err := saveAdminSessions(s.adminSessions); err != nil {
-		delete(s.adminSessions, digest)
-		s.mu.Unlock()
-		writeOpenAIError(w, http.StatusInternalServerError, "storage_error", "administrator session could not be saved; check the persistent data directory permissions")
-		return
+		log.Printf("[admin] could not persist login session (login still active in memory): %v (path=%q)", err, adminSessionPath())
 	}
 	s.mu.Unlock()
 	maxAge := int(time.Until(expires).Seconds())

@@ -193,3 +193,53 @@ func TestDefaultAndConfiguredAdminSessionTTL(t *testing.T) {
 		t.Fatalf("configured TTL=%s, want %s", got, 45*24*time.Hour)
 	}
 }
+
+// TestAdminLoginSucceedsWhenSessionPersistenceFails guards the fix for
+// "administrator session could not be saved; check the persistent data
+// directory permissions" bouncing a correct password back as a 500 login
+// failure (seen on read-only / freshly bind-mounted container data dirs).
+// Session validation reads only the in-memory map, so persistence failure
+// must degrade to "logged out after restart" rather than locking the
+// administrator out entirely.
+func TestAdminLoginSucceedsWhenSessionPersistenceFails(t *testing.T) {
+	dataDir := t.TempDir()
+	// Point the session store at a path whose parent collides with an existing
+	// regular file, so os.MkdirAll(parent) fails and every saveAdminSessions
+	// write errors. New() still loads fine (os.ReadFile on the missing path is
+	// just "not found"), mirroring a temporary read-only /data in a container.
+	blocker := filepath.Join(dataDir, "blocker-file")
+	if err := os.WriteFile(blocker, []byte("in the way"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("M365_DATA_DIR", filepath.Join(dataDir, "data-unused"))
+	t.Setenv("M365_ADMIN_PASSWORD_FILE", filepath.Join(dataDir, "admin-password"))
+	t.Setenv("M365_ADMIN_SESSIONS_FILE", filepath.Join(blocker, "admin-sessions.json"))
+	t.Setenv("M365_ADMIN_PASSWORD", "persistent-admin-password")
+	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
+	s, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/login", strings.NewReader(`{"password":"persistent-admin-password"}`))
+	request.Header.Set("Content-Type", "application/json")
+	s.adminLogin(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("admin login with failing persistence: status=%d body=%s, want 200 (login must not be locked out by a write error)", recorder.Code, recorder.Body.String())
+	}
+
+	var cookie *http.Cookie
+	for _, c := range recorder.Result().Cookies() {
+		if c.Name == "m365_admin_session" {
+			cookie = c
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatal("administrator session cookie was not set despite ok login")
+	}
+	if !s.validAdminSession(requestWithAdminCookie(http.MethodGet, "/api/admin/session", cookie)) {
+		t.Fatal("in-memory administrator session should be valid even though persistence failed")
+	}
+}
