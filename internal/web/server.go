@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -2924,6 +2925,83 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
+			// Tool-call detection for the reasoning stream. ChatWithReasoning's
+			// onEvent handler drops non-reasoning events, so native ChatHub tool
+			// events never reach this path; the upstream instead encodes the tool
+			// decision as fenced JSON or a CALL_TOOL line inside res.Text. Detect it
+			// here and answer with tool_calls so the downstream agent can execute the
+			// tool and continue its loop, instead of treating the call text as a
+			// final answer (which closes the session with openStep=null). Tool-call
+			// responses are short (fenced blocks keep outside text ≤240 chars, a
+			// CALL_TOOL line is a single line), so they always sit inside the
+			// buffered text window — the gate has not released anything to the
+			// client yet, so nothing needs to be un-sent.
+			if len(toolMaps) > 0 && res.Text != "" && !textGateMisjudged && !corrected {
+				calls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice)
+				if len(calls) == 0 {
+					if parsedCalls, parsed := parseModelToolDecision(res.Text, toolMaps, body.ToolChoice); parsed && len(parsedCalls) > 0 {
+						calls = parsedCalls
+					}
+				}
+				calls = filterCompletedCalls(calls, ledger)
+				calls, _ = validateCalls("reasoning-stream", calls)
+				if len(calls) > 0 {
+					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
+						calls = calls[:1]
+					}
+					scope := fmt.Sprintf("%d:%v:reasoning-stream", len(body.Messages), completedCallIDs(ledger))
+					for i := range calls {
+						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
+					}
+					writeToolChunk := func(delta map[string]any, finish any) error {
+						chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}}}
+						return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
+					}
+					// Reasoning was already streamed inline via onReasoning, so the
+					// first tool-call chunk only needs the assistant role marker.
+					_ = writeToolChunk(map[string]any{"role": "assistant", "content": nil}, nil)
+					for i, tc := range calls {
+						typ := tc.Type
+						if typ == "" {
+							typ = "function"
+						}
+						isLast := i == len(calls)-1
+						_ = writeToolChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil)
+						args := string(tc.Arguments)
+						const argChunkSize = 512
+						for off := 0; off < len(args); off += argChunkSize {
+							end := off + argChunkSize
+							if end > len(args) {
+								end = len(args)
+							}
+							for end < len(args) && !utf8.RuneStart(args[end]) {
+								end++
+							}
+							argChunk := args[off:end]
+							isLastArgChunk := off+argChunkSize >= len(args)
+							var finish any
+							if isLast && isLastArgChunk {
+								finish = "tool_calls"
+							}
+							_ = writeToolChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "function": map[string]any{"arguments": argChunk}}}}, finish)
+						}
+						if len(args) == 0 && isLast {
+							_ = writeToolChunk(map[string]any{}, "tool_calls")
+						}
+					}
+					if body.shouldSendStreamUsage() {
+						pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
+						ct := EstimateTokens(res.Text)
+						usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedTokens())}
+						_ = keepalive.lockedWrite("data: " + mustJSON(usageChunk) + "\n\n")
+					}
+					_ = keepalive.lockedWrite("data: [DONE]\n\n")
+					s.recordToolUsage(r, acc, &body, res, startedAt)
+					s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, false)
+					return
+				}
+			}
 			// Reasoning is always streamed inline now; drain the filter tail so
 			// the last fragment reaches the client.
 			if reasoning := reasoningFilter.Flush(); reasoning != "" {
