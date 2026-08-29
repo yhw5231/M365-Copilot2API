@@ -2782,22 +2782,51 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		reasoningFilter := newPublicReasoningStreamFilter()
 		var bufferedContent strings.Builder
 		var bufferedReasoning strings.Builder
-		noTools := len(toolMaps) == 0
+
+		// Text opening-window gate for workspace/tool misjudgment detection.
+		// When the protocol gates pass (correction is possible), the first
+		// textGateWindow bytes of text are buffered. If a misjudgment is found
+		// the tainted text is discarded and a correction request produces fresh
+		// content. If the window proves clean, the buffer and all subsequent
+		// text stream inline. When no correction is possible, text flows inline
+		// immediately with zero buffering.
+		const textGateWindow = 300
+		textGateActive := workspaceToolMisjudgmentPossible(toolMaps, prompt, ledger)
+		var textGateBuf strings.Builder
+		textGateReleased := !textGateActive
+		textGateMisjudged := false
+		corrected := false
+
 		onDelta := func(content string) error {
 			bufferedContent.WriteString(content)
-			if noTools {
-				if c := contentFilter.Push(content); c != "" {
-					return writeChunk(map[string]any{"content": c})
+			if textGateMisjudged {
+				return nil
+			}
+			if textGateActive && !textGateReleased {
+				textGateBuf.WriteString(content)
+				if textGateBuf.Len() >= textGateWindow {
+					if needsWorkspaceToolMisjudgmentCorrection(textGateBuf.String(), toolMaps, prompt, ledger) {
+						textGateMisjudged = true
+						textGateBuf.Reset()
+						return nil
+					}
+					textGateReleased = true
+					if c := contentFilter.Push(textGateBuf.String()); c != "" {
+						return writeChunk(map[string]any{"content": c})
+					}
+					textGateBuf.Reset()
 				}
+				return nil
+			}
+			if c := contentFilter.Push(content); c != "" {
+				return writeChunk(map[string]any{"content": c})
 			}
 			return nil
 		}
 		onReasoning := func(reasoning string) error {
 			bufferedReasoning.WriteString(reasoning)
-			if noTools {
-				if rc := reasoningFilter.Push(reasoning); rc != "" {
-					return writeChunk(map[string]any{"reasoning_content": rc})
-				}
+			if rc := reasoningFilter.Push(reasoning); rc != "" {
+				return writeChunk(map[string]any{"reasoning_content": rc})
 			}
 			return nil
 		}
@@ -2837,16 +2866,47 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			// The upstream stream has been fully buffered. Validate the complete
 			// assistant response before emitting any client-visible body content or
 			// persisting conversation state.
-			if bufferedContent.Len() > 0 {
+			// res.Text from chatWithAccountReasoning is the authoritative completion:
+			// ChatHub signals text as full snapshots OR cursor rewrites, and
+			// non-prefix rewrites are skipped by emitSnapshot to avoid duplicates, so
+			// the delta-assembled bufferedContent can end up a truncated prefix of the
+			// real answer. The completion frame's result.message (res.Text) restores
+			// the authoritative complete text. Never let the partial streamed deltas
+			// overwrite it; fall back to them only when the completion carried no text.
+			if res.Text == "" && bufferedContent.Len() > 0 {
 				res.Text = bufferedContent.String()
 			}
-			if bufferedReasoning.Len() > 0 {
+			if res.Reasoning == "" && bufferedReasoning.Len() > 0 {
 				res.Reasoning = bufferedReasoning.String()
 			}
-			if len(toolMaps) > 0 && needsWorkspaceToolMisjudgmentCorrection(res.Text, toolMaps, prompt, ledger) {
+			// The correction fires either when the opening-window gate already
+			// detected a misjudgment (textGateMisjudged — the tainted text was
+			// discarded before reaching the client), or when the whole response
+			// was shorter than the window and the completion-time check catches
+			// it on the still-buffered text. In both cases nothing client-visible
+			// has been sent, so a fresh correction request can replace the answer
+			// cleanly. The correction runs as a reasoning stream so its
+			// ChainOfThought continues the already-streamed reasoning seamlessly.
+			if textGateMisjudged || (textGateActive && !textGateReleased && needsWorkspaceToolMisjudgmentCorrection(res.Text, toolMaps, prompt, ledger)) {
+				bufferedContent.Reset()
+				bufferedReasoning.Reset()
 				correctionReq := answerReq
 				correctionReq.Text = unifiedSandboxCorrection(toolMaps, prompt)
-				res2, correctionErr := s.chatWithAccount(ctx, acc.ID, account, correctionReq)
+				correctionOnDelta := func(content string) error {
+					bufferedContent.WriteString(content)
+					if c := contentFilter.Push(content); c != "" {
+						return writeChunk(map[string]any{"content": c})
+					}
+					return nil
+				}
+				correctionOnReasoning := func(reasoning string) error {
+					bufferedReasoning.WriteString(reasoning)
+					if rc := reasoningFilter.Push(reasoning); rc != "" {
+						return writeChunk(map[string]any{"reasoning_content": rc})
+					}
+					return nil
+				}
+				res2, correctionErr := s.chatWithAccountReasoning(ctx, acc.ID, account, correctionReq, correctionOnDelta, correctionOnReasoning)
 				if correctionErr != nil {
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "code": "workspace_tool_correction_failed"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
@@ -2860,30 +2920,35 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					return
 				}
 				res = res2
+				corrected = true
 			}
 			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
-			if noTools {
-				// Reasoning/content deltas were already forwarded inline as they
-				// arrived; drain the filter tails so the last fragment reaches
-				// the client.
-				if reasoning := reasoningFilter.Flush(); reasoning != "" {
-					if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
-						return
-					}
+			// Reasoning is always streamed inline now; drain the filter tail so
+			// the last fragment reaches the client.
+			if reasoning := reasoningFilter.Flush(); reasoning != "" {
+				if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
+					return
 				}
-				if content := contentFilter.Flush(); content != "" {
+			}
+			// Content depends on the text gate state:
+			//   - misjudged: the tainted text was discarded and the correction
+			//     request already wrote its own content inline, so nothing
+			//     remains to write here.
+			//   - active & not released: the whole response fit inside the
+			//     buffered window, so send the authoritative completion text now.
+			//   - otherwise: text was already forwarded inline; drain the filter
+			//     tail for any remaining fragment.
+			if textGateMisjudged || corrected {
+				// correction content already written inline above
+			} else if textGateActive && !textGateReleased {
+				if content := contentFilter.Push(res.Text) + contentFilter.Flush(); content != "" {
 					if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
 						return
 					}
 				}
 			} else {
-				if reasoning := reasoningFilter.Push(res.Reasoning) + reasoningFilter.Flush(); reasoning != "" {
-					if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
-						return
-					}
-				}
-				if content := contentFilter.Push(res.Text) + contentFilter.Flush(); content != "" {
+				if content := contentFilter.Flush(); content != "" {
 					if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
 						return
 					}
@@ -2906,15 +2971,13 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				msg = "account is at capacity; the request queued too long, please retry shortly"
 			}
 			msg = sanitizePublicInternalText(msg)
-			if noTools {
-				// Deltas were already forwarded inline; drain filter tails so the
-				// partial content reaches the client before the error event.
-				if reasoning := reasoningFilter.Flush(); reasoning != "" {
-					_ = writeChunk(map[string]any{"reasoning_content": reasoning})
-				}
-				if content := contentFilter.Flush(); content != "" {
-					_ = writeChunk(map[string]any{"content": content})
-				}
+			// Reasoning is always streamed inline; drain filter tails so the
+			// partial content reaches the client before the error event.
+			if reasoning := reasoningFilter.Flush(); reasoning != "" {
+				_ = writeChunk(map[string]any{"reasoning_content": reasoning})
+			}
+			if content := contentFilter.Flush(); content != "" {
+				_ = writeChunk(map[string]any{"content": content})
 			}
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")

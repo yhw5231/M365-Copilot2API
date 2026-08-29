@@ -556,12 +556,12 @@ func userPromptMentionsWorkspace(userPrompt string) bool {
 //     answering a question about "Linux容器 / /mnt/data / 无法访问工作区" legitimately
 //     repeats those terms, so the response is not a misjudgment.
 //
-// Only when all protocol gates pass does the layered text detector run, so
-// ordinary conversation about containers or paths cannot trigger a correction.
-func needsWorkspaceToolMisjudgmentCorrection(text string, toolMaps []map[string]any, userPrompt string, ledger agentLedger) bool {
-	if strings.TrimSpace(text) == "" {
-		return false
-	}
+// workspaceToolMisjudgmentPossible runs only the protocol gates of
+// needsWorkspaceToolMisjudgmentCorrection without consulting the text, so a
+// streaming caller can decide up front whether an opening-window text buffer
+// is needed. When false, no misjudgment correction can fire and text may be
+// forwarded inline immediately.
+func workspaceToolMisjudgmentPossible(toolMaps []map[string]any, userPrompt string, ledger agentLedger) bool {
 	// Protocol gate 1: the caller must have declared tools. Without a shell/exec
 	// or file tool there is nothing to substitute and no misjudgment to repair.
 	hasExec := hasDeclaredTools(toolMaps, append(append([]string{}, knownShellNames...), knownExecToolNames...))
@@ -577,6 +577,18 @@ func needsWorkspaceToolMisjudgmentCorrection(text string, toolMaps []map[string]
 	// Protocol gate 3: echo suppression — if the user asked about the workspace
 	// vocabulary first, the model repeating it is a legitimate answer.
 	if userPromptMentionsWorkspace(userPrompt) {
+		return false
+	}
+	return true
+}
+
+// Only when all protocol gates pass does the layered text detector run, so
+// ordinary conversation about containers or paths cannot trigger a correction.
+func needsWorkspaceToolMisjudgmentCorrection(text string, toolMaps []map[string]any, userPrompt string, ledger agentLedger) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	if !workspaceToolMisjudgmentPossible(toolMaps, userPrompt, ledger) {
 		return false
 	}
 	return isWorkspaceToolMisjudgmentForTools(text, toolMaps)
