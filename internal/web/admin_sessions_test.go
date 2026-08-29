@@ -203,17 +203,24 @@ func TestDefaultAndConfiguredAdminSessionTTL(t *testing.T) {
 // administrator out entirely.
 func TestAdminLoginSucceedsWhenSessionPersistenceFails(t *testing.T) {
 	dataDir := t.TempDir()
-	// Point the session store at a path whose parent collides with an existing
-	// regular file, so os.MkdirAll(parent) fails and every saveAdminSessions
-	// write errors. New() still loads fine (os.ReadFile on the missing path is
-	// just "not found"), mirroring a temporary read-only /data in a container.
-	blocker := filepath.Join(dataDir, "blocker-file")
-	if err := os.WriteFile(blocker, []byte("in the way"), 0o600); err != nil {
+	// Point the session store into a directory the process can read but not
+	// write (a chmod 0555 dir). This mirrors a read-only /data bind mount in a
+	// container: New() can still start (the session file simply does not exist
+	// yet, which loadAdminSessions treats as an empty store), while every
+	// saveAdminSessions write fails with EACCES. A regular-file-in-the-middle
+	// path is NOT used on purpose: on Linux that surfaces as ENOTDIR on the
+	// first ReadFile, which loadAdminSessions (unlike ErrNotExist) treats as
+	// fatal and aborts New().
+	roDir := filepath.Join(dataDir, "sessions-ro")
+	if err := os.Mkdir(roDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(roDir, 0o555); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("M365_DATA_DIR", filepath.Join(dataDir, "data-unused"))
 	t.Setenv("M365_ADMIN_PASSWORD_FILE", filepath.Join(dataDir, "admin-password"))
-	t.Setenv("M365_ADMIN_SESSIONS_FILE", filepath.Join(blocker, "admin-sessions.json"))
+	t.Setenv("M365_ADMIN_SESSIONS_FILE", filepath.Join(roDir, "admin-sessions.json"))
 	t.Setenv("M365_ADMIN_PASSWORD", "persistent-admin-password")
 	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
 	s, err := New()
