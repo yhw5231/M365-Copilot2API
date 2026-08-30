@@ -48,6 +48,13 @@ type responsesRequest struct {
 	ContextManagement any               `json:"context_management,omitempty"`
 	Store             *bool             `json:"store,omitempty"`
 	Metadata          map[string]string `json:"metadata,omitempty"`
+	// PromptCacheKey is the session-scoped cache key some OpenAI Responses
+	// clients (e.g. the DSH harness through pi-ai) send to bind prompt-cache
+	// affinity. The Microsoft 365 backend cannot honor prompt caching, but the
+	// value is the client's stable per-session identifier. The gateway maps it
+	// onto SessionKey so the session resolver can keep the upstream
+	// conversation alive across turns and detect context compaction.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 }
 
 // unsupportedParamError marks a request parameter the gateway cannot honor.
@@ -181,6 +188,16 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 		o.ConversationID = ""
 	default:
 		o.ConversationID = r.Conversation
+	}
+	// The DSH harness (through pi-ai) sends prompt_cache_key as its per-session
+	// identifier on /v1/responses. The Microsoft 365 backend cannot honor prompt
+	// caching, but the value is a stable downstream session id. Mapping it onto
+	// SessionKey lets the session resolver keep the upstream conversation alive
+	// across turns (explicit_incremental) and detect context compaction
+	// (explicit_context_reset -> ResetUpstream), which is what keeps the model
+	// from hallucinating in long goal sessions.
+	if r.PromptCacheKey != "" {
+		o.SessionKey = r.PromptCacheKey
 	}
 	if r.Temperature != nil {
 		o.Temperature = r.Temperature

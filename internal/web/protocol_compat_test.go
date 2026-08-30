@@ -15,6 +15,37 @@ func TestResponsesToOpenAI(t *testing.T) {
 	}
 }
 
+// TestResponsesPromptCacheKeyBecomesSessionKey verifies that the DSH/pi-ai
+// prompt_cache_key (the client's stable per-session identifier) is mapped onto
+// the gateway's SessionKey so the session resolver can keep the upstream
+// conversation alive and detect context compaction.
+func TestResponsesPromptCacheKeyBecomesSessionKey(t *testing.T) {
+	r := responsesRequest{Model: "m", Input: "hello", PromptCacheKey: "session-dsh-123"}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.SessionKey != "session-dsh-123" {
+		t.Fatalf("prompt_cache_key should map to SessionKey, got %q", o.SessionKey)
+	}
+	if o.ConversationID != "" {
+		t.Fatalf("conversation must stay empty so the resolver starts/binds a conversation, got %q", o.ConversationID)
+	}
+}
+
+// TestResponsesPromptCacheKeyEmptyLeavesSessionKeyEmpty confirms that a request
+// without prompt_cache_key does not invent a session identity.
+func TestResponsesPromptCacheKeyEmptyLeavesSessionKeyEmpty(t *testing.T) {
+	r := responsesRequest{Model: "m", Input: "hello"}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.SessionKey != "" {
+		t.Fatalf("no prompt_cache_key must not set SessionKey, got %q", o.SessionKey)
+	}
+}
+
 func TestResponsesCustomExecToOpenAI(t *testing.T) {
 	r := responsesRequest{Model: "m", Input: "inspect", Tools: []map[string]any{{"type": "custom", "name": "exec", "description": "run a command", "format": map[string]any{"type": "grammar"}}}}
 	o, err := r.openAI()

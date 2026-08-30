@@ -387,6 +387,65 @@ func TestExplicitSessionUsesStrictPrefixForIncrementalSlice(t *testing.T) {
 	}
 }
 
+// TestBodySessionKeyDrivesCompactionDetection verifies the DSH/pi-ai flow where
+// the client sends NO session_id header but carries prompt_cache_key, which the
+// Responses adapter maps onto body.SessionKey. The resolver must treat that as
+// the stable downstream identity: bind once, reuse while history extends the
+// stored context, and ResetUpstream (fresh conversation) after compaction.
+func TestBodySessionKeyDrivesCompactionDetection(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer sk-dsh-tenant")
+
+	// First turn: no session anywhere yet -> IsNew, then Bind via SessionKey.
+	first := &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "You are an agent."},
+		{Role: "user", Content: "first question"},
+	}}
+	first.SessionKey = "session-dsh-abc"
+	if res := sr.Resolve(req, first); !res.IsNew {
+		t.Fatalf("first turn with no binding must be IsNew, got %+v", res)
+	}
+	sr.BindWithTask("upstream-session", "conversation-v1", "account-a", first, "first answer", req, nil)
+
+	// Second turn replays the same history plus one new message -> prefix reuse.
+	second := &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "You are an agent."},
+		{Role: "user", Content: "first question"},
+		{Role: "assistant", Content: "first answer"},
+		{Role: "user", Content: "second question"},
+	}}
+	second.SessionKey = "session-dsh-abc"
+	res := sr.Resolve(req, second)
+	if res.IsNew {
+		t.Fatalf("second turn must reuse the session bound by prompt_cache_key")
+	}
+	if res.ResetUpstream {
+		t.Fatalf("extending history must not reset upstream, matched=%q", res.MatchedBy)
+	}
+	if res.ConversationID != "conversation-v1" {
+		t.Fatalf("second turn must keep conversation-v1, got %q", res.ConversationID)
+	}
+
+	// Third turn: client compacted its context (summary replaces history).
+	compacted := &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "Summary of the earlier conversation"},
+		{Role: "user", Content: "continue from the summary"},
+	}}
+	compacted.SessionKey = "session-dsh-abc"
+	res3 := sr.Resolve(req, compacted)
+	if res3.IsNew {
+		t.Fatalf("stable downstream session must still resolve after compaction")
+	}
+	if !res3.ResetUpstream {
+		t.Fatalf("compaction must reset the upstream conversation, matched=%q", res3.MatchedBy)
+	}
+	if res3.MatchedBy != "explicit_context_reset" {
+		t.Fatalf("unexpected match mode %q", res3.MatchedBy)
+	}
+}
+
 // TestResolveAcceptsAltSessionHeaderName verifies the client compatibility
 // contract: the session identity is the explicit ID VALUE, regardless of
 // whether the client sent it via the canonical "session_id" header or the

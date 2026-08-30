@@ -3574,12 +3574,14 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 
 	apiKey := extractAPIKey(r)
 	// Only count history tokens when the request carries an explicit session ID
-	// header AND the session was actually reused upstream. Without a session_id
-	// header the resolver always returns IsNew, so there is no upstream reuse
-	// and counting history tokens as "cached" would be misleading (DSH/pi-ai
-	// sends full history every turn but does not send session_id by default).
+	// (header or body session_key mapped from prompt_cache_key) AND the session
+	// was actually reused upstream. Without a session id the resolver always
+	// returns IsNew, so there is no upstream reuse and counting history tokens
+	// as "cached" would be misleading. DSH/pi-ai sends full history every turn;
+	// its prompt_cache_key now provides the session identity, so history tokens
+	// are correctly attributed as cached.
 	historyTokens := int64(0)
-	explicitID := sessionIDFromRequest(r)
+	explicitID := explicitSessionID(r, body)
 	if explicitID != "" {
 		upper := len(body.Messages) - 1
 		if upper < 0 {
@@ -3655,7 +3657,7 @@ func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *o
 	last := len(body.Messages) - 1
 	for i, msg := range body.Messages {
 		tokens := EstimateTokens(contentToString(msg.Content))
-		if i < last && sessionIDFromRequest(r) != "" {
+		if i < last && explicitSessionID(r, body) != "" {
 			cacheTokens += tokens
 		} else {
 			inputTokens += tokens

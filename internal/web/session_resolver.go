@@ -226,12 +226,32 @@ func contextFingerprint(messages []oaiMsg) string {
 	return hex.EncodeToString(h[:16])
 }
 
+// explicitSessionID returns the client-declared downstream session identifier,
+// preferring the session_id / x-session-id / x-client-request-id headers, then
+// falling back to the request-body session_key (which the Responses adapter
+// maps from prompt_cache_key for DSH / pi-ai) and body.session_id. This lets
+// clients that only send prompt_cache_key keep a stable session identity so the
+// resolver can maintain the upstream conversation across turns and detect
+// context compaction (explicit_context_reset -> ResetUpstream).
+func explicitSessionID(r *http.Request, body *oaiReq) string {
+	if id := sessionIDFromRequest(r); id != "" {
+		return id
+	}
+	if body == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(body.SessionKey); id != "" {
+		return id
+	}
+	return strings.TrimSpace(body.SessionID)
+}
+
 func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	sr.evictLocked()
 
-	explicitID := sessionIDFromRequest(r)
+	explicitID := explicitSessionID(r, body)
 	key := extractAPIKey(r)
 
 	// 瀹㈡埛绔樉寮忔寚瀹氱殑浼氳瘽 ID 鏄渶楂樹紭鍏堢殑缁帴璇箟锛氫笉鍙備笌浠讳綍韬唤鍒ゅ畾锛?
@@ -362,7 +382,7 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 	if strings.TrimSpace(assistantText) != "" && !isWorkspaceToolMisjudgmentForTools(assistantText, toolMapsFromChatHubTools(body.Tools)) {
 		history = append(history, oaiMsg{Role: "assistant", Content: assistantText})
 	}
-	explicitID := sessionIDFromRequest(r)
+	explicitID := explicitSessionID(r, body)
 	key := extractAPIKey(r)
 	// The caller-provided session ID is the stable downstream identity. Keep it
 	// separate from the upstream session ID returned by ChatHub so two callers
@@ -454,10 +474,7 @@ func (sr *sessionResolver) ResolveTaskLedger(r *http.Request, body *oaiReq) *tas
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	key := extractAPIKey(r)
-	explicitID := sessionIDFromRequest(r)
-	if explicitID == "" {
-		explicitID = strings.TrimSpace(body.SessionID)
-	}
+	explicitID := explicitSessionID(r, body)
 	if explicitID == "" {
 		return nil
 	}
