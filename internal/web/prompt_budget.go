@@ -35,6 +35,23 @@ func modelRouteMaxInputTokens(model string, mappings []modelMapping) int {
 	return defaultRouteMaxInputTokens
 }
 
+// m365RequestInputBudget returns the input-token budget the gateway actually
+// enforces for one request. It caps the per-route budget
+// (modelRouteMaxInputTokens) at the effective context window the M365 backend
+// can consume (m365EffectiveContextWindow). The route budget and the effective
+// window were historically independent (route default 256K vs advertised 128K),
+// which let requests far above the advertised window pass untrimmed. Capping at
+// the effective window keeps the enforced budget aligned with what /v1/models
+// advertises, so the gateway never silently accepts a request that exceeds the
+// advertised context_window.
+func m365RequestInputBudget(model string, mappings []modelMapping) int {
+	budget := modelRouteMaxInputTokens(model, mappings)
+	if eff := m365EffectiveContextWindow(); eff > 0 && budget > eff {
+		return eff
+	}
+	return budget
+}
+
 // m365EffectiveContextWindow returns the input budget the gateway actually
 // manages for Microsoft 365 backend models. A configured ContextWindow below
 // the default wins (the operator explicitly narrowed it); a larger configured

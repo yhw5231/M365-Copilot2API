@@ -157,3 +157,39 @@ func TestModelRouteMaxInputTokensAreRouteLocal(t *testing.T) {
 		t.Fatalf("unconfigured model must not inherit another route limit: got %d", got)
 	}
 }
+
+// TestM365RequestInputBudgetCapsRouteMaxAtEffectiveWindow verifies that the
+// enforced input budget never exceeds the effective context window, aligning
+// the actual trimming budget with the value advertised by /v1/models.
+func TestM365RequestInputBudgetCapsRouteMaxAtEffectiveWindow(t *testing.T) {
+	t.Setenv("M365_EFFECTIVE_CONTEXT_WINDOW", "120000")
+	// No route-level MaxInputTokens → route default 262144 > eff 120000 → cap at 120000
+	if got := m365RequestInputBudget("gpt-5.6-sol", nil); got != 120000 {
+		t.Fatalf("default route max must be capped at effective window: got %d want 120000", got)
+	}
+	// Route limit smaller than effective window → route limit wins
+	small := 1000
+	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", MaxInputTokens: &small}}
+	if got := m365RequestInputBudget("gpt-5.6-sol", mappings); got != 1000 {
+		t.Fatalf("explicit route limit below effective window must be honored: got %d want 1000", got)
+	}
+	// Route limit exactly at effective window → both agree
+	equal := 120000
+	mappings2 := []modelMapping{{PublicModel: "gpt-5.6-sol", MaxInputTokens: &equal}}
+	if got := m365RequestInputBudget("gpt-5.6-sol", mappings2); got != 120000 {
+		t.Fatalf("route limit equal to effective window must match: got %d want 120000", got)
+	}
+}
+
+// TestM365RequestInputBudgetRespectsRouteLimitAboveEffectiveWindow verifies
+// that a route-level MaxInputTokens above the effective window is still capped
+// at the effective window (the upstream cannot consume more).
+func TestM365RequestInputBudgetRespectsRouteLimitAboveEffectiveWindow(t *testing.T) {
+	t.Setenv("M365_EFFECTIVE_CONTEXT_WINDOW", "120000")
+	large := 200000
+	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", MaxInputTokens: &large}}
+	// Route says 200K, but effective window is 120K → cap at 120K
+	if got := m365RequestInputBudget("gpt-5.6-sol", mappings); got != 120000 {
+		t.Fatalf("route limit above effective window must be capped: got %d want 120000", got)
+	}
+}

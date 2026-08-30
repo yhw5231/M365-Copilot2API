@@ -2080,8 +2080,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Apply the three-tier context budget before flattening: tier 1
 	// (instructions) and tier 2 (tool evidence) survive, tier 3 (ordinary
 	// history) is trimmed oldest-first once the request exceeds the effective
-	// input budget the M365 backend can actually consume.
-	body.Messages = budgetMessages(body.Messages, modelRouteMaxInputTokens(body.Model, currentSettings().ModelMappings))
+	// input budget the M365 backend can actually consume. The budget is the
+	// per-route value capped at the advertised effective window, so a request
+	// never exceeds what /v1/models promises.
+	body.Messages = budgetMessages(body.Messages, m365RequestInputBudget(body.Model, currentSettings().ModelMappings))
 	// Per-request tool reminder: re-states the declared tool list and guards
 	// against the model concluding tools are unavailable or submitting
 	// identical old/new edit strings. Injected after the budget so it is never
