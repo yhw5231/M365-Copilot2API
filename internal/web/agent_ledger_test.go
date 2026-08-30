@@ -83,6 +83,36 @@ func TestAgentLedgerDetectsRepeatedCallAndRoundLimit(t *testing.T) {
 	}
 }
 
+// TestAgentLedgerUnlimitedRounds ensures maxRounds=0 disables the round
+// limit without suppressing the other loop guards.
+func TestAgentLedgerUnlimitedRounds(t *testing.T) {
+	// Distinct calls (unique arguments) so only the round limit — not the
+	// stuck-loop guard — is exercised. Under maxRounds=0 a large number of
+	// calls must be allowed.
+	var msgs []oaiMsg
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("u%d", i)
+		msgs = append(msgs, oaiMsg{Role: "assistant", ToolCalls: []map[string]any{{"id": id, "type": "function", "function": map[string]any{"name": "poll", "arguments": fmt.Sprintf("{\"id\":%d}", i)}}}}, oaiMsg{Role: "tool", ToolCallID: id, Content: "pending"})
+	}
+	l := buildAgentLedger(msgs)
+	if l.ToolRounds != 8 {
+		t.Fatalf("expected 8 rounds, got %d", l.ToolRounds)
+	}
+	if err := l.CanContinue(0); err != nil {
+		t.Fatalf("maxRounds=0 must not impose a round limit: %v", err)
+	}
+	// A distinct repeated failure must still stop continuation under 0.
+	failMsgs := []oaiMsg{
+		{Role: "assistant", ToolCalls: []map[string]any{{"id": "f1", "type": "function", "function": map[string]any{"name": "run", "arguments": "{\"cmd\":\"x\"}"}}}},
+		{Role: "tool", ToolCallID: "f1", Content: "exit code 1: failed"},
+		{Role: "assistant", ToolCalls: []map[string]any{{"id": "f2", "type": "function", "function": map[string]any{"name": "run", "arguments": "{\"cmd\":\"x\"}"}}}},
+		{Role: "tool", ToolCallID: "f2", Content: "exit code 1: failed"},
+	}
+	if err := buildAgentLedger(failMsgs).CanContinue(0); err == nil || !strings.Contains(err.Error(), "repeated tool failure") {
+		t.Fatalf("repeated failure must block continuation even when rounds are unlimited, got: %v", err)
+	}
+}
+
 func TestActiveMessagesIgnoresOlderToolHistory(t *testing.T) {
 	var msgs []oaiMsg
 	for i := 0; i < 20; i++ {

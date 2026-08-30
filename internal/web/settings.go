@@ -107,6 +107,18 @@ func (s *runtimeSettings) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &a); err != nil {
 		return err
 	}
+	// Legacy settings files predate injectToolReminder. A missing key on the
+	// wire must not be confused for an explicit "false": json.Unmarshal leaves
+	// absent fields at the target's zero value, and *s is overwritten wholesale
+	// below. Preserve the desired default (on unless a "1"/"true" override) so
+	// upgrades never silently disable the tool reminder.
+	if !jsonHasKey(b, "injectToolReminder") {
+		if cur := *s; cur.InjectToolReminder {
+			a.InjectToolReminder = true
+		} else {
+			a.InjectToolReminder = envBoolDefault("M365_INJECT_TOOL_REMINDER", true)
+		}
+	}
 	*s = runtimeSettings(a)
 	if strings.TrimSpace(s.ProxyMode) == "" {
 		var legacy struct {
@@ -117,6 +129,16 @@ func (s *runtimeSettings) UnmarshalJSON(b []byte) error {
 		}
 	}
 	return nil
+}
+
+// jsonHasKey reports whether the raw JSON object contains the given key.
+func jsonHasKey(b []byte, k string) bool {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(b, &raw) != nil {
+		return false
+	}
+	_, ok := raw[k]
+	return ok
 }
 
 var defaultModelMappings = []modelMapping{
@@ -230,8 +252,13 @@ func modelRouteTable(mappings []modelMapping, upstream []upstreamMapping, hidden
 }
 
 type runtimeSettings struct {
-	MaxToolCallsPerTurn int      `json:"maxToolCallsPerTurn"`
-	MaxToolRounds       int      `json:"maxToolRounds"`
+	MaxToolCallsPerTurn int `json:"maxToolCallsPerTurn"`
+	MaxToolRounds       int `json:"maxToolRounds"`
+	// InjectToolReminder toggles the per-request [TOOL_REMINDER] system
+	// message that re-states the declared tool list and guards against the
+	// model concluding tools are unavailable or submitting identical old/new
+	// edit strings. Defaults to on; M365_INJECT_TOOL_REMINDER overrides.
+	InjectToolReminder  bool     `json:"injectToolReminder"`
 	ContextWindow       int      `json:"contextWindow"`
 	MaxOutputTokens     int      `json:"maxOutputTokens"`
 	ChatTimeoutSeconds  int      `json:"chatTimeoutSeconds"`
@@ -309,6 +336,23 @@ func envInt(name string, fallback int) int {
 	return fallback
 }
 
+// envBoolDefault reads an environment variable as boolean. Acceptable true
+// values: "1", "true", "yes", "on". Acceptable false values: "0", "false",
+// "off", "no", "disable", "disabled". Absent or unrecognized → fallback.
+func envBoolDefault(name string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "off", "no", "disable", "disabled":
+		return false
+	}
+	return fallback
+}
+
 // accountWarmSessionSecondsDefault resolves the warm/reservation window default
 // from environment configuration, honoring M365_ACCOUNT_WARM_SESSION_SECONDS
 // (integer seconds) and the legacy M365_ACCOUNT_WARM_SESSION_WINDOW (Go
@@ -326,8 +370,9 @@ func accountWarmSessionSecondsDefault() int {
 }
 func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
-		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
-		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
+		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 0),
+		InjectToolReminder: envBoolDefault("M365_INJECT_TOOL_REMINDER", true),
+		ContextWindow:      envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
 		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 600), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "warn"),
 		DebugLogPath: envPath("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: envPath("M365_CONFIG"),
 		TokenCachePath: envPath("M365_TOKEN_CACHE"), SessionCachePath: envPath("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
@@ -411,8 +456,8 @@ func validateSettings(v runtimeSettings) error {
 	if v.MaxToolCallsPerTurn < 1 || v.MaxToolCallsPerTurn > 64 {
 		return fmt.Errorf("每轮工具调用数必须为 1-64")
 	}
-	if v.MaxToolRounds < 1 || v.MaxToolRounds > 512 {
-		return fmt.Errorf("最大工具轮次必须为 1-512")
+	if v.MaxToolRounds < 0 || v.MaxToolRounds > 512 {
+		return fmt.Errorf("最大工具轮次必须为 0-512（0 表示不限）")
 	}
 	if v.ContextWindow < 1024 {
 		return fmt.Errorf("上下文窗口不能小于 1024")

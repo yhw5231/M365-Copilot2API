@@ -35,7 +35,12 @@ func TestSettingsPersistAndValidate(t *testing.T) {
 	}
 	v.MaxToolCallsPerTurn = 0
 	if err := s.save(v); err == nil {
-		t.Fatal("expected validation error")
+		t.Fatal("expected validation error for MaxToolCallsPerTurn=0")
+	}
+	v.MaxToolCallsPerTurn = 1
+	v.MaxToolRounds = 0
+	if err := s.save(v); err != nil {
+		t.Fatalf("MaxToolRounds=0 should be accepted as unlimited: %v", err)
 	}
 }
 

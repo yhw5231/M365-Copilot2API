@@ -335,6 +335,14 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .uke-file pre{margin:0;padding:12px;font-family:SF Mono,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.65;white-space:pre-wrap;word-break:break-all;color:var(--text);max-height:240px;overflow:auto}
 .uke-file pre .c{color:var(--muted)}
 .modal.wide{width:min(720px,calc(100vw - 32px))}
+/* Page sub-tabs (top horizontal tab bar inside a category page) */
+.tabs{display:flex;gap:2px;flex-wrap:wrap;margin:0 0 22px;padding-bottom:1px;border-bottom:1px solid var(--line)}
+.tab{appearance:none;background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;margin:0;color:var(--muted);font:inherit;font-size:13px;font-weight:600;letter-spacing:-0.01em;padding:10px 15px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;min-height:auto;white-space:nowrap;transition:color .15s ease,border-color .15s ease}
+.tab:hover{color:var(--text);background:transparent;border-color:transparent}
+.tab:active{transform:none}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.tab .tab-dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.55}
+.tab-pane{animation:slideUp .25s var(--ease-out)}
 </style>
 </head>
 <body>
@@ -502,6 +510,12 @@ if (response.output_text) {
             </div>
           </div>
         </div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" role="tab" data-action="show-sub" data-page="usage" data-sub="overview"><i data-lucide="chart-column" style="width:14px;height:14px"></i><span>用量概览</span></button>
+          <button class="tab" role="tab" data-action="show-sub" data-page="usage" data-sub="debug"><i data-lucide="bug" style="width:14px;height:14px"></i><span>调试记录</span></button>
+          <button class="tab" role="tab" data-action="show-sub" data-page="usage" data-sub="logs"><i data-lucide="list-tree" style="width:14px;height:14px"></i><span>请求明细</span></button>
+        </div>
+        <div class="tab-pane" id="pane-usage-overview">
         <div class="stats">
           <div class="stat"><span class="stat-label">请求总数</span><span class="stat-value" id="ug-req">0</span><span class="stat-sub" id="ug-req-sub"></span></div>
           <div class="stat"><span class="stat-label">Token 总数</span><span class="stat-value" id="ug-tok">0</span><span class="stat-sub" id="ug-tok-sub"></span></div>
@@ -531,6 +545,8 @@ if (response.output_text) {
             <div id="ugKeys"></div>
           </div>
         </div>
+        </div>
+        <div class="tab-pane" id="pane-usage-debug" style="display:none">
         <div class="card" id="traceCard">
           <div class="card-head">
             <div><span class="card-title">调试模式</span><span id="traceViewState" class="usage-status" style="margin-left:8px">实时</span></div>
@@ -540,7 +556,7 @@ if (response.output_text) {
                 <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
                 <span id="traceEnabledLabel">记录已关闭</span>
               </label>
-              <label class="switch-control" title="锁定后暂停自动刷新，保持当前页和已展开内容不变">
+              <label class="switch-control" title="锁定后停止自动刷新，保持当前页和已展开内容不变">
                 <input type="checkbox" id="traceViewLocked" data-action="toggle-trace-lock">
                 <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
                 <span id="traceLockLabel">页面未锁定</span>
@@ -554,7 +570,9 @@ if (response.output_text) {
           <table class="table"><thead><tr><th>时间</th><th>模型</th><th>推理等级</th><th>端点</th><th>状态</th><th>Token<br><small>总输入与输出 / 新增 / 缓存</small></th><th>耗时 / 首字耗时</th><th>详情</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody></table>
           <div class="pagination"><span id="tracePageInfo"></span><button class="btn btn-sm" id="tracePrev" data-action="trace-page" data-direction="-1">上一页</button><button class="btn btn-sm" id="traceNext" data-action="trace-page" data-direction="1">下一页</button></div>
         </div>
-        <div class="card" style="margin-top:16px">
+        </div>
+        <div class="tab-pane" id="pane-usage-logs" style="display:none">
+        <div class="card">
           <div class="card-head"><span class="card-title">请求明细</span><span style="font-size:11px;color:var(--muted)" id="ugLogInfo"></span><button class="btn btn-sm" data-action="load-usage-logs"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> 刷新</button></div>
           <div class="filter-bar" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px;border-bottom:1px solid var(--line)">
             <input class="form-input" id="ugFKey" placeholder="密钥" style="width:110px">
@@ -574,6 +592,7 @@ if (response.output_text) {
           <div class="usage-table-wrap"><table class="table usage-table"><thead><tr><th>时间</th><th>请求明细</th><th>Token<br><small>新增输入 / 缓存 / 输出</small></th><th>预估费用</th><th>耗时 / 首字耗时</th><th>状态</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="6" class="empty">加载中...</td></tr></tbody></table></div>
           <div class="pagination"><span id="ugPageInfo"></span><button class="btn btn-sm" id="ugPrev" data-action="usage-page" data-direction="-1">上一页</button><button class="btn btn-sm" id="ugNext" data-action="usage-page" data-direction="1">下一页</button></div>
         </div>
+        </div>
       </section>
 
       <!-- Accounts -->
@@ -581,6 +600,12 @@ if (response.output_text) {
         <div class="page-head">
           <div><h2 class="page-title">Account management</h2><p class="page-sub">Authorize and manage Microsoft accounts</p></div>
         </div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" role="tab" data-action="show-sub" data-page="accounts" data-sub="list"><i data-lucide="users" style="width:14px;height:14px"></i><span>账号列表</span></button>
+          <button class="tab" role="tab" data-action="show-sub" data-page="accounts" data-sub="add"><i data-lucide="user-plus" style="width:14px;height:14px"></i><span>添加账户</span></button>
+          <button class="tab" role="tab" data-action="show-sub" data-page="accounts" data-sub="schedule"><i data-lucide="timer" style="width:14px;height:14px"></i><span>调度设置</span></button>
+        </div>
+        <div class="tab-pane" id="pane-accounts-add">
         <div class="card" style="margin-bottom:16px">
           <div class="card-head"><span class="card-title">添加账户</span></div>
           <div class="card-body">
@@ -605,10 +630,11 @@ if (response.output_text) {
             <div id="authUrlBox" class="highlight-box" style="display:none;margin-top:0;margin-bottom:16px">
               <div class="highlight-box-title"><i data-lucide="link-2" style="width:14px;height:14px"></i> Authorization address</div>
               <div class="copy-field" style="margin:8px 0 0">
-                <input class="form-input" id="authUrlInput" readonly autocomplete="off" data-action="open-auth-url" title="Open the authorization page in a new tab">
-                <button class="btn primary" data-action="copy-auth-url" style="min-width:88px"><i data-lucide="copy" style="width:14px;height:14px;margin-right:4px"></i>Copy</button>
+                <input class="form-input" id="authUrlInput" readonly autocomplete="off" title="Open the authorization page in a new tab">
+                <button class="btn" data-action="copy-auth-url" style="min-width:88px"><i data-lucide="copy" style="width:14px;height:14px;margin-right:4px"></i>Copy</button>
+                <button class="btn primary" data-action="open-auth-url" style="min-width:88px"><i data-lucide="external-link" style="width:14px;height:14px;margin-right:4px"></i>Open</button>
               </div>
-              <p style="margin:6px 0 0;font-size:12px;color:var(--muted)">If the login page does not open automatically, click the address above to open it in a new tab.</p>
+              <p style="margin:6px 0 0;font-size:12px;color:var(--muted)">Click Open to open the authorization page in a new tab. Click Copy to copy the address and paste it into your own browser if needed.</p>
             </div>
             <div class="highlight-box warning" style="margin-top:0;margin-bottom:16px">
 <div class="highlight-box-title"><i data-lucide="alert-circle" style="width:14px;height:14px"></i> Important</div>
@@ -622,6 +648,8 @@ if (response.output_text) {
             <div id="authStatus" style="margin-top:12px"></div>
           </div>
         </div>
+        </div>
+        <div class="tab-pane" id="pane-accounts-schedule" style="display:none">
         <div class="card" style="margin-bottom:16px">
           <div class="card-head">
             <div><span class="card-title">Account scheduling</span><p style="font-size:12px;color:var(--muted);margin-top:2px">Configure the per-account concurrency limit and how new sessions select an available account. Existing sessions remain sticky until their account is rate-limited or unavailable.</p></div>
@@ -665,6 +693,8 @@ if (response.output_text) {
             </div>
           </div>
         </div>
+        </div>
+        <div class="tab-pane" id="pane-accounts-list" style="display:none">
         <div class="card">
           <div class="card-head account-list-head">
             <span class="card-title">已授权账号</span>
@@ -685,6 +715,7 @@ if (response.output_text) {
             <button class="btn-sm btn danger" type="button" data-action="batch-delete-accounts" disabled>批量删除</button>
           </div>
           <div style="overflow-x:auto"><table class="table account-table"><thead><tr><th class="account-select-column"><input id="accountSelectAll" type="checkbox" data-action="select-all-accounts" aria-label="选择全部可见账号"></th><th class="account-index-column">序号</th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="identity">账号<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="id">账号 ID<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="queuePosition">队列位置<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="concurrency">并发数<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="usage">总调用次数 / 今日令牌数<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="lastRequestAt">最近请求<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="status">状态<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="scheduleEnabled">已启用<span class="account-sort-state" aria-hidden="true"></span></button></th><th><button class="account-sort" type="button" data-action="sort-accounts" data-sort-key="boundProxy">代理<span class="account-sort-state" aria-hidden="true"></span></button></th><th>操作</th></tr></thead><tbody id="accountRows"><tr><td colspan="12" class="empty">加载中...</td></tr></tbody></table></div>
+        </div>
         </div>
       </section>
 
@@ -728,6 +759,11 @@ if (response.output_text) {
           <div><h2 style="font-size:18px;font-weight:700">Proxy pool</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Configure outbound proxies with http / https / socks5; each account keeps its proxy node, other accounts avoid it, and on failure an unbound node is preferred, falling back to any available node</p></div>
           <button class="btn" data-action="proxy-check-all"><i data-lucide="activity" style="width:14px;height:14px"></i> Check all</button>
         </div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" role="tab" data-action="show-sub" data-page="proxies" data-sub="config"><i data-lucide="settings" style="width:14px;height:14px"></i><span>代理配置</span></button>
+          <button class="tab" role="tab" data-action="show-sub" data-page="proxies" data-sub="list"><i data-lucide="list" style="width:14px;height:14px"></i><span>代理列表</span></button>
+        </div>
+        <div class="tab-pane" id="pane-proxies-config">
         <div class="card" style="margin-bottom:16px">
           <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
             <div style="min-width:260px">
@@ -756,9 +792,12 @@ if (response.output_text) {
             <p class="form-hint" style="margin-top:8px">Supported formats: <code>http://</code> · <code>https://</code> · <code>socks5://</code>; usernames and passwords are supported</p>
           </div>
         </div>
+        </div>
+        <div class="tab-pane" id="pane-proxies-list" style="display:none">
         <div class="card">
           <div class="card-head"><span class="card-title">Proxy list</span></div>
           <table class="table"><thead><tr><th>URL</th><th>状态</th><th>延迟</th><th>Failures</th><th>Cooldown until</th><th>Actions</th></tr></thead><tbody id="proxyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+        </div>
         </div>
       </section>
 
@@ -776,8 +815,20 @@ if (response.output_text) {
       <!-- Settings -->
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
-        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:9090"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="setTimeZone">Time zone</label><select class="form-input" id="setTimeZone"><option value="Asia/Shanghai">北京时间 (Asia/Shanghai, UTC+08:00)</option><option value="UTC">UTC</option><option value="Asia/Tokyo">Asia/Tokyo (UTC+09:00)</option><option value="Asia/Singapore">Asia/Singapore (UTC+08:00)</option><option value="Europe/London">Europe/London</option><option value="Europe/Berlin">Europe/Berlin</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Denver">America/Denver</option><option value="America/Los_Angeles">America/Los_Angeles</option></select><p class="form-hint">系统内所有日期、时间显示及每日统计边界均使用此时区，默认为北京时间。</p></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" data-action="save-settings">Save settings</button></div></div></div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" role="tab" data-action="show-sub" data-page="settings" data-sub="general"><i data-lucide="sliders-horizontal" style="width:14px;height:14px"></i><span>常规设置</span></button>
+          <button class="tab" role="tab" data-action="show-sub" data-page="settings" data-sub="password"><i data-lucide="key-round" style="width:14px;height:14px"></i><span>修改密码</span></button>
+          <button class="tab" role="tab" data-action="show-sub" data-page="settings" data-sub="routing"><i data-lucide="route" style="width:14px;height:14px"></i><span>模型路由</span></button>
+        </div>
+        <div class="tab-pane" id="pane-settings-general">
+        <div class="card"><div class="card-head"><span class="card-title">General</span><span style="font-size:11px;color:var(--muted)">Network, timeouts and display preferences</span></div><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:9090"><p class="form-hint">Restart required for changes to take effect.</p></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" min="5" max="3600" placeholder="120"></div><div class="form-group"><label class="form-label" for="setTimeZone">Time zone</label><select class="form-input" id="setTimeZone"><option value="Asia/Shanghai">北京时间 (Asia/Shanghai, UTC+08:00)</option><option value="UTC">UTC</option><option value="Asia/Tokyo">Asia/Tokyo (UTC+09:00)</option><option value="Asia/Singapore">Asia/Singapore (UTC+08:00)</option><option value="Europe/London">Europe/London</option><option value="Europe/Berlin">Europe/Berlin</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Denver">America/Denver</option><option value="America/Los_Angeles">America/Los_Angeles</option></select><p class="form-hint">All dates, times and daily statistics use this time zone. Defaults to Beijing time.</p></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div></div></div>
+        <div class="card" style="margin-top:16px"><div class="card-head"><span class="card-title">Tools &amp; limits</span><span style="font-size:11px;color:var(--muted)">Tool loop budgets and the per-request tool reminder</span></div><div class="card-body"><div class="form-group"><label class="form-label" for="setMaxToolCallsPerTurn">Max tool calls per turn</label><input class="form-input" id="setMaxToolCallsPerTurn" type="number" min="1" max="64" step="1" placeholder="32"><p class="form-hint">Maximum tool calls allowed in one client turn; 1-64, default 32.</p></div><div class="form-group"><label class="form-label" for="setMaxToolRounds">Max tool rounds per request</label><input class="form-input" id="setMaxToolRounds" type="number" min="0" max="512" step="1" placeholder="0"><p class="form-hint">Maximum tool rounds allowed in one request; 0 means unlimited.</p></div><div class="form-group"><label class="form-label" for="setInjectToolReminder" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="setInjectToolReminder" style="width:16px;height:16px;accent-color:var(--accent)">Inject tool reminder</label><p class="form-hint">Re-state the declared tool list in every request so the model does not conclude tools are unavailable. Default on.</p></div></div></div>
+        <div style="margin-top:16px"><button class="btn primary" data-action="save-settings"><i data-lucide="save" style="width:14px;height:14px"></i> Save settings</button></div>
+        </div>
+        <div class="tab-pane" id="pane-settings-password" style="display:none">
         <div class="card" style="margin-top:16px"><div class="card-head"><span class="card-title">Change administrator password</span></div><div class="card-body"><form id="changePasswordForm" data-action="change-admin-password" style="max-width:520px"><div class="form-group"><label class="form-label" for="currentAdminPassword">Current password</label><div class="password-wrap"><input class="form-input" id="currentAdminPassword" type="password" autocomplete="current-password" required><button type="button" class="password-toggle" data-action="toggle-admin-password" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><div class="form-group"><label class="form-label" for="newAdminPassword">New password (at least 6 characters)</label><div class="password-wrap"><input class="form-input" id="newAdminPassword" type="password" autocomplete="new-password" minlength="6" required><button type="button" class="password-toggle" data-action="toggle-admin-password" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><div class="form-group"><label class="form-label" for="confirmAdminPassword">Confirm new password</label><div class="password-wrap"><input class="form-input" id="confirmAdminPassword" type="password" autocomplete="new-password" minlength="6" required><button type="button" class="password-toggle" data-action="toggle-admin-password" aria-label="Toggle password visibility"><i data-lucide="eye" style="width:15px;height:15px;display:flex"></i></button></div></div><button class="btn primary" id="changePasswordButton" type="submit"><i data-lucide="key-round" style="width:14px;height:14px"></i> Change password</button></form><p class="form-hint" style="margin-top:12px">Changing the password signs out all administrator sessions. You will be redirected to the login page.</p></div></div>
+        </div>
+        <div class="tab-pane" id="pane-settings-routing" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
           <div><h2 style="font-size:18px;font-weight:700">Model routing</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Enable or disable model routes and set each model's default reasoning level. Disabled models are hidden from the model list and rejected at request time.</p></div>
           <button class="btn primary" data-action="save-model-routes"><i data-lucide="save" style="width:14px;height:14px"></i> Save model routing</button>
@@ -785,6 +836,7 @@ if (response.output_text) {
         <div class="card">
           <div class="card-head"><span class="card-title">Model routes</span><span style="font-size:11px;color:var(--muted)">Models route by mapping name; the mapping's tone is sent to the upstream (ChatHub).</span><button class="btn btn-sm" data-action="add-model-route-row"><i data-lucide="plus" style="width:13px;height:13px"></i> Add model</button></div>
           <div style="overflow-x:auto"><table class="table"><thead><tr><th>模型</th><th>Display name</th><th>Upstream mapping</th><th>Default reasoning level</th><th>Max input tokens</th><th>Enabled</th><th>Actions</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody></table></div>
+        </div>
         </div>
       </section>
     </div>
@@ -991,6 +1043,10 @@ const localeText={
   'ignore the content of the authorization page': {'zh-CN':'忽略授权页面上的内容','zh-TW':'忽略授權頁面上的內容','ja':'認可ページの内容は無視してください','ko':'인증 페이지 내용 무시','es':'ignore el contenido de la página de autorización','fr':'ignorez le contenu de la page d\'autorisation','de':'ignorieren Sie den Inhalt der Autorisierungsseite','pt-BR':'ignore o conteúdo da página de autorização','ru':'игнорируйте содержимое страницы авторизации','ar':'تجاهل محتوى صفحة التفويض'},
   'Authorization opened in a new tab': {'zh-CN':'授权页面已在新标签页打开','zh-TW':'授權頁面已在新分頁開啟','ja':'認可ページを新しいタブで開きました','ko':'인증 페이지가 새 탭에서 열렸습니다','es':'Autorización abierta en una pestaña nueva','fr':'Autorisation ouverte dans un nouvel onglet','de':'Autorisierung in neuem Tab geöffnet','pt-BR':'Autorização aberta em uma nova aba','ru':'Авторизация открыта в новой вкладке','ar':'تم فتح التفويض في تبويب جديد'},
   'Complete the sign-in in the browser tab, then paste the full callback URL from the address bar into the field above.': {'zh-CN':'请在浏览器标签页中完成登录，然后复制地址栏中的完整回调地址粘贴到上方输入框。','zh-TW':'請在瀏覽器分頁中完成登入，然後複製網址列中的完整回呼位址貼到上方輸入框。','ja':'ブラウザタブでサインインを完了し、アドレスバーの完全なコールバック URL を上の入力欄に貼り付けてください。','ko':'브라우저 탭에서 로그인을 완료한 후 주소창의 전체 콜백 URL을 위 입력란에 붙여넣으세요.','es':'Complete el inicio de sesión en la pestaña del navegador y luego pegue la URL de devolución completa de la barra de direcciones en el campo de arriba.','fr':'Terminez la connexion dans l\'onglet du navigateur, puis collez l\'URL de rappel complète depuis la barre d\'adresse dans le champ ci-dessus.','de':'Schließen Sie die Anmeldung im Browser-Tab ab und fügen Sie dann die vollständige Callback-URL aus der Adressleiste in das Feld oben ein.','pt-BR':'Conclua o login na aba do navegador e cole a URL de retorno completa da barra de endereços no campo acima.','ru':'Завершите вход в браузере, затем вставьте полный URL обратного вызова из адресной строки в поле выше.','ar':'أكمل تسجيل الدخول في تبويب المتصفح، ثم الصق عنوان URL الكامل لإعادة التوجيه من شريط العنوان في الحقل أعلاه'},
+  'Open': {'zh-CN':'打开','zh-TW':'開啟','ja':'開く','ko':'열기','es':'Abrir','fr':'Ouvrir','de':'Öffnen','pt-BR':'Abrir','ru':'Открыть','ar':'فتح'},
+  'Authorization address generated': {'zh-CN':'授权地址已生成','zh-TW':'授權位址已產生','ja':'認可アドレスを生成しました','ko':'인증 주소가 생성되었습니다','es':'Dirección de autorización generada','fr':'Adresse d\'autorisation générée','de':'Autorisierungsadresse erstellt','pt-BR':'Endereço de autorização gerado','ru':'Адрес авторизации сгенерирован','ar':'تم إنشاء عنوان التفويض'},
+  'Click Open to open the sign-in page, or copy the address. After signing in, paste the full callback URL from the address bar into the field above.': {'zh-CN':'点击"打开"在新标签页打开登录页，或点击"复制"复制授权地址。登录完成后，将地址栏中的完整回调地址粘贴到上方输入框。','zh-TW':'點擊「開啟」在新分頁開啟登入頁，或點擊「複製」複製授權位址。登入完成後，將網址列中的完整回呼位址貼到上方輸入框。','ja':'「開く」をクリックしてログインページを新しいタブで開くか、アドレスをコピーしてください。サインイン後、アドレスバーの完全なコールバック URL を上の入力欄に貼り付けてください。','ko':'"열기"를 클릭해 로그인 페이지를 새 탭에서 열거나 주소를 복사하세요. 로그인 후 주소창의 전체 콜백 URL을 위 입력란에 붙여넣으세요.','es':'Haga clic en « Abrir » para abrir la página de inicio de sesión en una pestaña nueva, o copie la dirección. Tras iniciar sesión, pegue la URL de devolución completa de la barra de direcciones en el campo de arriba.','fr':'Cliquez sur « Ouvrir » pour ouvrir la page de connexion dans un nouvel onglet, ou copiez l\'adresse. Après la connexion, collez l\'URL de rappel complète depuis la barre d\'adresse dans le champ ci-dessus.','de':'Klicken Sie auf „Öffnen", um die Anmeldeseite in einem neuen Tab zu öffnen, oder kopieren Sie die Adresse. Fügen Sie nach der Anmeldung die vollständige Callback-URL aus der Adressleiste in das Feld oben ein.','pt-BR':'Clique em "Abrir" para abrir a página de login em uma nova aba, ou copie o endereço. Após entrar, cole a URL de retorno completa da barra de endereços no campo acima.','ru':'Нажмите «Открыть», чтобы открыть страницу входа в новой вкладке, или скопируйте адрес. После входа вставьте полный URL обратного вызова из адресной строки в поле выше.','ar':'انقر "فتح" لفتح صفحة تسجيل الدخول في تبويب جديد، أو انسخ العنوان. بعد تسجيل الدخول، الصق عنوان URL الكامل لإعادة التوجيه من شريط العنوان في الحقل أعلاه'},
+  'Click Open to open the authorization page in a new tab. Click Copy to copy the address and paste it into your own browser if needed.': {'zh-CN':'点击"打开"在新标签页打开授权页面；如需要在其他浏览器中打开，请点击"复制"复制授权地址。','zh-TW':'點擊「開啟」在新分頁開啟授權頁面；如需要在其他瀏覽器中開啟，請點擊「複製」複製授權位址。','ja':'「開く」をクリックして認可ページを新しいタブで開くか、必要に応じて「コピー」でアドレスをコピーしてご自身のブラウザで開いてください。','ko':'"열기"를 클릭해 인증 페이지를 새 탭에서 열거나, 필요하면 "복사"를 클릭해 주소를 복사해 직접 브라우저에서 여세요.','es':'Haga clic en « Abrir » para abrir la página de autorización en una pestaña nueva. Haga clic en « Copiar » para copiar la dirección y pegarla en su propio navegador si lo necesita.','fr':'Cliquez sur « Ouvrir » pour ouvrir la page d\'autorisation dans un nouvel onglet. Cliquez sur « Copier » pour copier l\'adresse et la coller dans votre propre navigateur si nécessaire.','de':'Klicken Sie auf „Öffnen", um die Autorisierungsseite in einem neuen Tab zu öffnen. Klicken Sie auf „Kopieren", um die Adresse zu kopieren und bei Bedarf in Ihrem eigenen Browser einzufügen.','pt-BR':'Clique em "Abrir" para abrir a página de autorização em uma nova aba. Clique em "Copiar" para copiar o endereço e colá-lo no seu próprio navegador, se necessário.','ru':'Нажмите «Открыть», чтобы открыть страницу авторизации в новой вкладке. Нажмите «Копировать», чтобы скопировать адрес и при необходимости вставить его в свой браузер.','ar':'انقر "فتح" لفتح صفحة التفويض في تبويب جديد، أو انقر "نسخ" لنسخ العنوان ولصقه في متصفحك إذا لزم الأمر'},
   'Exchanging authorization code': {'zh-CN':'正在兑换授权码','zh-TW':'正在兌換授權碼','ja':'認可コードを交換中','ko':'인증 코드 교환 중','es':'Intercambiando código de autorización','fr':'Échange du code d\'autorisation','de':'Autorisierungscode wird umgetauscht','pt-BR':'Trocando código de autorização','ru':'Обмен кода авторизации','ar':'جارٍ تبادل رمز التفويض'},
   'Confirming with Microsoft... the account will be added when finished.': {'zh-CN':'正在与 Microsoft 确认...完成后账号将自动加入账号池。','zh-TW':'正在與 Microsoft 確認...完成後帳號將自動加入帳號池。','ja':'Microsoft と確認中...完了するとアカウントが自動的に追加されます。','ko':'Microsoft와 확인 중... 완료되면 계정이 자동으로 추가됩니다.','es':'Confirmando con Microsoft... la cuenta se añadirá al finalizar.','fr':'Confirmation avec Microsoft... le compte sera ajouté à la fin.','de':'Verifizierung mit Microsoft... das Konto wird anschließend hinzugefügt.','pt-BR':'Confirmando com a Microsoft... a conta será adicionada ao concluir.','ru':'Подтверждение с Microsoft... по завершении аккаунт будет добавлен.','ar':'جارٍ التأكيد مع Microsoft... سيُضاف الحساب عند الانتهاء'},
   'No authorization address yet': {'zh-CN':'尚无授权地址','zh-TW':'尚無授權位址','ja':'認可アドレスがありません','ko':'인증 주소가 아직 없음','es':'Aún no hay dirección de autorización','fr':'Aucune adresse d\'autorisation pour le moment','de':'Noch keine Autorisierungsadresse','pt-BR':'Nenhum endereço de autorização ainda','ru':'Адреса авторизации пока нет','ar':'لا يوجد عنوان تفويض بعد'},
@@ -1048,12 +1104,26 @@ const localeText={
   'Reply': {'zh-CN':'回复','zh-TW':'回覆','ja':'返信','ko':'답변','es':'Respuesta','fr':'Réponse','de':'Antwort','pt-BR':'Resposta','ru':'Ответ','ar':'الرد'},
   'Listen address': {'zh-CN':'监听地址','zh-TW':'監聽位址','ja':'リスニングアドレス','ko':'수신 주소','es':'Dirección de escucha','fr':'Adresse d\'écoute','de':'Lauschadresse','pt-BR':'Endereço de escuta','ru':'Адрес прослушивания','ar':'عنوان الاستماع'},
   'Chat timeout (seconds)': {'zh-CN':'聊天超时（秒）','zh-TW':'聊天逾時（秒）','ja':'チャットタイムアウト（秒）','ko':'채팅 시간 초과(초)','es':'Tiempo de espera de chat (segundos)','fr':'Délai de chat (secondes)','de':'Chat-Timeout (Sekunden)','pt-BR':'Tempo limite do chat (segundos)','ru':'Тайм-аут чата (сек.)','ar':'مهلة الدردشة (ثوانٍ)'},
+  'Max tool rounds per request': {'zh-CN':'每次请求最大工具轮数','zh-TW':'每次請求最大工具輪數','ja':'リクエストごとの最大ツールラウンド数','ko':'요청당 최대 도구 라운드 수','es':'Máximo de rondas de herramientas por solicitud','fr':'Nombre maximal de rondes d\'outils par requête','de':'Maximale Tool-Runden pro Anfrage','pt-BR':'Máximo de rodadas de ferramentas por solicitação','ru':'Максимум раундов инструментов за запрос','ar':'الحد الأقصى لجولات الأدوات لكل طلب'},
+  'Maximum tool rounds allowed in one request; 0 means unlimited.': {'zh-CN':'单个请求内允许的最大工具轮数，0 表示不限。','zh-TW':'單一請求內允許的最大工具輪數，0 表示不限。','ja':'1 リクエスト内で許可される最大ツールラウンド数。0 は無制限を意味します。','ko':'한 요청 내에서 허용되는 최대 도구 라운드 수입니다. 0은 무제한을 의미합니다.','es':'Máximo de rondas de herramientas permitidas en una solicitud; 0 significa ilimitado.','fr':'Nombre maximal de rondes d\'outils autorisées par requête ; 0 signifie illimité.','de':'Maximale Tool-Runden pro Anfrage; 0 bedeutet unbegrenzt.','pt-BR':'Máximo de rodadas de ferramentas permitidas em uma solicitação; 0 significa ilimitado.','ru':'Максимум раундов инструментов на запрос; 0 означает без ограничений.','ar':'الحد الأقصى لجولات الأدوات المسموح بها في الطلب الواحد؛ 0 يعني غير محدود.'},
   'Language': {'zh-CN':'语言','zh-TW':'語言','ja':'言語','ko':'언어','es':'Idioma','fr':'Langue','de':'Sprache','pt-BR':'Idioma','ru':'Язык','ar':'اللغة'},
+  'Time zone': {'zh-CN':'时区','zh-TW':'時區','ja':'タイムゾーン','ko':'시간대','es':'Zona horaria','fr':'Fuseau horaire','de':'Zeitzone','pt-BR':'Fuso horário','ru':'Часовой пояс','ar':'المنطقة الزمنية'},
+  'All dates, times and daily statistics use this time zone. Defaults to Beijing time.': {'zh-CN':'所有日期、时间及每日统计均使用此时区，默认为北京时间。','zh-TW':'所有日期、時間與每日統計均使用此時區，預設為北京時間。','ja':'すべての日付・時刻・日次統計はこのタイムゾーンを使用します。デフォルトは北京時間です。','ko':'모든 날짜, 시간 및 일일 통계는 이 시간대를 사용합니다. 기본값은 베이징 시간입니다.','es':'Todas las fechas, horas y estadísticas diarias usan esta zona horaria. El valor predeterminado es la hora de Pekín.','fr':'Toutes les dates, heures et statistiques quotidiennes utilisent ce fuseau horaire. Par défaut, l\'heure de Pékin.','de':'Alle Daten, Zeiten und Tagesstatistiken verwenden diese Zeitzone. Standard ist die Pekinger Zeit.','pt-BR':'Todas as datas, horários e estatísticas diárias usam este fuso horário. O padrão é o horário de Pequim.','ru':'Все даты, время и ежедневная статистика используют этот часовой пояс. По умолчанию — пекинское время.','ar':'تستخدم جميع التواريخ والأوقات والإحصائيات اليومية هذه المنطقة الزمنية. الافتراضي هو توقيت بكين.'},
   'Save settings': {'zh-CN':'保存设置','zh-TW':'儲存設定','ja':'設定を保存','ko':'설정 저장','es':'Guardar ajustes','fr':'Enregistrer les paramètres','de':'Einstellungen speichern','pt-BR':'Salvar configurações','ru':'Сохранить настройки','ar':'حفظ الإعدادات'},
+  'General': {'zh-CN':'常规设置','zh-TW':'一般設定','ja':'一般','ko':'일반','es':'General','fr':'Général','de':'Allgemein','pt-BR':'Geral','ru':'Общие','ar':'عام'},
+  'Network, timeouts and display preferences': {'zh-CN':'网络、超时与显示偏好','zh-TW':'網路、逾時與顯示偏好','ja':'ネットワーク、タイムアウトと表示設定','ko':'네트워크, 시간 초과 및 표시 환경설정','es':'Red, tiempos de espera y preferencias de visualización','fr':'Réseau, délais et préférences d\'affichage','de':'Netzwerk, Zeitüberschreitungen und Anzeigeeinstellungen','pt-BR':'Rede, tempos limite e preferências de exibição','ru':'Сеть, тайм-ауты и настройки отображения','ar':'الشبكة، المهل الزمنية وتفضيلات العرض'},
+  'Restart required for changes to take effect.': {'zh-CN':'修改需重启服务后生效。','zh-TW':'修改需重新啟動服務後生效。','ja':'変更を反映するには再起動が必要です。','ko':'변경 사항을 적용하려면 재시작이 필요합니다.','es':'Se requiere reiniciar para que los cambios surtan efecto.','fr':'Un redémarrage est requis pour que les changements prennent effet.','de':'Ein Neustart ist erforderlich, damit die Änderungen wirksam werden.','pt-BR':'É necessário reiniciar para que as alterações tenham efeito.','ru':'Требуется перезапуск, чтобы изменения вступили в силу.','ar':'يلزم إعادة التشغيل حتى تدخل التغييرات حيز التنفيذ.'},
+  'Tools & limits': {'zh-CN':'工具与限制','zh-TW':'工具與限制','ja':'ツールと制限','ko':'도구 및 제한','es':'Herramientas y límites','fr':'Outils et limites','de':'Werkzeuge und Grenzen','pt-BR':'Ferramentas e limites','ru':'Инструменты и лимиты','ar':'الأدوات والقيود'},
+  'Tool loop budgets and the per-request tool reminder': {'zh-CN':'工具循环预算与每次请求的工具提醒','zh-TW':'工具迴圈預算與每次請求的工具提醒','ja':'ツールループ予算とリクエストごとのツールリマインダー','ko':'도구 루프 예산 및 요청별 도구 알림','es':'Presupuestos de bucles de herramientas y recordatorio de herramientas por solicitud','fr':'Budgets des boucles d\'outils et rappel d\'outils par requête','de':'Tool-Schleifenbudgets und die Tool-Erinnerung pro Anfrage','pt-BR':'Orçamentos de loops de ferramentas e lembrete de ferramentas por solicitação','ru':'Бюджеты циклов инструментов и напоминание об инструментах в каждом запросе','ar':'ميزانيات حلقات الأدوات وتذكير الأدوات لكل طلب'},
+  'Max tool calls per turn': {'zh-CN':'每回合最大工具调用次数','zh-TW':'每回合最大工具呼叫次數','ja':'1ターンあたりの最大ツール呼び出し数','ko':'턴당 최대 도구 호출 수','es':'Máximo de llamadas de herramientas por turno','fr':'Nombre maximal d\'appels d\'outils par tour','de':'Maximale Tool-Aufrufe pro Runde','pt-BR':'Máximo de chamadas de ferramentas por turno','ru':'Максимум вызовов инструментов за ход','ar':'الحد الأقصى لاستدعاءات الأدوات لكل دورة'},
+  'Maximum tool calls allowed in one client turn; 1-64, default 32.': {'zh-CN':'单个客户端回合内允许的最大工具调用次数；1-64，默认 32。','zh-TW':'單一用戶端回合內允許的最大工具呼叫次數；1-64，預設 32。','ja':'1 クライアントターンで許可される最大ツール呼び出し数。1〜64、デフォルトは 32。','ko':'한 클라이언트 턴에서 허용되는 최대 도구 호출 수(1~64, 기본값 32).','es':'Máximo de llamadas de herramientas permitidas en un turno de cliente; 1-64, predeterminado 32.','fr':'Nombre maximal d\'appels d\'outils autorisés dans un tour client ; 1-64, par défaut 32.','de':'Maximale Tool-Aufrufe pro Client-Runde; 1-64, Standard 32.','pt-BR':'Máximo de chamadas de ferramentas permitidas em um turno do cliente; 1-64, padrão 32.','ru':'Максимум вызовов инструментов за один ход клиента; 1-64, по умолчанию 32.','ar':'الحد الأقصى لاستدعاءات الأدوات المسموح بها في دورة العميل الواحدة؛ 1-64، الافتراضي 32.'},
+  'Inject tool reminder': {'zh-CN':'注入工具提醒','zh-TW':'注入工具提醒','ja':'ツールリマインダーを注入','ko':'도구 알림 주입','es':'Inyectar recordatorio de herramientas','fr':'Injecter le rappel d\'outils','de':'Tool-Erinnerung einfügen','pt-BR':'Injetar lembrete de ferramentas','ru':'Вставлять напоминание об инструментах','ar':'حقن تذكير الأدوات'},
+  'Re-state the declared tool list in every request so the model does not conclude tools are unavailable. Default on.': {'zh-CN':'在每次请求中重申已声明的工具列表，避免模型误认为工具不可用。默认开启。','zh-TW':'在每次請求中重申已宣告的工具清單，避免模型誤認為工具不可用。預設開啟。','ja':'毎回のリクエストで宣言済みのツール一覧を再提示し、モデルがツールを利用不可と判断しないようにします。デフォルトはオン。','ko':'모든 요청에서 선언된 도구 목록을 다시 명시하여 모델이 도구를 사용할 수 없다고 판단하지 않도록 합니다. 기본값: 켜짐.','es':'Vuelva a indicar la lista de herramientas declaradas en cada solicitud para que el modelo no concluya que las herramientas no están disponibles. Activado por defecto.','fr':'Répétez la liste d\'outils déclarée dans chaque requête afin que le modèle ne conclue pas que les outils sont indisponibles. Activé par défaut.','de':'Die deklarierte Tool-Liste in jeder Anfrage erneut angeben, damit das Modell nicht annimmt, Tools seien nicht verfügbar. Standardmäßig aktiviert.','pt-BR':'Reitere a lista de ferramentas declarada em cada solicitação para que o modelo não conclua que as ferramentas estão indisponíveis. Padrão: ativado.','ru':'Повторно объявляйте список инструментов в каждом запросе, чтобы модель не делала вывод, что инструменты недоступны. По умолчанию включено.','ar':'أعد ذكر قائمة الأدوات المعلنة في كل طلب حتى لا يستنتج النموذج أن الأدوات غير متاحة. الافتراضي: مفعّل.'},
   'Choose the language used by the administration console.': {'zh-CN':'选择管理控制台使用的语言。','zh-TW':'選擇管理主控台使用的語言。','ja':'管理コンソールで使用する言語を選択してください。','ko':'관리 콘솔에서 사용할 언어를 선택하세요.','es':'Elija el idioma que usará la consola de administración.','fr':'Choisissez la langue utilisée par la console d\'administration.','de':'Wählen Sie die Sprache, die von der Administrationskonsole verwendet wird.','pt-BR':'Escolha o idioma usado pelo console de administração.','ru':'Выберите язык, используемый консолью администратора.','ar':'اختر اللغة المستخدمة في وحدة تحكم الإدارة.'},
   'Model routing': {'zh-CN':'模型路由','zh-TW':'模型路由','ja':'モデルルーティング','ko':'모델 라우팅','es':'Enrutamiento de modelos','fr':'Routage des modèles','de':'Modell-Routing','pt-BR':'Roteamento de modelos','ru':'Маршрутизация моделей','ar':'توجيه النماذج'},
   'Enable or disable model routes and set each model\'s default reasoning level. Disabled models are hidden from the model list and rejected at request time.': {'zh-CN':'启用或禁用模型路由，并设置每个模型的默认推理等级。被禁用的模型将从模型列表中隐藏，并在请求时被拒绝。','zh-TW':'啟用或禁用模型路由，並設定每個模型的預設推理等級。被禁用的模型將從模型清單中隱藏，並在請求時被拒絕。','ja':'モデルルートの有効/無効を切り替え、各モデルのデフォルト推論レベルを設定します。無効なモデルはモデル一覧から非表示になり、リクエスト時に拒否されます。','ko':'모델 라우팅을 활성화/비활성화하고 각 모델의 기본 추론 수준을 설정합니다. 비활성화된 모델은 모델 목록에서 숨겨지고 요청 시 거부됩니다.','es':'Habilite o deshabilite las rutas de modelos y establezca el nivel de razonamiento predeterminado de cada modelo. Los modelos deshabilitados se ocultan de la lista y se rechazan al solicitarlos.','fr':'Activez ou désactivez les routes de modèles et définissez le niveau de raisonnement par défaut de chaque modèle. Les modèles désactivés sont masqués de la liste et rejetés à la demande.','de':'Aktivieren oder deaktivieren Sie Modellrouten und legen Sie die Standard-Argumentationstiefe jedes Modells fest. Deaktivierte Modelle werden aus der Liste ausgeblendet und bei Anfragen abgelehnt.','pt-BR':'Habilite ou desabilite rotas de modelos e defina o nível de raciocínio padrão de cada modelo. Modelos desabilitados ficam ocultos na lista e são rejeitados na solicitação.','ru':'Включайте и отключайте маршруты моделей и задайте уровень рассуждений по умолчанию для каждой. Отключённые модели скрываются из списка и отклоняются при запросе.','ar':'قم بتمكين أو تعطيل مسارات النماذج وضبط مستوى الاستدلال الافتراضي لكل نموذج. تُخفى النماذج المعطلة من القائمة وتُرفض عند الطلب.'},
   'Display name': {'zh-CN':'显示名称','zh-TW':'顯示名稱','ja':'表示名','ko':'표시 이름','es':'Nombre visible','fr':'Nom d\'affichage','de':'Anzeigename','pt-BR':'Nome de exibição','ru':'Отображаемое имя','ar':'الاسم المعروض'},
+  'Max input tokens': {'zh-CN':'最大输入 Token','zh-TW':'最大輸入 Token','ja':'最大入力トークン','ko':'최대 입력 토큰','es':'Máximo de tokens de entrada','fr':'Nombre maximal de jetons d\'entrée','de':'Maximale Eingabe-Tokens','pt-BR':'Máximo de tokens de entrada','ru':'Максимум входных токенов','ar':'الحد الأقصى لرموز الإدخال'},
   'Upstream tone': {'zh-CN':'上游音色','zh-TW':'上游音色','ja':'アップストリームトーン','ko':'업스트림 톤','es':'Tono del proveedor','fr':'Ton du fournisseur','de':'Upstream-Ton','pt-BR':'Tom do provedor','ru':'Тон провайдера','ar':'نغمة المنبع'},
   'Upstream mapping': {'zh-CN':'上游映射','zh-TW':'上游映射','ja':'アップストリームマッピング','ko':'업스트림 매핑','es':'Asignación del proveedor','fr':'Mappage du fournisseur','de':'Upstream-Zuordnung','pt-BR':'Mapeamento do provedor','ru':'Сопоставление провайдера','ar':'تعيين المنبع'},
   'Model routes': {'zh-CN':'模型路由','zh-TW':'模型路由','ja':'モデルルート','ko':'모델 라우트','es':'Rutas de modelos','fr':'Routes de modèles','de':'Modellrouten','pt-BR':'Rotas de modelos','ru':'Маршруты моделей','ar':'مسارات النماذج'},
@@ -1356,6 +1426,7 @@ document.addEventListener('click',e=>{
   if(!target)return;
   switch(target.dataset.action){
     case 'show-page': showPage(target.dataset.page); break;
+    case 'show-sub': showSub(target.dataset.page, target.dataset.sub); break;
     case 'usage-refresh': ugRefresh(); break;
     case 'set-usage-range': setUsageRange(Number(target.dataset.days)); break;
     case 'load-trace-logs': loadTraceLogs(true,{manual:true}); break;
@@ -1389,7 +1460,7 @@ document.addEventListener('click',e=>{
     case 'onboarding-step-2': onbStep2(); break;
     case 'onboarding-step-3': onbStep3(); break;
     case 'copy-curl': copyCurl(); break;
-    case 'open-accounts-and-start-pkce': showPage('accounts'); setTimeout(startPKCE, 200); break;
+    case 'open-accounts-and-start-pkce': showPage('accounts'); showSub('accounts','add'); setTimeout(startPKCE, 200); break;
     case 'open-key-modal': openKeyModal(); break;
     case 'close-key-modal': closeKeyModal(); break;
     case 'copy-key': copyKey(); break;
@@ -1429,6 +1500,7 @@ document.addEventListener('keydown',e=>{
   checkForUpdates(true);
 });
 let pkceTimer=null;
+let pkceTab=null;
 
 function showNotice(msg,type='info'){
   const el=$('notice');
@@ -1438,25 +1510,71 @@ function showNotice(msg,type='info'){
   setTimeout(()=>el.style.display='none',3000);
 }
 
+// Sub-pages (tabs) inside a category page. Keys are the page id; each entry is
+// an ordered list of sub ids. showPage(p) opens the page's first sub-page,
+// while showSub(p, sub) opens a specific one. The current sub is remembered in
+// the URL hash as #/page/sub.
+const PAGE_SUBS={
+  usage:   ['overview','debug','logs'],
+  accounts:['list','add','schedule'],
+  proxies: ['config','list'],
+  settings:['general','password','routing'],
+};
+const SUB_PAGE_IDS=['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','settings'];
+
+function showSub(p, sub){
+  const subs=PAGE_SUBS[p];
+  if(!subs)return null;
+  const target=subs.includes(sub)?sub:subs[0];
+  // Active tab
+  document.querySelectorAll('.tabs .tab[data-page="'+p+'"]').forEach(t=>t.classList.toggle('active',t.dataset.sub===target));
+  // Show/hide panes inside this page
+  subs.forEach(s=>{
+    const pane=document.getElementById('pane-'+p+'-'+s);
+    if(pane)pane.style.display=(s===target)?'block':'none';
+  });
+  try{history.replaceState(null,'','#/'+p+'/'+target);}catch(e){}
+  // On-demand loaders for the pane that just became visible.
+  if(p==='usage'&&target==='debug')loadTraceLogs(true);
+  if(p==='usage'&&target==='logs')loadUsageLogs();
+  if(p==='accounts'&&target==='list')loadAccounts();
+  return target;
+}
+
 function showPage(p){
   ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','settings'].forEach(k=>{
     $('page-'+k).style.display=k===p?'block':'none';
     document.querySelector('[data-page="'+k+'"]')?.classList.toggle('active',k===p);
   });
   $('pageTitle').textContent=pages[p];
+  let sub=null;
+  if(PAGE_SUBS[p]){
+    // Restore the previously active sub, or fall back to the first one.
+    sub=showSub(p, currentSub(p));
+  }
   if(p==='dashboard'){loadStats();loadOnboarding();}
-  if(p==='usage'){loadUsage();loadTraceLogs(true);loadTraceStatus();}
+  if(p==='usage'){loadUsage();loadTraceStatus();}
   if(p==='accounts')loadAccounts();
   if(p==='apikeys')loadKeys();
   if(p==='conversations')loadConversations();
   if(p==='proxies')loadProxies();
   if(p==='modeltest')loadModelTest();
   if(p==='settings')loadSettings();
-  try{history.replaceState(null,'','#/'+p);}catch(e){}
+  // Keep the hash in sync, preserving the active sub-page segment.
+  try{history.replaceState(null,'','#/'+p+(sub?'/'+sub:''));}catch(e){}
+}
+function currentSub(p){
+  const h=(location.hash||'').replace(/^#\/?/,'');
+  const parts=h.split('/');
+  const sub=parts[1]||'';
+  const subs=PAGE_SUBS[p];
+  if(subs&&subs.includes(sub))return sub;
+  return subs?subs[0]:null;
 }
 function savedPage(){
   const h=(location.hash||'').replace(/^#\/?/,'');
-  return ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','settings'].includes(h)?h:'dashboard';
+  const page=h.split('/')[0];
+  return SUB_PAGE_IDS.includes(page)?page:'dashboard';
 }
 
 let onboardingHidden=false;
@@ -1465,7 +1583,7 @@ function toggleOnboarding(){
   $('onboarding').style.display=onboardingHidden?'none':'block';
   try{localStorage.setItem('onb_hidden',onboardingHidden?'1':'0');}catch(e){}
 }
-function onbStep1(){showPage('accounts');setTimeout(()=>{startPKCE();document.querySelector('#page-accounts')?.scrollIntoView({behavior:'smooth'});},150);}
+function onbStep1(){showPage('accounts');showSub('accounts','add');setTimeout(()=>{startPKCE();document.querySelector('#page-accounts')?.scrollIntoView({behavior:'smooth'});},150);}
 function onbStep2(){openKeyModal();}
 function onbStep3(){document.querySelector('#page-dashboard .onb-curl')?.scrollIntoView({behavior:'smooth',block:'center'});}
 
@@ -1990,12 +2108,13 @@ async function startPKCE(){
   try{
     const d=await api('/api/auth/start');
     $('callbackInput').dataset.state=d.state;
-// Show the authorization address with one-click copy, then open it in a
-    // new tab (popup windows get blocked by browser settings far too often).
+// Show the generated authorization address without auto-opening it, so the
+    // user can copy it or click "Open" to open the sign-in page (popup
+    // windows get blocked by browser settings far too often anyway).
     $('authUrlInput').value=d.url;
     $('authUrlBox').style.display='block';
-    const tab=window.open(d.url,'_blank');
-    renderAuthStatus('', 'Authorization opened in a new tab', 'Complete the sign-in in the browser tab, then paste the full callback URL from the address bar into the field above.');
+    pkceTab=null;
+    renderAuthStatus('', 'Authorization address generated', 'Click Open to open the sign-in page, or copy the address. After signing in, paste the full callback URL from the address bar into the field above.');
     try{lucide.createIcons();}catch(e){}
     $('callbackInput').focus();
     $('callbackInput').placeholder='Paste the full callback URL from the address bar\u2026';
@@ -2018,7 +2137,7 @@ async function startPKCE(){
         else if(s.status==='error'||s.status==='expired'){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>Authorization failed or expired</b>'+(s.error?'<p>'+esc(s.error)+'</p>':'')+'</div>';showNotice(s.error||'Authorization failed or expired','error');}
         // The loopback completion page closes its own tab after success, so only
         // surface the "closed" warning while the authorization is still pending.
-        else if(tab&&tab.closed){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>The authorization window was closed before completion</b><p>If you already finished signing in, paste the callback URL above; otherwise click "Start authorization" again.</p></div>';}
+        else if(pkceTab&&pkceTab.closed){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>The authorization window was closed before completion</b><p>If you already finished signing in, paste the callback URL above; otherwise click "Start authorization" again.</p></div>';}
       }catch(e){}
     },2000);
   }catch(e){showNotice(e.message,'error');}
@@ -2026,7 +2145,7 @@ async function startPKCE(){
 
 function openAuthUrl(){
   const v=$('authUrlInput').value;
-  if(v)window.open(v,'_blank');
+  if(v)pkceTab=window.open(v,'_blank');
 }
 
 async function copyAuthUrl(){
@@ -2681,11 +2800,11 @@ async function clearTraceLogs(){
   try{await api('/api/admin/trace/clear',{method:'POST'});traceExpanded.clear();for(const k in traceDetailCache)delete traceDetailCache[k];loadTraceLogs();}
   catch(e){showNotice(e.message,'error');}
 }
-// Poll the live trace list while the usage page is visible so in-progress
+// Poll the live trace list while the usage debug pane is visible so in-progress
 // requests flip to success/error without a manual refresh.
 setInterval(()=>{
-  const page=$('page-usage');
-  if(page&&page.style.display!=='none')loadTraceLogs();
+  const pane=document.getElementById('pane-usage-debug');
+  if(pane&&pane.style.display!=='none')loadTraceLogs();
 },3000);
 
 function ugPage(delta){
@@ -2989,9 +3108,14 @@ async function saveSettings(){
     const listen=$('setListen').value.trim();
     const timeout=$('setTimeout').value.trim();
     const timeZone=$('setTimeZone').value.trim()||'Asia/Shanghai';
-    const body={timeZone};
+    const maxToolRoundsVal=$('setMaxToolRounds').value.trim();
+    const maxToolCallsPerTurnVal=$('setMaxToolCallsPerTurn').value.trim();
+    const injectToolReminder=$('setInjectToolReminder').checked;
+    const body={timeZone,injectToolReminder};
     if(listen)body.listenAddress=listen;
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
+    if(maxToolRoundsVal!=='')body.maxToolRounds=parseInt(maxToolRoundsVal);
+    if(maxToolCallsPerTurnVal!=='')body.maxToolCallsPerTurn=parseInt(maxToolCallsPerTurnVal);
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
     showNotice('设置已保存','success');
   }catch(e){showNotice(e.message,'error');}
@@ -3065,6 +3189,12 @@ async function loadSettings(){
     const s=d.settings||{};
     $('setListen').value=s.listenAddress||'';
     $('setTimeout').value=s.chatTimeoutSeconds!=null?s.chatTimeoutSeconds:'';
+    const maxToolRoundsField=$('setMaxToolRounds');
+    if(maxToolRoundsField)maxToolRoundsField.value=s.maxToolRounds!=null?s.maxToolRounds:'';
+    const maxToolCallsPerTurnField=$('setMaxToolCallsPerTurn');
+    if(maxToolCallsPerTurnField)maxToolCallsPerTurnField.value=s.maxToolCallsPerTurn!=null?s.maxToolCallsPerTurn:'';
+    const injectToolReminderField=$('setInjectToolReminder');
+    if(injectToolReminderField)injectToolReminderField.checked=s.injectToolReminder!=null?s.injectToolReminder:true;
     systemTimeZone=s.timeZone||'Asia/Shanghai';
     const timeZoneSelect=$('setTimeZone');
     if(timeZoneSelect){

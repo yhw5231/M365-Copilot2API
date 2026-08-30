@@ -172,10 +172,7 @@ func filterCompletedCalls(calls []detectedToolCall, l agentLedger) []detectedToo
 	return out
 }
 func (l agentLedger) CanContinue(maxRounds int) error {
-	if maxRounds <= 0 {
-		maxRounds = 32
-	}
-	if l.ToolRounds >= maxRounds {
+	if maxRounds > 0 && l.ToolRounds >= maxRounds {
 		return fmt.Errorf("tool round limit reached: %d", maxRounds)
 	}
 	if l.StuckLoop {
@@ -191,15 +188,15 @@ func (l agentLedger) CanContinue(maxRounds int) error {
 }
 func maxToolRounds() int {
 	if raw, ok := os.LookupEnv("M365_MAX_TOOL_ROUNDS"); ok {
-		if n, e := strconv.Atoi(strings.TrimSpace(raw)); e == nil && n > 0 && n <= 512 {
+		if n, e := strconv.Atoi(strings.TrimSpace(raw)); e == nil && n >= 0 && n <= 512 {
 			return n
 		}
-		return 32
+		return 0
 	}
-	if n := currentSettings().MaxToolRounds; n > 0 && n <= 512 {
+	if n := currentSettings().MaxToolRounds; n >= 0 && n <= 512 {
 		return n
 	}
-	return 32
+	return 0
 }
 func activeMessages(messages []oaiMsg) []oaiMsg {
 	last := -1

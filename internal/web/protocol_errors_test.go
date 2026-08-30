@@ -38,8 +38,12 @@ func TestMaxToolRoundsConfig(t *testing.T) {
 		t.Fatal("configured limit ignored")
 	}
 	t.Setenv("M365_MAX_TOOL_ROUNDS", "9999")
-	if maxToolRounds() != 32 {
-		t.Fatal("invalid limit accepted")
+	if maxToolRounds() != 0 {
+		t.Fatal("invalid limit should fall back to 0 (unlimited)")
+	}
+	t.Setenv("M365_MAX_TOOL_ROUNDS", "0")
+	if maxToolRounds() != 0 {
+		t.Fatal("0 must be accepted as unlimited")
 	}
 }
 

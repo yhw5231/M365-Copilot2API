@@ -2082,6 +2082,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// history) is trimmed oldest-first once the request exceeds the effective
 	// input budget the M365 backend can actually consume.
 	body.Messages = budgetMessages(body.Messages, modelRouteMaxInputTokens(body.Model, currentSettings().ModelMappings))
+	// Per-request tool reminder: re-states the declared tool list and guards
+	// against the model concluding tools are unavailable or submitting
+	// identical old/new edit strings. Injected after the budget so it is never
+	// trimmed, and only into this request's flattened prompt (the client's own
+	// history never carries it back, so every round gets exactly one copy).
+	body.Messages = injectToolReminder(body.Messages, body.Tools)
 	var prompt string
 	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
