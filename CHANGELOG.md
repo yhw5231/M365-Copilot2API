@@ -41,6 +41,12 @@
   签名与失败指纹改用 `canonicalToolArguments`（key 排序、忽略空白）生成，
   相同参数的不同 JSON 表示不再被误判为不同调用。
 
+- **本地过载返回 503 而非 429**：项目网关在排队超时或没有可用账户时，HTTP 状态码
+  从 `429 Too Many Requests` 改为 `503 Service Unavailable`，错误信息保持不变。
+  上游限流仍返回 429。涉及 `internal/web/errors.go`（`upstreamStatus`、
+  `writeUpstreamError`）、`internal/web/server.go`（LocalCapacity 错误）及
+  `internal/web/account_health.go`（`IsRateLimited` 排除 LocalCapacity）。
+
 - **无状态 Responses 续接**：`/v1/responses` 在缺少 `previous_response_id` 时
   通过 `restoreStatelessToolCalls` 从请求消息中恢复缺失的 function_call，
   使无状态客户端（如 Codex）的多轮工具对话可正确续接。

@@ -696,7 +696,7 @@ func TestWaitForSlotAcquiresWhenIdle(t *testing.T) {
 }
 
 // TestQueueTimeoutErrorMapping ensures errQueueTimeout is recognized and mapped
-// to HTTP 429 (without triggering rate-limit/failover classification).
+// to HTTP 503 (without triggering rate-limit/failover classification).
 func TestQueueTimeoutErrorMapping(t *testing.T) {
 	if !IsQueueTimeout(errQueueTimeout) {
 		t.Fatal("IsQueueTimeout must recognize errQueueTimeout")
@@ -707,7 +707,7 @@ func TestQueueTimeoutErrorMapping(t *testing.T) {
 	if IsRateLimited(errQueueTimeout) {
 		t.Fatal("errQueueTimeout must not be classified as rate limited (it must not trigger failover)")
 	}
-	if upstreamStatus(errQueueTimeout) != 429 {
-		t.Fatalf("upstreamStatus(errQueueTimeout) = %d, want 429", upstreamStatus(errQueueTimeout))
+	if upstreamStatus(errQueueTimeout) != 503 {
+		t.Fatalf("upstreamStatus(errQueueTimeout) = %d, want 503", upstreamStatus(errQueueTimeout))
 	}
 }

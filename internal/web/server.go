@@ -1268,7 +1268,7 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			if retry < 1 {
 				retry = 1
 			}
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, LocalCapacity: true, Body: "no account is currently available; all enabled accounts are cooling down or at their concurrency limit"}
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: http.StatusServiceUnavailable, RetryAfter: retry, LocalCapacity: true, Body: "no account is currently available; all enabled accounts are cooling down or at their concurrency limit"}
 		}
 	}
 
@@ -1280,7 +1280,7 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			return auth.AccountToken{}, fmt.Errorf("account is disabled for scheduling")
 		}
 		if !s.accountConcurrency.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, LocalCapacity: true, Body: "account is at its concurrency limit; try another account"}
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: http.StatusServiceUnavailable, RetryAfter: 1, LocalCapacity: true, Body: "account is at its concurrency limit; try another account"}
 		}
 	}
 	// A cooling-down or auth-failed account must never be handed out, even when
@@ -1291,7 +1291,7 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 		if next, nerr := s.nextProxySafeAccount(accountID); nerr == nil {
 			return next, nil
 		}
-		return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 5, LocalCapacity: true, Body: "account is cooling down; try another account"}
+		return auth.AccountToken{}, &UpstreamHTTPError{Status: http.StatusServiceUnavailable, RetryAfter: 5, LocalCapacity: true, Body: "account is cooling down; try another account"}
 	}
 	return s.tokens.EnsureValid(accountID)
 }
@@ -2134,7 +2134,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// the routing rule ("available-first" or "round-robin"). Sessions bound via
 	// an explicit session key, header, or previous_response_id stay sticky to
 	// their account and conversation, so incremental context reuse (cache) is
-	// preserved; resolveAccount returns 429 when the bound account is at its
+	// preserved; resolveAccount returns 503 when the bound account is at its
 	// concurrency limit or cooling down.
 	answerPrompt := prompt
 	// cachedTokens reports how much of the input was served from the reused
@@ -2431,7 +2431,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
 		// Bound the per-account queue wait BEFORE the stream preamble: if the
-		// request would only sit in the FIFO queue, fail with HTTP 429 (鎺掗槦瓒呮椂)
+		// request would only sit in the FIFO queue, fail with HTTP 503 (排队超时)
 		// instead of sending ": connected" and then silence.
 		if body.SessionID != "" {
 			if err := s.accountConcurrency.WaitForSlot(r.Context(), acc.ID, body.SessionID); err != nil {
@@ -2844,7 +2844,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// whose tone drives reasoning generation.
 	if body.Stream {
 		// Bound the per-account queue wait BEFORE the stream preamble (see the
-		// content-stream path above): fail with HTTP 429 instead of "silence
+		// content-stream path above): fail with HTTP 503 instead of "silence
 		// after :connected".
 		if body.SessionID != "" {
 			if err := s.accountConcurrency.WaitForSlot(r.Context(), acc.ID, body.SessionID); err != nil {

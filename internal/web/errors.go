@@ -32,7 +32,7 @@ func upstreamError(err error) string {
 // errQueueTimeout is returned by accountConcurrency.Acquire when a cold
 // session has been queued past the configured queue-wait bound. It is
 // deliberately NOT an UpstreamHTTPError{Status: 429}, so it never triggers
-// failover or rate-limit handling: the client just receives HTTP 429 telling it
+// failover or rate-limit handling: the client just receives HTTP 503 telling it
 // to retry shortly.
 var errQueueTimeout = errors.New("concurrency queue wait timed out")
 
@@ -42,11 +42,16 @@ func IsQueueTimeout(err error) bool {
 }
 
 // upstreamStatus maps a failed upstream call to the client-visible HTTP status:
-// rate limits stay 429 (with Retry-After when known), auth failures become 401,
-// everything else is 502. Unknown upstream failures must never leak internals.
+// gateway-local overload (queue timeout or no free concurrency) becomes 503,
+// genuine upstream rate limits stay 429 (with Retry-After when known), auth
+// failures become 401, everything else is 502. Unknown upstream failures must
+// never leak internals.
 func upstreamStatus(err error) int {
 	if IsQueueTimeout(err) {
-		return http.StatusTooManyRequests
+		return http.StatusServiceUnavailable
+	}
+	if IsLocalCapacity(err) {
+		return http.StatusServiceUnavailable
 	}
 	if IsRateLimited(err) {
 		return http.StatusTooManyRequests
@@ -64,11 +69,13 @@ func IsEmptyCompletion(err error) bool {
 }
 
 // writeUpstreamError renders a failed upstream call as an HTTP response,
-// surfacing the Retry-After hint for rate limits so clients can back off.
+// surfacing the Retry-After hint so clients can back off. Gateway-local
+// overload (queue timeout, no free concurrency) surfaces as HTTP 503; genuine
+// upstream rate limits stay HTTP 429.
 func writeUpstreamError(w http.ResponseWriter, err error) {
 	if IsQueueTimeout(err) {
 		w.Header().Set("Retry-After", "1")
-		writeOpenAIError(w, http.StatusTooManyRequests, "queue_timeout", "account is at capacity; the request queued too long, please retry shortly")
+		writeOpenAIError(w, http.StatusServiceUnavailable, "queue_timeout", "account is at capacity; the request queued too long, please retry shortly")
 		return
 	}
 	if IsEmptyCompletion(err) {
@@ -78,15 +85,15 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 	if retry := RetryAfterSeconds(err); retry > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))
 	}
+	if IsLocalCapacity(err) {
+		if w.Header().Get("Retry-After") == "" {
+			w.Header().Set("Retry-After", "1")
+		}
+		writeOpenAIError(w, http.StatusServiceUnavailable, "rate_limit_error", "gateway concurrency is at capacity; no account is currently available, please retry shortly")
+		return
+	}
 	status := upstreamStatus(err)
 	if status == http.StatusTooManyRequests {
-		if IsLocalCapacity(err) {
-			if w.Header().Get("Retry-After") == "" {
-				w.Header().Set("Retry-After", "1")
-			}
-			writeOpenAIError(w, status, "rate_limit_error", "gateway concurrency is at capacity; no account is currently available, please retry shortly")
-			return
-		}
 		if w.Header().Get("Retry-After") == "" {
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(rateLimitCooldown().Seconds())))
 		}

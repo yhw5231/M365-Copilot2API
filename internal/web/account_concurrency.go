@@ -28,8 +28,8 @@ const defaultAccountConcurrency = 1
 const defaultAccountWarmSessionSeconds = 180
 
 // defaultAccountQueueTimeoutSeconds bounds how long a cold session may sit in
-// a per-account FIFO queue before the request fails with HTTP 429 ("排队也要
-// 有时间，默认超过 10 秒返回 429"). Override at startup with
+// a per-account FIFO queue before the request fails with HTTP 503 ("排队也要
+// 有时间，默认超过 10 秒返回 503"). Override at startup with
 // M365_ACCOUNT_QUEUE_TIMEOUT_SECONDS, or at runtime from the web console
 // (accountQueueTimeoutSeconds).
 const defaultAccountQueueTimeoutSeconds = 10
@@ -144,7 +144,7 @@ func (c *accountConcurrency) queueTimeout() time.Duration {
 // the queue timeout. It acquires and immediately releases the slot, so
 // streaming handlers can decide BEFORE emitting any stream preamble whether the
 // request would otherwise just queue; on timeout it returns errQueueTimeout
-// (surfaced to the client as HTTP 429).
+// (surfaced to the client as HTTP 503).
 func (c *accountConcurrency) WaitForSlot(ctx context.Context, accountID, sessionID string) error {
 	if c == nil || accountID == "" {
 		return nil
@@ -378,7 +378,7 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 				ticket = c.enqueueWaiterLocked(accountID)
 				queuedAt = time.Now()
 			}
-			// A waiter that has spent its whole queue budget fails with 429,
+			// A waiter that has spent its whole queue budget fails with 503,
 			// even if a slot happens to free at the same instant.
 			if ticket != 0 && !queuedAt.IsZero() && timeout > 0 && time.Since(queuedAt) >= timeout {
 				c.removeWaiterLocked(accountID, ticket)
@@ -461,7 +461,7 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string, sess
 			ticket = c.enqueueWaiterLocked(accountID)
 			queuedAt = time.Now()
 		}
-		// A waiter that has spent its whole queue budget fails with 429, even
+		// A waiter that has spent its whole queue budget fails with 503, even
 		// if a slot happens to free at the same instant.
 		if ticket != 0 && !queuedAt.IsZero() && timeout > 0 && time.Since(queuedAt) >= timeout {
 			c.removeWaiterLocked(accountID, ticket)

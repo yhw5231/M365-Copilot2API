@@ -309,7 +309,7 @@ type runtimeSettings struct {
 	// input tokens from the original conversation and reports them downstream.
 	CacheOnAccountSwitch bool `json:"cacheOnAccountSwitch"`
 	// AccountQueueTimeoutSeconds bounds how long a cold session may sit in a
-	// per-account FIFO queue before the request fails with HTTP 429 (default
+	// per-account FIFO queue before the request fails with HTTP 503 (default
 	// 10). 0 disables the bound (queue indefinitely).
 	AccountQueueTimeoutSeconds int `json:"accountQueueTimeoutSeconds"`
 	// AccountRateLimitCooldownSeconds is how long an account stays in cooldown

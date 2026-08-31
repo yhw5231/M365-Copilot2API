@@ -370,13 +370,35 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 
 	returnConn := true
+	// stopRead signals the reader goroutine to stop delivering frames;
+	// readDone closes only once the reader has actually detached from the
+	// socket. Both are declared before the defer so every return path tears
+	// the reader down and a connection is never handed back to the pool while
+	// a stale reader could still consume frames meant for the next request.
+	stopRead := make(chan struct{})
+	readDone := make(chan struct{})
 	defer func() {
-		if returnConn && conn != nil && c.Pool != nil {
-			_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			c.Pool.Return(acc.OID, acc.TID, req.SessionID, conn)
-		} else if conn != nil {
+		close(stopRead)
+		if conn == nil {
+			return
+		}
+		if !returnConn || c.Pool == nil {
 			conn.Close()
+			return
+		}
+		// Shorten the read deadline so any in-flight ReadMessage returns
+		// promptly, then wait for the reader to exit before returning the
+		// connection to the pool.
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		select {
+		case <-readDone:
+			c.Pool.Return(acc.OID, acc.TID, req.SessionID, conn)
+		case <-time.After(10 * time.Second):
+			// The reader did not detach in time; a connection with a possibly
+			// live reader must never be reused.
+			conn.Close()
+			c.Pool.Discard(acc.OID, acc.TID, req.SessionID, conn)
 		}
 	}()
 
@@ -591,10 +613,20 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 	readCh := make(chan wsRead, 1)
 	go func() {
+		defer close(readDone)
 		for {
+			select {
+			case <-stopRead:
+				return
+			default:
+			}
 			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 			_, msg, err := conn.ReadMessage()
-			readCh <- wsRead{msg: msg, err: err}
+			select {
+			case readCh <- wsRead{msg: msg, err: err}:
+			case <-stopRead:
+				return
+			}
 			if err != nil {
 				return
 			}

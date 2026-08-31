@@ -17,10 +17,10 @@ type UpstreamHTTPError struct {
 	Status     int
 	RetryAfter int
 	Body       string
-	// LocalCapacity marks a 429 that is NOT an upstream throttle: the gateway
+	// LocalCapacity marks a 503 that is NOT an upstream throttle: the gateway
 	// itself has no account with free concurrency right now (all enabled
 	// accounts are at their concurrency limit or cooling down). Clients get a
-	// different message so they can tell "our pool is full" from "M365 is
+	// distinct 503 message so they can tell "our pool is full" from "M365 is
 	// throttling you", and the request never counts against any account.
 	LocalCapacity bool
 }
@@ -31,15 +31,19 @@ func (e *UpstreamHTTPError) Error() string {
 
 // IsRateLimited reports whether err represents an upstream 429 or an
 // indistinguishable throttling signal (rate limit, too many requests,
-// throttled).
+// throttled). A gateway-local capacity rejection (LocalCapacity) is NOT an
+// upstream throttle and is deliberately excluded.
 func IsRateLimited(err error) bool {
 	if err == nil {
+		return false
+	}
+	var httpErr *UpstreamHTTPError
+	if errors.As(err, &httpErr) && httpErr.LocalCapacity {
 		return false
 	}
 	if errors.Is(err, chathub.ErrRateLimitNotice) {
 		return true
 	}
-	var httpErr *UpstreamHTTPError
 	if errors.As(err, &httpErr) {
 		if httpErr.Status == 429 || httpErr.Status == 503 {
 			return true
@@ -74,8 +78,8 @@ func IsAuthFailure(err error) bool {
 
 // IsLocalCapacity reports whether err is a gateway-local "no account has free
 // concurrency right now" rejection, as opposed to a genuine upstream throttle.
-// Both surface as HTTP 429, but the client-visible message (and the treatment
-// in writeUpstreamError) differ.
+// Local capacity surfaces as HTTP 503 while upstream throttles stay 429, and
+// the client-visible message (and the treatment in writeUpstreamError) differ.
 func IsLocalCapacity(err error) bool {
 	var httpErr *UpstreamHTTPError
 	return errors.As(err, &httpErr) && httpErr.LocalCapacity

@@ -684,7 +684,7 @@ if (response.output_text) {
             <div class="form-group" style="margin:0">
               <label class="form-label" for="accountQueueTimeoutSeconds">排队超时（秒）</label>
               <input class="form-input" id="accountQueueTimeoutSeconds" type="number" min="1" max="86400" step="1" value="10" inputmode="numeric">
-              <p class="form-hint">冷会话在 FIFO 队列中等待超过该时长后，直接返回 HTTP 429（默认 10 秒），避免一直排队；可调大以容忍更长的排队。</p>
+              <p class="form-hint">冷会话在 FIFO 队列中等待超过该时长后，直接返回 HTTP 503（默认 10 秒），避免一直排队；可调大以容忍更长的排队。</p>
             </div>
             <div class="form-group" style="margin:0">
               <label class="form-label" for="accountRateLimitCooldownSeconds">限流冷却时长（秒）</label>

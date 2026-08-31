@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -204,4 +205,49 @@ func TestPoolRoundTripperRetriesGETWithoutBody(t *testing.T) {
 		t.Fatalf("unexpected retry response: %#v", resp)
 	}
 	resp.Body.Close()
+}
+
+// TestPoolRoundTripperDoesNotReplayPOST pins the non-idempotent-request rule:
+// a POST that fails with a network error must surface the original error to the
+// caller instead of being automatically replayed on the next healthy proxy
+// node. Replaying a state-changing POST could execute the side effect twice.
+func TestPoolRoundTripperDoesNotReplayPOST(t *testing.T) {
+	p := mustPool(t, []string{"http://a.example", "http://b.example"})
+	first := p.entries[0]
+	second := p.entries[1]
+
+	secondCalled := false
+	firstTransport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errConnBroken
+	})
+	secondTransport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		secondCalled = true
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(http.NoBody),
+		}, nil
+	})
+	first.clients.HTTP.Transport = firstTransport
+	second.clients.HTTP.Transport = secondTransport
+
+	body := `{"user":"alice","action":"transfer","amount":100}`
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/api", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(body)), nil
+	}
+
+	tripper := &poolRoundTripper{pool: p, entry: first, base: firstTransport}
+	resp, err := tripper.RoundTrip(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if !errors.Is(err, errConnBroken) {
+		t.Fatalf("POST network error must be returned as-is, got: %v", err)
+	}
+	if secondCalled {
+		t.Fatal("POST must NOT be replayed on the next proxy node after a network error")
+	}
 }

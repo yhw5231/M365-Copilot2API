@@ -25,6 +25,7 @@ func TestUpstreamErrorClassification(t *testing.T) {
 	}{
 		{&UpstreamHTTPError{Status: 429, RetryAfter: 90}, true, false, 90, http.StatusTooManyRequests},
 		{&UpstreamHTTPError{Status: 503}, true, false, 0, http.StatusTooManyRequests},
+		{&UpstreamHTTPError{Status: 503, LocalCapacity: true}, false, false, 0, http.StatusServiceUnavailable},
 		{&UpstreamHTTPError{Status: 401}, false, true, 0, http.StatusUnauthorized},
 		{&UpstreamHTTPError{Status: 403}, false, true, 0, http.StatusUnauthorized},
 		{&UpstreamHTTPError{Status: 502}, false, false, 0, http.StatusBadGateway},
@@ -182,14 +183,14 @@ func TestWriteUpstreamErrorHeaders(t *testing.T) {
 }
 
 // TestWriteUpstreamErrorLocalCapacity verifies that a gateway-local "no account
-// has free concurrency" 429 is surfaced with a distinct message instead of the
-// generic "upstream is rate limiting" text, so clients can tell the pool being
-// full from a real upstream throttle.
+// has free concurrency" error is surfaced with HTTP 503 and a distinct message
+// instead of the generic "upstream is rate limiting" text, so clients can tell
+// the pool being full from a real upstream throttle.
 func TestWriteUpstreamErrorLocalCapacity(t *testing.T) {
 	w := httptest.NewRecorder()
-	writeUpstreamError(w, &UpstreamHTTPError{Status: 429, RetryAfter: 5, LocalCapacity: true})
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("status=%d want 429", w.Code)
+	writeUpstreamError(w, &UpstreamHTTPError{Status: 503, RetryAfter: 5, LocalCapacity: true})
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d want 503", w.Code)
 	}
 	if got := w.Header().Get("Retry-After"); got != "5" {
 		t.Fatalf("Retry-After=%q want 5", got)
@@ -208,7 +209,7 @@ func TestWriteUpstreamErrorLocalCapacity(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "upstream is rate limiting") {
 		t.Fatalf("upstream 429 should keep the upstream wording: %q", w.Body.String())
 	}
-	if !IsLocalCapacity(&UpstreamHTTPError{Status: 429, LocalCapacity: true}) {
+	if !IsLocalCapacity(&UpstreamHTTPError{Status: 503, LocalCapacity: true}) {
 		t.Fatal("IsLocalCapacity must match LocalCapacity errors")
 	}
 	if IsLocalCapacity(&UpstreamHTTPError{Status: 429}) {
@@ -444,8 +445,8 @@ func TestResolveAccountExplicitFailoverAllCooling(t *testing.T) {
 		s.accountPool.MarkFailure(id, chathub.ErrRateLimitNotice, 10*time.Minute)
 	}
 	var upErr *UpstreamHTTPError
-	if _, err := s.resolveAccount("u-1"); !errors.As(err, &upErr) || upErr.Status != 429 {
-		t.Fatalf("resolveAccount(u-1) with all cooling should return 429 LocalCapacity, got %v", err)
+	if _, err := s.resolveAccount("u-1"); !errors.As(err, &upErr) || upErr.Status != 503 {
+		t.Fatalf("resolveAccount(u-1) with all cooling should return 503 LocalCapacity, got %v", err)
 	}
 }
 
