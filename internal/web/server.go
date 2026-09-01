@@ -1332,6 +1332,55 @@ func (s *Server) nextProxySafeAccount(avoidID string) (auth.AccountToken, error)
 	return s.nextHealthyAccount(avoidID)
 }
 
+// nextUntriedHealthyAccount returns the next healthy account for a failover
+// sweep, skipping the given avoid id and every id already recorded in tried.
+// The caller marks each account in tried as it attempts it, so a throttle on
+// one account moves the sweep on to the next candidate instead of retrying the
+// same throttled account. Returns an error when no candidate remains.
+func (s *Server) nextUntriedHealthyAccount(avoidID string, tried map[string]bool) (auth.AccountToken, error) {
+	if p := outbound.CurrentPool(); p != nil {
+		if target, ok := p.FailoverTarget(avoidID); ok && !tried[target] && target != avoidID {
+			if acc, err := s.tokens.EnsureValid(target); err == nil && s.accountAvailable(acc.ID) {
+				return acc, nil
+			}
+		}
+	}
+	for _, t := range s.tokens.List() {
+		if t.ID == avoidID || tried[t.ID] {
+			continue
+		}
+		if !s.accountAvailable(t.ID) {
+			continue
+		}
+		if acc, err := s.tokens.EnsureValid(t.ID); err == nil {
+			return acc, nil
+		}
+	}
+	return auth.AccountToken{}, fmt.Errorf("no healthy account available for failover")
+}
+
+// failoverExhaustedError converts the final error of a failover sweep into a
+// gateway-local capacity rejection so a transient upstream throttle is never
+// surfaced to the client as "you are rate limited". The gateway has already
+// tried every healthy account; telling the client "all accounts are currently
+// unavailable; retry shortly" lets it back off instead of hammering a throttled
+// pool. Auth failures (401/403) and proxy-node exhaustion are equally
+// exhausting conditions that no remaining account can serve.
+func failoverExhaustedError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode) {
+		return &UpstreamHTTPError{
+			Status:        http.StatusServiceUnavailable,
+			RetryAfter:    5,
+			LocalCapacity: true,
+			Body:          "all enabled accounts are currently rate limited or unavailable; retry shortly",
+		}
+	}
+	return err
+}
+
 type chatBody struct {
 	AccountID      string               `json:"accountId"`
 	Message        string               `json:"message"`
@@ -1489,12 +1538,22 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			// Fail over only for an automatically selected, unbound conversation.
-			// Proxy-node exhaustion also uses the proxy-aware account selector.
+			// Sweep every healthy account: a throttled or auth-failed account is
+			// skipped and the request moves on to the next candidate instead of
+			// retrying the same one. Only when no account remains does the request
+			// fail, and a transient throttle is then surfaced as a gateway-local
+			// 503 rather than an upstream 429.
+			failoverTried := false
 			if body.AccountID == "" && body.ConversationID == "" && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
-				next, nerr := s.nextProxySafeAccount(acc.ID)
-				if nerr == nil {
+				failoverTried = true
+				tried := map[string]bool{acc.ID: true}
+				for {
+					next, nerr := s.nextUntriedHealthyAccount(acc.ID, tried)
+					if nerr != nil {
+						break
+					}
+					tried[next.ID] = true
 					ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-					defer cancel2()
 					res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{
 						Text:           text,
 						Tone:           body.Tone,
@@ -1503,20 +1562,29 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 						Attachments:    body.Attachments,
 						BindAccount:    next.ID,
 					})
+					cancel2()
 					if err2 == nil {
 						s.markAccountResult(acc.ID, err)
 						s.markAccountResult(next.ID, nil)
 						acc = next
 						res = res2
 						err = nil
-					} else {
-						s.markAccountResult(next.ID, err2)
-						err = err2
+						break
+					}
+					s.markAccountResult(next.ID, err2)
+					err = err2
+					// A non-throttle, non-auth, non-proxy failure is permanent for
+					// this request; stop sweeping and report it.
+					if !(IsRateLimited(err2) || IsAuthFailure(err2) || errors.Is(err2, outbound.ErrNoProxyNode)) {
+						break
 					}
 				}
 			}
 			if err != nil {
 				s.markAccountResult(acc.ID, err)
+			}
+			if failoverTried {
+				err = failoverExhaustedError(err)
 			}
 			writeUpstreamError(w, err)
 			return
@@ -2710,20 +2778,25 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			text.WriteString(ev.Text)
 			return nil
 		})
+		failoverTried := false
 		if err != nil && !clientPinnedAccount && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
 			// A throttled stream may retry on the next healthy account: only the
 			// ": connected" preamble reached the client, so the retried stream is
-			// indistinguishable from a fresh request.
-			next, nerr := s.nextProxySafeAccount(acc.ID)
-			if nerr != nil {
-				// no healthy alternative
-			} else {
+			// indistinguishable from a fresh request. Sweep every healthy account
+			// before giving up; a throttled account is skipped, not retried.
+			failoverTried = true
+			tried := map[string]bool{acc.ID: true}
+			for {
+				next, nerr := s.nextUntriedHealthyAccount(acc.ID, tried)
+				if nerr != nil {
+					break
+				}
+				tried[next.ID] = true
 				if s.settings.get().CacheOnAccountSwitch {
 					cachedOverride = cachedTokens()
 				}
 				failoverReq := failoverRequest(answerReq, body, resolvedConversationID, tone, ledger, planningMode, mcpServerURL, task, next.ID)
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
 				res2, err2 := s.chatWithAccountEvents(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
 					if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
 						streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
@@ -2740,18 +2813,33 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					text.WriteString(ev.Text)
 					return nil
 				})
+				cancel2()
 				if err2 == nil {
 					task.recordSwitch(acc.ID, next.ID)
 					res = res2
 					acc = next
 					err = nil
-				} else {
-					err = err2
-					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown())
+					break
+				}
+				err = err2
+				s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown())
+				// A non-throttle, non-auth, non-proxy failure is permanent for
+				// this request; stop the sweep and report it.
+				if !(IsRateLimited(err2) || IsAuthFailure(err2) || errors.Is(err2, outbound.ErrNoProxyNode)) {
+					break
 				}
 			}
 		}
 		if err != nil {
+			// The failover sweep above already tried every healthy account. A
+			// final throttle/auth/proxy failure therefore means "no account can
+			// serve this right now" — surface it as a gateway-local capacity
+			// rejection, never as the upstream's raw rate-limit error. When the
+			// sweep was skipped (pinned account or bound conversation) the
+			// original error semantics are preserved.
+			if failoverTried {
+				err = failoverExhaustedError(err)
+			}
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown())
 			// Record the failed stream so the request log does not show a
@@ -2784,7 +2872,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			msg := upstreamError(err)
 			code := "upstream_error"
-			if IsRateLimited(err) {
+			if IsLocalCapacity(err) {
+				msg = "all enabled accounts are currently rate limited or unavailable; retry shortly"
+				code = "account_unavailable"
+			} else if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
 				code = "rate_limit"
 			} else if IsQueueTimeout(err) {
@@ -2931,24 +3022,41 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 		if routeErr != nil {
 			s.accountPool.MarkFailure(acc.ID, routeErr, rateLimitCooldown())
-			if IsRateLimited(routeErr) || IsAuthFailure(routeErr) {
-				next, nerr := s.nextHealthyAccount(acc.ID)
-				if nerr == nil {
+			routeFailoverTried := false
+			if !clientPinnedAccount && (IsRateLimited(routeErr) || IsAuthFailure(routeErr) || errors.Is(routeErr, outbound.ErrNoProxyNode)) {
+				routeFailoverTried = true
+				tried := map[string]bool{acc.ID: true}
+				for {
+					next, nerr := s.nextUntriedHealthyAccount(acc.ID, tried)
+					if nerr != nil {
+						break
+					}
+					tried[next.ID] = true
 					ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-					defer cancel2()
 					if res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments}); err2 == nil {
+						cancel2()
 						task.recordSwitch(acc.ID, next.ID)
 						routeRes, routeErr = res2, nil
 						acc = next
 						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
+						break
 					} else {
+						cancel2()
 						s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown())
+						if !(IsRateLimited(err2) || IsAuthFailure(err2) || errors.Is(err2, outbound.ErrNoProxyNode)) {
+							break
+						}
 					}
 				}
 			}
 			if routeErr != nil {
+				if routeFailoverTried {
+					routeErr = failoverExhaustedError(routeErr)
+				}
 				msg := upstreamError(routeErr)
-				if IsRateLimited(routeErr) {
+				if IsLocalCapacity(routeErr) {
+					msg = "all enabled accounts are currently rate limited or unavailable; retry shortly"
+				} else if IsRateLimited(routeErr) {
 					msg = "upstream is rate limiting; try again shortly"
 				}
 				writeOpenAIError(w, http.StatusBadGateway, "tool_router_error", msg)
@@ -3054,6 +3162,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// streaming reasoning_content. Non-reasoning streams return inside the
 	// content-stream block above, so this branch is reached only by models
 	// whose tone drives reasoning generation.
+	// failoverTried records whether an account-failover sweep actually ran for
+	// this request. The final throttle/auth/proxy error is converted to a
+	// gateway-local 503 only when the sweep ran to exhaustion; a request pinned
+	// to an account or bound conversation keeps the original error semantics.
+	failoverTried := false
 	if body.Stream {
 		// Bound the per-account queue wait BEFORE the stream preamble (see the
 		// content-stream path above): fail with HTTP 503 instead of "silence
@@ -3152,23 +3265,35 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if err != nil && !clientPinnedAccount && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
 			// Retry a throttled stream on the next healthy account; the client
 			// has only seen the ": connected" preamble so far, so the retry is
-			// indistinguishable from a fresh request.
-			next, nerr := s.nextProxySafeAccount(acc.ID)
-			if nerr == nil {
+			// indistinguishable from a fresh request. Sweep every healthy
+			// account before giving up.
+			failoverTried = true
+			tried := map[string]bool{acc.ID: true}
+			for {
+				next, nerr := s.nextUntriedHealthyAccount(acc.ID, tried)
+				if nerr != nil {
+					break
+				}
+				tried[next.ID] = true
 				if s.settings.get().CacheOnAccountSwitch {
 					cachedOverride = cachedTokens()
 				}
 				failoverReq := failoverRequest(answerReq, body, resolvedConversationID, tone, ledger, planningMode, mcpServerURL, task, next.ID)
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
 				if res2, err2 := s.chatWithAccountReasoning(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
+					cancel2()
 					task.recordSwitch(acc.ID, next.ID)
 					res = res2
 					acc = next
 					err = nil
+					break
 				} else {
+					cancel2()
 					err = err2
 					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown())
+					if !(IsRateLimited(err2) || IsAuthFailure(err2) || errors.Is(err2, outbound.ErrNoProxyNode)) {
+						break
+					}
 				}
 			}
 		}
@@ -3521,6 +3646,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
+			// The failover sweep already tried every healthy account (when it
+			// ran at all); a final throttle/auth/proxy failure is a
+			// gateway-local capacity rejection, never the upstream's raw
+			// rate-limit error. When the sweep was skipped (pinned account or
+			// bound conversation) the original error semantics are preserved.
+			if failoverTried {
+				err = failoverExhaustedError(err)
+			}
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown())
 			code := "upstream_error"
@@ -3528,6 +3661,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if IsEmptyCompletion(err) {
 				code = "upstream_empty_completion"
 				msg = "upstream completed without assistant content; retry the request or verify that the requested model is available for this tenant"
+			} else if IsLocalCapacity(err) {
+				code = "account_unavailable"
+				msg = "all enabled accounts are currently rate limited or unavailable; retry shortly"
 			} else if IsRateLimited(err) {
 				code = "rate_limit_error"
 				msg = "upstream is rate limiting; try again shortly"
@@ -3585,28 +3721,45 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if err != nil && !clientPinnedAccount && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
 			// Failover only when nothing pins the request to a conversation or
 			// account; a fresh chat can safely retry on the next healthy account.
-			next, nerr := s.nextProxySafeAccount(acc.ID)
-			if nerr == nil {
+			// Sweep every healthy account before giving up: a throttled account
+			// is skipped, not retried.
+			failoverTried = true
+			tried := map[string]bool{acc.ID: true}
+			for {
+				next, nerr := s.nextUntriedHealthyAccount(acc.ID, tried)
+				if nerr != nil {
+					break
+				}
+				tried[next.ID] = true
 				if s.settings.get().CacheOnAccountSwitch {
 					cachedOverride = cachedTokens()
 				}
 				failoverReq := failoverRequest(answerReq, body, resolvedConversationID, tone, ledger, planningMode, mcpServerURL, task, next.ID)
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
 				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
+				cancel2()
 				if err2 == nil {
 					task.recordSwitch(acc.ID, next.ID)
 					res = res2
 					acc = next
 					err = nil
 					s.accountPool.MarkSuccess(next.ID)
-				} else {
-					err = err2
+					break
+				}
+				err = err2
+				if !(IsRateLimited(err2) || IsAuthFailure(err2) || errors.Is(err2, outbound.ErrNoProxyNode)) {
+					break
 				}
 			}
 		}
 	}
 	if err != nil {
+		// Only a request whose failover sweep actually ran converts the final
+		// throttle to a gateway-local 503; a pinned/bound request keeps the
+		// original error semantics.
+		if failoverTried {
+			err = failoverExhaustedError(err)
+		}
 		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown())
 		if task != nil {
 			task.recordFailure(err)

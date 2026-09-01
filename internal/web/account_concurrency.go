@@ -592,8 +592,13 @@ func (s *Server) accountClient(accountID string) *chathub.Client {
 }
 
 // chatWithAccount runs one chat request under the account's concurrency slot.
-// When upstream supplies a Retry-After delay for a rate-limit response, the
-// request waits for that delay and is replayed once unless its context ends.
+// When upstream supplies a short Retry-After delay for a rate-limit response,
+// the request waits for that delay and is replayed once unless its context
+// ends. A long Retry-After (>= maxSameAccountRetryWait) is NOT waited on: the
+// account is marked down immediately so the caller's failover sweep can hand
+// the request to another account without blocking on the throttled one.
+const maxSameAccountRetryWait = 30 * time.Second
+
 func (s *Server) chatWithAccount(ctx context.Context, accountID string, account chathub.Account, request chathub.Request) (chathub.Result, error) {
 	release, err := s.accountConcurrency.Acquire(ctx, accountID, request.SessionID)
 	if err != nil {
@@ -616,7 +621,10 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 		result, err = s.accountClient(accountID).Chat(ctx, account, request)
 	}
 	if err != nil && IsRateLimited(err) {
-		if retryAfter := RetryAfterSeconds(err); retryAfter > 0 {
+		retryAfter := RetryAfterSeconds(err)
+		// Only wait-and-replay on the SAME account for short delays; a long
+		// cooldown means the account stays down and the caller must switch.
+		if retryAfter > 0 && time.Duration(retryAfter)*time.Second <= maxSameAccountRetryWait {
 			timer := time.NewTimer(time.Duration(retryAfter) * time.Second)
 			select {
 			case <-ctx.Done():
