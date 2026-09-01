@@ -244,10 +244,23 @@ func (l agentLedger) hasCompleted(name, args string) bool {
 	}
 	return false
 }
+// goalProtocolTools are the goal-state tools that the agent loop invokes
+// repeatedly across rounds: get_goal is a read of the (possibly advanced)
+// goal revision and update_goal carries its own optimistic-revision guard, so
+// re-invoking them is legitimate — pruning them would leave a forced
+// tool_choice=required round with zero calls and trigger the misleading
+// "model did not select a required tool after constrained retry" 502 while the
+// model actually DID choose a tool.
+var goalProtocolTools = map[string]bool{
+	"create_goal": true,
+	"get_goal":    true,
+	"update_goal": true,
+}
+
 func filterCompletedCalls(calls []detectedToolCall, l agentLedger) []detectedToolCall {
 	out := calls[:0]
 	for _, c := range calls {
-		if !l.hasCompleted(c.Name, string(c.Arguments)) {
+		if goalProtocolTools[c.Name] || !l.hasCompleted(c.Name, string(c.Arguments)) {
 			out = append(out, c)
 		}
 	}

@@ -591,8 +591,14 @@ func (t *taskLedger) goalRoundInjectedContext() string {
 	if strings.Contains(t.CompletedReason, "server-side correction") {
 		// The server closed its ledger from the model's final answer, but the
 		// client-side goal may still be active. Ask the model to close it so the
-		// goal round loop terminates instead of repeating status reports.
-		b.WriteString("If the client-side goal is still active, close it now with update_goal(action=complete) and the recorded goal id, then restate the outcome. Do not start new work.")
+		// goal round loop terminates instead of repeating status reports. The
+		// client-side goal carries an optimistic-revision guard: an earlier
+		// round that failed to close it (e.g. a 502 that aborted the turn) has
+		// advanced the revision, so the model MUST re-read the goal with
+		// get_goal first and pass the returned goal_id/revision to
+		// update_goal(action=complete). Closing with a stale revision raises
+		// GOAL_STALE_REVISION and keeps the loop alive forever.
+		b.WriteString("If the client-side goal is still active, close it now: first call get_goal to read the current goal state (its revision may have advanced since the last round), then call update_goal(action=complete) with the goal_id and revision returned by get_goal. Do not start new work.")
 	} else {
 		// Closed by explicit update_goal(action=complete) tool evidence, so the
 		// client-side goal is already done; only the outcome needs restating.
