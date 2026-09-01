@@ -16,6 +16,32 @@ type detectedToolCall struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// requiredToolRetryText builds the retry prompt used when tool_choice=required
+// was forced (goal-loop status-report stall) but the model refused to select a
+// tool. It combines the sandbox correction — which rebuts the model's false
+// belief that it only has a /mnt/data container and no local execution channel
+// — with an explicit must-call JSON instruction, so the retry both re-grounds
+// the environment and demands a tool call.
+func requiredToolRetryText(toolMaps []map[string]any, prompt string, ledger agentLedger) string {
+	defs, _ := json.Marshal(toolMaps)
+	correction := unifiedSandboxCorrection(toolMaps, prompt)
+	retry := correction + `
+
+Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}. An empty calls list is NOT acceptable: the user's goal is not achieved yet and progress requires a tool call.
+When calling edit: copy old_string EXACTLY from the most recent read output (do not reconstruct it from memory); if a multi-line old_string fails, retry with a single-line old_string or use pwsh -replace. Windows files use CRLF line endings.
+APPLICATION_REQUEST_AND_EVIDENCE:
+` + prompt + "\n" + ledger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
+	if ledger.hasEditIdentityFailure() || ledger.hasPwshIdentityWrite() {
+		detail := ledger.identityFailureDetail()
+		retry += "\n\nCRITICAL: your previous attempt was REJECTED because it was an identity write — you tried to replace a line/block with the exact same text (a no-op that changes nothing). This applies to BOTH edit calls (old_string == new_string) AND pwsh commands that assign a line the same value they asserted it already holds (e.g. `$lines[70] = ') -> list'` when the file already contains that). The compiler still reports: " + detail.SyntaxError
+		if detail.OldText != "" {
+			retry += " You were writing back unchanged: " + detail.OldText
+		}
+		retry += " The corrected replacement MUST be DIFFERENT from the current text (e.g. fix the missing colon / return type the compiler asks for, like adding ':' or a return annotation such as `-> list[UserResponse]:`). Re-read the file with the read tool if needed, then emit a REAL change whose old value and new value DIFFER."
+	}
+	return retry
+}
+
 func toolType(name string, tools []map[string]any) string {
 	for _, t := range tools {
 		f, _ := t["function"].(map[string]any)
@@ -72,6 +98,40 @@ func validateDetectedToolCalls(calls []detectedToolCall, tools []map[string]any,
 		if err := schemaValid(args, fn); err != nil {
 			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: err.Error()})
 			continue
+		}
+		// An edit whose old_string equals new_string changes nothing and always
+		// fails ("old_string and new_string must differ"). The model under a
+		// forced goal-round tool_choice keeps generating these identical
+		// arguments each round (a fresh signature every time, so
+		// same-signature repeated-failure tracking never fires), wasting the
+		// round. Reject it at the trust boundary so the caller can retry with
+		// the targeted identity-write correction instead of executing a
+		// guaranteed no-op against the client.
+		if call.Name == "edit" {
+			oldS, _ := args["old_string"].(string)
+			newS, _ := args["new_string"].(string)
+			if oldS != "" && newS != "" && oldS == newS {
+				rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "old_string and new_string must differ"})
+				continue
+			}
+		}
+		// The pwsh analogue of an edit with old_string==new_string: the model
+		// "fixes" a line by writing back the exact broken text
+		// (`$lines[70] = ') -> list'` after asserting the line already holds
+		// that text), so the file never changes and py_compile keeps failing.
+		// Reject it at the trust boundary the same way as the edit identity
+		// write, so the caller retries with the targeted correction instead of
+		// executing a guaranteed no-op.
+		if call.Name == "pwsh" || call.Name == "powershell" || call.Name == "bash" || call.Name == "sh" {
+			cmd, _ := args["command"].(string)
+			if cmd != "" {
+				assign := pwshLineAssignRe.FindStringSubmatch(cmd)
+				assert := pwshLineAssertRe.FindStringSubmatch(cmd)
+				if len(assign) == 2 && len(assert) == 2 && assign[1] == assert[1] {
+					rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "pwsh line assignment is an identity write (assigned value equals the asserted current content)"})
+					continue
+				}
+			}
 		}
 		if call.ID == "" {
 			call.ID = callID(call.Name, string(call.Arguments), len(valid))
@@ -232,6 +292,29 @@ var workspaceToolMisjudgmentPatterns = []string{
 	"当前会话没有执行工具",
 	"无法访问实际工作区",
 	"无法访问你的实际工作区",
+	// /mnt/data as the sole environment (no caller project path)
+	// "当前工作目录为 /mnt/data" variants
+	"当前工作目录为 /mnt/data",
+	"当前目录：/mnt/data",
+	"当前目录为 /mnt/data",
+	"本轮无法继续",
+	"本轮无法访问或修改",
+	"/mnt/d/",
+	// /mnt/data as the sole environment, phrased as an emptiness claim
+	"仅存在空的 /mnt/data",
+	"仅存在 /mnt/data",
+	"只存在 /mnt/data",
+	// caller tools / workspace denied as "not exposed" or "not actually provided"
+	"未暴露任务指定",
+	"未暴露任务要求",
+	"未实际提供任务要求",
+	"未实际提供任务指定",
+	"未暴露任务指定的",
+	"未实际提供任务要求的",
+	// Windows workspace described as "not mounted"
+	"未挂载到现有文件系统",
+	"未挂载 `d:",
+	"未挂载 d:",
 }
 
 // workspaceToolAvailabilityDenials are compound availability claims (EN+ZH).
@@ -250,6 +333,7 @@ var workspaceToolAvailabilityDenials = []string{
 	"没有可调用", "没有可用的", "没有提供", "不提供", "没有任何工具", "没有工具",
 	"无法调用", "不能调用", "不可用", "未提供", "不具备", "不存在",
 	"缺少", "找不到", "没有执行", "没有命令", "没有接口", "没有安装",
+	"未挂载", "没有挂载", "未被挂载",
 }
 
 // workspaceToolChannelNouns are unambiguous execution/tool-channel nouns (EN+ZH).
@@ -274,6 +358,7 @@ var workspaceToolScopeNouns = []string{
 	"the session",
 	// Chinese
 	"当前会话", "本会话", "本次会话", "当前环境", "当前工作区", "工作区", "本机",
+	"当前执行环境", "可执行环境",
 }
 
 // workspaceToolMisjudgmentRegexes capture common structural shapes of a
@@ -297,6 +382,38 @@ var workspaceToolMisjudgmentRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`(工具|接口|pwsh|powershell|bash|shell|文件操作).{0,20}(不存在|不可用|未提供|没有提供|无法调用|不能调用)`),
 	// EN/ZH: environment exclusivity (linux container / sandbox / /mnt/data)
 	regexp.MustCompile(`(?i)(this |the |current )?(session|environment|workspace|sandbox|本机|当前)( |)(only|can only|only has|only provides|只能|仅能|只提供|只允许) .{0,40}(linux|container|sandbox|/mnt/data|cloud|容器|沙箱)`),
+	// ZH: /mnt/data as the verified sole working directory + missing project
+	// files or missing caller path (e.g. "当前工作目录为 /mnt/data，其中没有
+	// 项目文件，且 /mnt/d/NET/ai/ythh-1 不存在")
+	regexp.MustCompile(`(当前|本|本次|已)?(工作目录|当前目录|目录).{0,20}为? ?/mnt/data.{0,40}(没有|不存在|找不到|无法访问|无法修改|无项目)`),
+	regexp.MustCompile(`/mnt/d/.{0,60}(不存在|找不到|没有项目文件|无法访问|无法修改)`),
+	regexp.MustCompile(`(没有项目文件|无项目文件|项目文件不存在).{0,40}无法(继续|访问|修改|执行|完成)`),
+	// /mnt/data emptiness claim, tolerant of markdown backticks
+	// ("仅存在空的 `/mnt/data`")
+	regexp.MustCompile(`(仅存在|只存在|只有|仅有)(空的)? ?` + "`?" + `/mnt/data`),
+	// caller tools / workspace denied as "not exposed"/"not actually provided",
+	// tolerant of backticks around tool names
+	regexp.MustCompile(`(未暴露|未实际提供|没有暴露|未提供) ?` + "`?" + `(任务指定|任务要求)? ?` + "`?" + `(的)? ?(pwsh|read|edit|write|glob|grep|工具|接口|桥接)`),
+	// Windows workspace described as "not mounted", tolerant of backticks and
+	// of intermediate words between "未挂载" and the drive letter (e.g. "未挂载
+	// 项目路径 D:\..." — the caller path is real but the model claims it is not
+	// mounted). Up to 40 chars between the denial and the drive lets
+	// "项目路径" / "工作区" / "工程" phrases through without broadening to a
+	// false positive.
+	regexp.MustCompile(`未挂载 ?` + "`?" + `[a-zA-Z]:`),
+	regexp.MustCompile(`未挂载.{0,40}` + "`?" + `[a-zA-Z]:`),
+	regexp.MustCompile(`未挂载到(现有|本地)?文件系统`),
+	// 无法继续操作目标工作区 … 本会话可执行环境
+	regexp.MustCompile(`无法继续操作目标工作区`),
+	regexp.MustCompile(`本会话可执行环境中(仅|只)存在`),
+	// workspace files claimed missing/unfindable in the execution environment,
+	// then a drive-letter path the model refuses to touch ("当前可执行环境中
+	// 未发现项目工作区文件，因此无法安全修改 `D:\...`"). The drive letter
+	// anchors the claim to the real caller path and keeps false positives out.
+	regexp.MustCompile(`(未发现|找不到|没有找到|未找到|未能找到|无法找到).{0,30}(项目工作区|工作区文件|项目文件|工作目录|项目目录|工作区).{0,40}` + "`?" + `[a-zA-Z]:`),
+	regexp.MustCompile(`无法(安全)?修改.{0,25}` + "`?" + `[a-zA-Z]:`),
+	// 可执行环境 scope phrase: "当前可执行环境中没有/未发现/不存在 ... 项目"
+	regexp.MustCompile(`(当前|本|本次)?可执行环境中(没有|未发现|未找到|找不到|不存在|缺少).{0,40}(项目|工作区|文件|目录)`),
 }
 
 // containsAnyTerm reports whether s contains any of the given terms.
@@ -497,6 +614,32 @@ func isASCIIWord(s string) bool {
 	return true
 }
 
+// misjudgmentInRecentHistory reports whether any of the last few assistant
+// messages in the request history carries a workspace/tool misjudgment. The
+// required-tool retry is only forced because the goal round followed a text-only
+// status report (forceGoalRoundToolChoice); when that status report is itself a
+// misjudgment ("工作区未挂载/未发现项目工作区文件/无法安全修改 D:\..."), the
+// model refuses the required tool call because it believes no tool can work.
+// The recovery cleans that history and re-grounds, so the gate must look at the
+// history too — not just the current-turn model output, which may be a short
+// refusal that repeats no workspace vocabulary.
+func misjudgmentInRecentHistory(messages []oaiMsg, toolMaps []map[string]any) bool {
+	const lookback = 4
+	count := 0
+	for i := len(messages) - 1; i >= 0 && count < lookback; i-- {
+		m := messages[i]
+		if !strings.EqualFold(strings.TrimSpace(m.Role), "assistant") {
+			continue
+		}
+		count++
+		text := contentToString(m.Content)
+		if isWorkspaceToolMisjudgmentForTools(text, toolMaps) {
+			return true
+		}
+	}
+	return false
+}
+
 // cleanWorkspaceToolMisjudgments removes only previously persisted assistant
 // messages that contain a workspace/tool-availability misjudgment. User,
 // system, developer, and tool messages are always preserved, including genuine
@@ -525,7 +668,7 @@ func cleanWorkspaceToolMisjudgments(messages []oaiMsg, toolMaps []map[string]any
 // them a legitimate answer rather than a misjudgment (e.g. the user asks about
 // "Linux容器 / /mnt/data / 无法访问工作区" and the model explains it).
 var workspaceEchoTerms = []string{
-	"linux", "container", "容器", "/mnt/data", "sandbox", "沙箱",
+	"linux", "container", "容器", "/mnt/data", "sandbox", "沙箱", "/mnt/d/",
 	"无法访问工作区", "只提供 linux", "只有 linux", "linux only",
 }
 
@@ -549,9 +692,14 @@ func userPromptMentionsWorkspace(userPrompt string) bool {
 //  1. the caller actually declared an execution or file tool — a caller with no
 //     execution tool makes a "no shell" claim literally true, and there is no
 //     local channel for the model to substitute away from;
-//  2. no tool call has completed yet in the current turn — a model that already
-//     executed a tool successfully cannot simultaneously claim the tools are
-//     unavailable;
+//  2. no tool call has completed yet in the CURRENT turn — a model that already
+//     executed a tool successfully in this turn cannot simultaneously claim the
+//     tools are unavailable. The ledger passed in MUST be the active-turn ledger
+//     (buildAgentLedger(activeMessages(messages))), never the full-history
+//     ledger: tool successes from earlier turns prove nothing about the present
+//     turn, and a model that opens a new turn by denying tool availability must
+//     still be corrected even when previous turns called tools successfully
+//     (cross-turn exemption — history is not evidence for the current turn);
 //  3. the user's own prompt does not already contain the workspace vocabulary —
 //     answering a question about "Linux容器 / /mnt/data / 无法访问工作区" legitimately
 //     repeats those terms, so the response is not a misjudgment.
@@ -569,9 +717,18 @@ func workspaceToolMisjudgmentPossible(toolMaps []map[string]any, userPrompt stri
 	if !hasExec && !hasFiles {
 		return false
 	}
-	// Protocol gate 2: a model that already ran a tool this turn has proven the
+	// Protocol gate 2: a model that already ran a tool THIS TURN has proven the
 	// tools exist; a later availability claim is not a substitution to correct.
-	if len(ledger.Completed) > 0 {
+	// ledger must be the active-turn ledger, so completed calls from earlier
+	// turns are invisible here: a fresh user message starts a new turn whose
+	// ledger is empty even when the full history contains many successful calls,
+	// which keeps the correction armed for a cross-turn "no tools" denial.
+	// EXCEPTION: when a completed call FAILED, the model can fall back into
+	// sandbox hallucination and retroactively deny the earlier successes ("pwsh
+	// is a fictional context" after an edit mismatch). A failed call is the
+	// strongest trigger for that, so the gate stays open (detection armed)
+	// whenever any completed tool call failed this turn.
+	if len(ledger.Completed) > 0 && !ledger.hasFailed() {
 		return false
 	}
 	// Protocol gate 3: echo suppression — if the user asked about the workspace

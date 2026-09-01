@@ -1563,6 +1563,10 @@ var (
 // recoverWorkspaceToolMisjudgment abandons the polluted upstream conversation
 // and retries once on a clean branch. Only a distinct, non-empty replacement
 // conversation is accepted, so callers can safely persist the returned result.
+// activeLedger must be the current-turn ledger (buildAgentLedger(activeMessages
+// (body.Messages))): the correction validation must apply the same cross-turn
+// exemption as the initial detection, so successful tool calls from earlier
+// turns never close the misjudgment gate for the present turn.
 func (s *Server) recoverWorkspaceToolMisjudgment(
 	ctx context.Context,
 	acc auth.AccountToken,
@@ -1574,7 +1578,7 @@ func (s *Server) recoverWorkspaceToolMisjudgment(
 	tone string,
 	requestID string,
 	userPrompt string,
-	ledger agentLedger,
+	activeLedger agentLedger,
 ) (chathub.Result, error) {
 	badConversationID := strings.TrimSpace(bad.ConversationID)
 	if badConversationID != "" {
@@ -1613,7 +1617,7 @@ func (s *Server) recoverWorkspaceToolMisjudgment(
 		s.dropTransientConversation(correctedConversationID)
 		return chathub.Result{}, fmt.Errorf("%w: correction returned an empty response", errWorkspaceToolCorrectionFailed)
 	}
-	if needsWorkspaceToolMisjudgmentCorrection(corrected.Text, toolMaps, userPrompt, ledger) {
+	if needsWorkspaceToolMisjudgmentCorrection(corrected.Text, toolMaps, userPrompt, activeLedger) {
 		s.dropTransientConversation(correctedConversationID)
 		return chathub.Result{}, errWorkspaceToolMisjudgment
 	}
@@ -1637,6 +1641,59 @@ func workspaceToolCorrectionPublicMessage(err error) string {
 		return "upstream repeatedly misidentified workspace or tool availability"
 	}
 	return "upstream workspace/tool correction failed"
+}
+
+// recoverRequiredToolMisjudgment runs a workspace/tool-misjudgment-aware recovery
+// after the required-tool retry produced no tool call. When the model's output
+// (route text + retry text combined) contains a misjudgment claim (e.g. "项目路径
+// 未挂载/NOT_FOUND", "当前执行环境不可用"), a plain must-call retry keeps
+// failing because the model believes no tool can work. This cleans the misjudgment
+// claims from the request history, re-grounds the environment with
+// unifiedSandboxCorrection, and asks for a required tool call once more.
+// Returns the corrected tool calls, the chat result, and ok=true, or (nil, _, false)
+// when the model still refuses (the caller should keep the 502).
+func (s *Server) recoverRequiredToolMisjudgment(
+	ctx context.Context,
+	acc auth.AccountToken,
+	account chathub.Account,
+	body *oaiReq,
+	routeText, retryText string,
+	toolMaps []map[string]any,
+	tone, requestID, prompt string,
+	ledger agentLedger,
+) ([]detectedToolCall, chathub.Result, bool) {
+	combined := routeText + "\n" + retryText
+	if !isWorkspaceToolMisjudgmentForTools(combined, toolMaps) && !misjudgmentInRecentHistory(body.Messages, toolMaps) {
+		return nil, chathub.Result{}, false
+	}
+	cleanMessages := cleanWorkspaceToolMisjudgments(body.Messages, toolMaps)
+	cleanPrompt, cleanAttachments := flattenPromptMessages(cleanMessages, nil)
+	cleanPrompt = strings.TrimSpace(cleanPrompt)
+	if cleanPrompt == "" {
+		cleanPrompt = prompt
+	}
+	recoveryText := requiredToolRetryText(toolMaps, cleanPrompt, ledger)
+	req := chathub.Request{
+		Text:        recoveryText,
+		Tone:        tone,
+		Attachments: append(cleanAttachments, body.Attachments...),
+		TraceID:     requestID,
+		BindAccount: acc.ID,
+	}
+	res, err := s.chatWithAccount(ctx, acc.ID, account, req)
+	if err != nil {
+		return nil, chathub.Result{}, false
+	}
+	if res.ConversationID != "" {
+		s.dropTransientConversation(res.ConversationID)
+	}
+	calls, parsed := parseModelToolDecision(res.Text, toolMaps, "required")
+	calls = filterCompletedCalls(calls, ledger)
+	calls, _ = validateDetectedToolCalls(calls, toolMaps, "required")
+	if parsed && len(calls) > 0 {
+		return calls, res, true
+	}
+	return nil, chathub.Result{}, false
 }
 
 func (s *Server) adminModelSync(w http.ResponseWriter, r *http.Request) {
@@ -1915,12 +1972,32 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 		answerPrompt = conciseOutputPolicy + "\n\n" + answerPrompt
 	}
 	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments}
-	if planningMode == "native" {
-		req.Tools = body.Tools
-		req.ToolChoice = body.ToolChoice
+	// Router mode: the answer turn must NOT receive native tool definitions
+	// (ChatHub would bind the client's local tools as native plugins and may
+	// call them itself, which the router already handled). But the answer model
+	// still needs to KNOW which tools exist to describe progress accurately;
+	// without that list it claims "没有 pwsh 工具 in this session" while
+	// writing the final answer. Embed a read-only tool list into the answer
+	// text instead of forwarding native tools. Only inject it when the ledger
+	// has substantive content (a real multi-turn agent flow) — an empty-ledger
+	// single-turn answer must stay byte-identical.
+	if planningMode == "router" && len(body.Tools) > 0 && mcpServerURL == "" && (len(ledger.Completed) > 0 || len(ledger.Pending) > 0) {
+		answerPrompt += "\n\nTOOLS DECLARED IN THIS SESSION (read-only reference; do not call them from the final answer):\n"
+		for _, t := range body.Tools {
+			var f struct {
+				Name, Description string
+			}
+			if json.Unmarshal(t.Function, &f) != nil || f.Name == "" {
+				continue
+			}
+			answerPrompt += fmt.Sprintf("- %s: %s\n", f.Name, f.Description)
+		}
+		req.Text = answerPrompt
 	}
-	if mcpServerURL != "" {
-		req.Tools = body.Tools
+	if planningMode == "native" || mcpServerURL != "" {
+		if len(body.Tools) > 0 {
+			req.Tools = body.Tools
+		}
 		if req.ToolChoice == nil {
 			req.ToolChoice = body.ToolChoice
 		}
@@ -2067,6 +2144,31 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			body.Messages = append(body.Messages,
 				oaiMsg{Role: "system", Content: fmt.Sprintf("Tool round limit reached (%d). You must now summarize your work and provide a final answer. Do NOT call any more tools.", maxToolRounds())},
 			)
+		} else if strings.Contains(err.Error(), "repeated tool failure") || strings.Contains(err.Error(), "stuck tool loop") {
+			// The model repeated the same tool call and it failed again. Instead
+			// of killing the whole session with a hard 409, inject a strategy
+			// correction so the model re-reads the file and changes its approach.
+			// Detect the specific failure pattern and give a targeted message.
+			sig := err.Error()
+			if len(sig) > 400 {
+				sig = sig[:400] + "…"
+			}
+			var correctionMsg string
+			if strings.Contains(sig, "old_string and new_string must differ") {
+				correctionMsg = fmt.Sprintf(
+					"Your recent edit call failed because old_string and new_string were IDENTICAL (same text). The edit tool requires them to be DIFFERENT. "+
+						"old_string must be the EXACT CURRENT text from the file; new_string must be the REPLACEMENT text you want to write. "+
+						"They cannot be the same. If you just want to verify the file content, use read instead of edit. "+
+						"Re-read the file with the read tool, copy the exact snippet you want to replace into old_string, "+
+						"then put the modified version into new_string. Do NOT submit edit with old_string == new_string. "+
+						"Signature: %s", sig)
+			} else {
+				correctionMsg = fmt.Sprintf(
+					"Your recent tool call repeated and failed (%s). Change strategy: re-read the target file first, verify the exact current content, then retry with a DIFFERENT, correct old_string/new_string pair (or use a different tool). Do NOT repeat the same failing call unchanged.", sig)
+			}
+			body.Messages = append(body.Messages,
+				oaiMsg{Role: "system", Content: correctionMsg},
+			)
 		} else {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
@@ -2090,11 +2192,41 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// trimmed, and only into this request's flattened prompt (the client's own
 	// history never carries it back, so every round gets exactly one copy).
 	body.Messages = injectToolReminder(body.Messages, body.Tools)
+	// After CanContinue, check for edit calls that failed with old==new and
+	// for pwsh commands that write a line back to the value they just asserted
+	// (identity write — the pwsh analogue of an edit with old_string==new_string).
+	// Unlike CanContinue's repeated-failure detection (which keys on identical
+	// args), the model may submit different content each time, so the
+	// same-signature check never fires. The FULL-history ledger is used because
+	// the client injects a "You are repeating the exact same tool call" user
+	// message whenever it sees a repeat, which resets activeMessages() and
+	// hides prior-turn failures from the active ledger.
+	if err == nil && (ledger.hasEditIdentityFailure() || ledger.hasPwshIdentityWrite()) {
+		log.Printf("[diag4] req=%s identity_correction_injected activeFailed=%d ledgerCompleted=%d", requestID, activeLedger.hasFailedCount(), len(ledger.Completed))
+		detail := ledger.identityFailureDetail()
+		var sb strings.Builder
+		sb.WriteString("Your previous file-modification attempt changed NOTHING: either your edit call used IDENTICAL old_string and new_string, or your pwsh command assigned a line to the exact same value it already contained (an identity write). The edit tool REQUIRES old_string != new_string. old_string must be the EXACT CURRENT text from the file; new_string must be the REPLACEMENT text you want to write — they cannot be the same. In pwsh, assign the line to the CORRECTED content, not the broken text it already holds.")
+		if detail.FilePath != "" || detail.OldText != "" {
+			sb.WriteString(" Your edit call that failed used file_path=\"" + detail.FilePath + "\" and old_string == new_string == \"" + detail.OldText + "\". That content is what you keep writing back unchanged — it is NOT a fix.")
+		}
+		if detail.SyntaxError != "" {
+			sb.WriteString(" The compiler is still rejecting the file: " + detail.SyntaxError + ". You must replace the offending line with CORRECTED, DIFFERENT content (e.g. a missing colon or return type annotation), not write the same broken text back.")
+		}
+		sb.WriteString(" If you just want to verify file content, use the read tool instead of edit. Do NOT submit edit with old_string == new_string, and do NOT write a line back to the same broken value.")
+		body.Messages = append(body.Messages, oaiMsg{Role: "system", Content: sb.String()})
+	}
 	var prompt string
 	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
 	fmt.Printf("[multimodal-entry] messages=%d attachments=%d prompt_len=%d\n", len(body.Messages), len(body.Attachments), len(prompt))
 	prompt = strings.TrimSpace(prompt)
+	// echoPrompt is the user's genuine question, used ONLY by the
+	// workspace/tool-misjudgment echo-suppression gate. The flattened prompt
+	// above contains harness-injected runtime-context snapshots (whose "sandbox"
+	// vocabulary would permanently disable the misjudgment gate via echo
+	// suppression); userEchoCheckPrompt strips those so only the caller's own
+	// wording participates in the echo check.
+	echoPrompt := userEchoCheckPrompt(body.Messages)
 	if responseFormat != nil {
 		switch responseFormat.Type {
 		case "json_object":
@@ -2340,6 +2472,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if body.ToolChoice == nil && len(toolMaps) > 0 {
 		body.ToolChoice = "auto"
 	}
+	// Break goal-loop status-report stalls: when the session is in a
+	// goal-protocol continuation round and the model's previous assistant reply
+	// was text-only (no tool call), it is reporting status instead of making
+	// progress. Force tool_choice=required so the model must emit a tool call
+	// (CALL_TOOL / fenced block) instead of another "goal is still incomplete"
+	// text-only turn that the agent loop would treat as completed.
+	if len(toolMaps) > 0 && forceGoalRoundToolChoice(body.Messages, task, body.Tools) {
+		log.Printf("[goal-loop] id=%s forcing tool_choice=required to break text-only status-report loop", requestID)
+		body.ToolChoice = "required"
+	}
 	var mcpServerURL string
 	if len(toolMaps) > 0 {
 		scheme := "http"
@@ -2412,6 +2554,59 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), cachedTokens(), calls, routeRes)
 			s.recordToolUsage(r, acc, &body, routeRes, startedAt)
+			return
+		}
+		// Required tool choice: when the gateway forced tool_choice=required
+		// (goal-loop status-report stall), a text-only NO_TOOL_NEEDED fall-through
+		// must NOT reach the client — that is exactly the "text-only turn treated
+		// as completed" failure we are breaking. Retry once with an explicit
+		// must-call instruction; if the model still refuses, fail the request so
+		// the agent loop cannot treat a status report as a completed turn.
+		if fmt.Sprint(body.ToolChoice) == "required" {
+			retryText := requiredToolRetryText(toolMaps, prompt, ledger)
+			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+			if retryErr == nil && retryRes.ConversationID != "" {
+				s.dropTransientConversation(retryRes.ConversationID)
+			}
+			if retryErr == nil {
+				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
+				calls = filterCompletedCalls(calls, ledger)
+				calls, _ = validateCalls("stream-required-retry", calls)
+				if parsed && len(calls) > 0 {
+					scope := fmt.Sprintf("%d:%v:stream-required-retry", len(body.Messages), completedCallIDs(ledger))
+					for i := range calls {
+						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
+					}
+					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
+						calls = calls[:1]
+					}
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), cachedTokens(), calls, retryRes)
+					s.recordToolUsage(r, acc, &body, retryRes, startedAt)
+					return
+				}
+			}
+			// Before failing with 502, check whether the model's refusal came from a
+			// workspace/tool misjudgment (e.g. "项目路径未挂载/NOT_FOUND"). Clean the
+			// misjudgment from history, re-ground the environment, and retry the
+			// required tool call once more.
+			if retryErr == nil && (isWorkspaceToolMisjudgmentForTools(routeRes.Text+"\n"+retryRes.Text, toolMaps) || misjudgmentInRecentHistory(body.Messages, toolMaps)) {
+				calls, recoveryRes, ok := s.recoverRequiredToolMisjudgment(ctx, acc, account, &body, routeRes.Text, retryRes.Text, toolMaps, tone, requestID, prompt, ledger)
+				if ok {
+					scope := fmt.Sprintf("%d:%v:required-misjudgment-recovery", len(body.Messages), completedCallIDs(ledger))
+					for i := range calls {
+						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
+					}
+					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
+						calls = calls[:1]
+					}
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), cachedTokens(), calls, recoveryRes)
+					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt)
+					return
+				}
+			}
+			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
 			return
 		}
 	}
@@ -2789,10 +2984,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if fmt.Sprint(body.ToolChoice) == "required" {
-			defs, _ := json.Marshal(toolMaps)
-			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
-APPLICATION_REQUEST_AND_EVIDENCE:
-` + prompt + "\n" + ledger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
+			retryText := requiredToolRetryText(toolMaps, prompt, ledger)
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 			if retryErr == nil {
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
@@ -2809,6 +3001,26 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					}
 					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, retryRes)
 					s.recordToolUsage(r, acc, &body, retryRes, startedAt)
+					return
+				}
+			}
+			// Before failing with 502, check whether the model's refusal came from a
+			// workspace/tool misjudgment (e.g. "项目路径未挂载/NOT_FOUND"). Clean the
+			// misjudgment from history, re-ground the environment, and retry the
+			// required tool call once more.
+			if retryErr == nil && (isWorkspaceToolMisjudgmentForTools(routeRes.Text+"\n"+retryRes.Text, toolMaps) || misjudgmentInRecentHistory(body.Messages, toolMaps)) {
+				calls, recoveryRes, ok := s.recoverRequiredToolMisjudgment(ctx, acc, account, &body, routeRes.Text, retryRes.Text, toolMaps, tone, requestID, prompt, ledger)
+				if ok {
+					scope := fmt.Sprintf("%d:%v:required-misjudgment-recovery", len(body.Messages), completedCallIDs(ledger))
+					for i := range calls {
+						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
+					}
+					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
+						calls = calls[:1]
+					}
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, recoveryRes)
+					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt)
 					return
 				}
 			}
@@ -2894,7 +3106,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		// text stream inline. When no correction is possible, text flows inline
 		// immediately with zero buffering.
 		const textGateWindow = 300
-		textGateActive := workspaceToolMisjudgmentPossible(toolMaps, prompt, ledger)
+		textGateActive := workspaceToolMisjudgmentPossible(toolMaps, echoPrompt, activeLedger)
 		var textGateBuf strings.Builder
 		textGateReleased := !textGateActive
 		textGateMisjudged := false
@@ -2908,7 +3120,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if textGateActive && !textGateReleased {
 				textGateBuf.WriteString(content)
 				if textGateBuf.Len() >= textGateWindow {
-					if needsWorkspaceToolMisjudgmentCorrection(textGateBuf.String(), toolMaps, prompt, ledger) {
+					if needsWorkspaceToolMisjudgmentCorrection(textGateBuf.String(), toolMaps, echoPrompt, activeLedger) {
 						textGateMisjudged = true
 						textGateBuf.Reset()
 						return nil
@@ -2985,11 +3197,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			// has been sent, so a fresh correction request can replace the answer
 			// cleanly. The correction runs as a reasoning stream so its
 			// ChainOfThought continues the already-streamed reasoning seamlessly.
-			if textGateMisjudged || (textGateActive && !textGateReleased && needsWorkspaceToolMisjudgmentCorrection(res.Text, toolMaps, prompt, ledger)) {
+			if textGateMisjudged || (textGateActive && !textGateReleased && needsWorkspaceToolMisjudgmentCorrection(res.Text, toolMaps, echoPrompt, activeLedger)) {
+				log.Printf("[diag4] req=%s correction_triggered gateMisjudged=%v gateActive=%v gateReleased=%v resText=%s", requestID, textGateMisjudged, textGateActive, textGateReleased, strLimit(res.Text, 300))
 				bufferedContent.Reset()
 				bufferedReasoning.Reset()
-				correctionReq := answerReq
-				correctionReq.Text = unifiedSandboxCorrection(toolMaps, prompt)
 				correctionOnDelta := func(content string) error {
 					bufferedContent.WriteString(content)
 					if c := contentFilter.Push(content); c != "" {
@@ -3004,14 +3215,36 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					}
 					return nil
 				}
-				res2, correctionErr := s.chatWithAccountReasoning(ctx, acc.ID, account, correctionReq, correctionOnDelta, correctionOnReasoning)
+				runCorrection := func(correctionText string) (chathub.Result, error) {
+					correctionReq := answerReq
+					correctionReq.Text = correctionText
+					return s.chatWithAccountReasoning(ctx, acc.ID, account, correctionReq, correctionOnDelta, correctionOnReasoning)
+				}
+				res2, correctionErr := runCorrection(unifiedSandboxCorrection(toolMaps, prompt))
 				if correctionErr != nil {
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "code": "workspace_tool_correction_failed"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 					s.markTraceError(r, correctionErr, http.StatusBadGateway)
 					return
 				}
-				if needsWorkspaceToolMisjudgmentCorrection(res2.Text, toolMaps, prompt, ledger) {
+				// First correction was still misjudged. Retry once with the
+				// model's own misjudged wording quoted back at it, so it can see
+				// exactly which claim was wrong instead of echoing forbidden
+				// phrases. Only if the targeted correction also fails does the
+				// request hard-fail.
+				if needsWorkspaceToolMisjudgmentCorrection(res2.Text, toolMaps, echoPrompt, activeLedger) {
+					log.Printf("[diag4] req=%s correction_again res2Text=%s", requestID, strLimit(res2.Text, 300))
+					bufferedContent.Reset()
+					bufferedReasoning.Reset()
+					res2, correctionErr = runCorrection(targetedMisjudgmentCorrection(res2.Text, toolMaps, prompt))
+					if correctionErr != nil {
+						_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "code": "workspace_tool_correction_failed"}})+"\n\n")
+						_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+						s.markTraceError(r, correctionErr, http.StatusBadGateway)
+						return
+					}
+				}
+				if needsWorkspaceToolMisjudgmentCorrection(res2.Text, toolMaps, echoPrompt, activeLedger) {
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream repeatedly misidentified workspace or tool availability", "code": "workspace_tool_misjudgment"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 					s.markTraceError(r, errors.New("upstream repeatedly misidentified workspace or tool availability"), http.StatusBadGateway)
@@ -3096,6 +3329,163 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					_ = keepalive.lockedWrite("data: [DONE]\n\n")
 					s.recordToolUsage(r, acc, &body, res, startedAt)
 					s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, false)
+					return
+				}
+				// Required tool choice on the reasoning stream: when the gateway
+				// forced tool_choice=required (goal-loop status-report stall) but
+				// this buffered completion carries no tool call, retry once with an
+				// explicit must-call instruction instead of emitting the text-only
+				// status report. Only the reasoning was streamed inline so far; the
+				// content is still buffered and can be replaced by the retry.
+				if fmt.Sprint(body.ToolChoice) == "required" {
+					bufferedContent.Reset()
+					bufferedReasoning.Reset()
+					retryText := requiredToolRetryText(toolMaps, prompt, ledger)
+					retryOnDelta := func(content string) error {
+						bufferedContent.WriteString(content)
+						if c := contentFilter.Push(content); c != "" {
+							return writeChunk(map[string]any{"content": c})
+						}
+						return nil
+					}
+					retryOnReasoning := func(reasoning string) error {
+						bufferedReasoning.WriteString(reasoning)
+						if rc := reasoningFilter.Push(reasoning); rc != "" {
+							return writeChunk(map[string]any{"reasoning_content": rc})
+						}
+						return nil
+					}
+					retryReq := answerReq
+					retryReq.Text = retryText
+					retryRes, retryErr := s.chatWithAccountReasoning(ctx, acc.ID, account, retryReq, retryOnDelta, retryOnReasoning)
+					if retryErr != nil {
+						_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream required-tool retry failed", "code": "upstream_error"}})+"\n\n")
+						_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+						s.markTraceError(r, retryErr, http.StatusBadGateway)
+						return
+					}
+					retryCalls, retryParsed := parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
+					retryCalls = filterCompletedCalls(retryCalls, ledger)
+					retryCalls, _ = validateCalls("reasoning-stream-required-retry", retryCalls)
+					if retryParsed && len(retryCalls) > 0 {
+						retryCalls = limitToolCalls(retryCalls, adaptiveToolCallLimit(retryCalls, configuredToolCallLimit(s.settings)))
+						if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(retryCalls) > 1 {
+							retryCalls = retryCalls[:1]
+						}
+						scope := fmt.Sprintf("%d:%v:reasoning-stream-required-retry", len(body.Messages), completedCallIDs(ledger))
+						for i := range retryCalls {
+							retryCalls[i].ID = scopedCallID(retryCalls[i].Name, string(retryCalls[i].Arguments), i, scope)
+						}
+						writeToolChunk := func(delta map[string]any, finish any) error {
+							chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}}}
+							return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
+						}
+						_ = writeToolChunk(map[string]any{"role": "assistant", "content": nil}, nil)
+						for i, tc := range retryCalls {
+							typ := tc.Type
+							if typ == "" {
+								typ = "function"
+							}
+							isLast := i == len(retryCalls)-1
+							_ = writeToolChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil)
+							args := string(tc.Arguments)
+							const argChunkSize = 512
+							for off := 0; off < len(args); off += argChunkSize {
+								end := off + argChunkSize
+								if end > len(args) {
+									end = len(args)
+								}
+								for end < len(args) && !utf8.RuneStart(args[end]) {
+									end++
+								}
+								argChunk := args[off:end]
+								isLastArgChunk := off+argChunkSize >= len(args)
+								var finish any
+								if isLast && isLastArgChunk {
+									finish = "tool_calls"
+								}
+								_ = writeToolChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "function": map[string]any{"arguments": argChunk}}}}, finish)
+							}
+							if len(args) == 0 && isLast {
+								_ = writeToolChunk(map[string]any{}, "tool_calls")
+							}
+						}
+						if body.shouldSendStreamUsage() {
+							pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
+							ct := EstimateTokens(retryRes.Text)
+							usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedTokens())}
+							_ = keepalive.lockedWrite("data: " + mustJSON(usageChunk) + "\n\n")
+						}
+						_ = keepalive.lockedWrite("data: [DONE]\n\n")
+						s.recordToolUsage(r, acc, &body, retryRes, startedAt)
+						s.bindConversation(acc, &body, r, retryRes, answerPrompt, startedAt, task, false)
+						return
+					}
+					// The retry still produced no tool call. Before failing the
+					// stream, check whether the model's refusal came from a
+					// workspace/tool misjudgment (e.g. "项目路径未挂载/NOT_FOUND").
+					// Clean the misjudgment from history, re-ground the
+					// environment, and retry the required tool call once more.
+					if isWorkspaceToolMisjudgmentForTools(res.Text+"\n"+retryRes.Text, toolMaps) || misjudgmentInRecentHistory(body.Messages, toolMaps) {
+						recCalls, recRes, ok := s.recoverRequiredToolMisjudgment(ctx, acc, account, &body, res.Text, retryRes.Text, toolMaps, tone, requestID, prompt, ledger)
+						if ok {
+							recCalls = limitToolCalls(recCalls, adaptiveToolCallLimit(recCalls, configuredToolCallLimit(s.settings)))
+							if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(recCalls) > 1 {
+								recCalls = recCalls[:1]
+							}
+							scope := fmt.Sprintf("%d:%v:reasoning-required-misjudgment-recovery", len(body.Messages), completedCallIDs(ledger))
+							for i := range recCalls {
+								recCalls[i].ID = scopedCallID(recCalls[i].Name, string(recCalls[i].Arguments), i, scope)
+							}
+							writeRecChunk := func(delta map[string]any, finish any) error {
+								chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}}}
+								return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
+							}
+							_ = writeRecChunk(map[string]any{"role": "assistant", "content": nil}, nil)
+							for i, tc := range recCalls {
+								typ := tc.Type
+								if typ == "" {
+									typ = "function"
+								}
+								isLast := i == len(recCalls)-1
+								_ = writeRecChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil)
+								args := string(tc.Arguments)
+								const recArgChunkSize = 512
+								for off := 0; off < len(args); off += recArgChunkSize {
+									end := off + recArgChunkSize
+									if end > len(args) {
+										end = len(args)
+									}
+									for end < len(args) && !utf8.RuneStart(args[end]) {
+										end++
+									}
+									argChunk := args[off:end]
+									isLastArgChunk := off+recArgChunkSize >= len(args)
+									var finish any
+									if isLast && isLastArgChunk {
+										finish = "tool_calls"
+									}
+									_ = writeRecChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "function": map[string]any{"arguments": argChunk}}}}, finish)
+								}
+								if len(args) == 0 && isLast {
+									_ = writeRecChunk(map[string]any{}, "tool_calls")
+								}
+							}
+							if body.shouldSendStreamUsage() {
+								pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
+								ct := EstimateTokens(recRes.Text)
+								usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedTokens())}
+								_ = keepalive.lockedWrite("data: " + mustJSON(usageChunk) + "\n\n")
+							}
+							_ = keepalive.lockedWrite("data: [DONE]\n\n")
+							s.recordToolUsage(r, acc, &body, recRes, startedAt)
+							s.bindConversation(acc, &body, r, recRes, answerPrompt, startedAt, task, false)
+							return
+						}
+					}
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "model did not select a required tool after constrained retry", "code": "upstream_error"}})+"\n\n")
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+					s.markTraceError(r, errors.New("model did not select a required tool after constrained retry"), http.StatusBadGateway)
 					return
 				}
 			}
@@ -3257,8 +3647,8 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// any conversation binding, cache update, or client output. The shared helper
 	// always creates a clean upstream branch and accepts only a distinct, valid
 	// replacement conversation.
-	if len(toolMaps) > 0 && needsWorkspaceToolMisjudgmentCorrection(res.Text, toolMaps, prompt, ledger) {
-		res, err = s.recoverWorkspaceToolMisjudgment(ctx, acc, account, &body, res, answerReq, toolMaps, tone, requestID, prompt, ledger)
+	if len(toolMaps) > 0 && needsWorkspaceToolMisjudgmentCorrection(res.Text, toolMaps, echoPrompt, activeLedger) {
+		res, err = s.recoverWorkspaceToolMisjudgment(ctx, acc, account, &body, res, answerReq, toolMaps, tone, requestID, echoPrompt, activeLedger)
 		if err != nil {
 			log.Printf("[workspace-tool-eject] id=%s clean-branch correction failed: %v", requestID, err)
 			writeOpenAIError(w, http.StatusBadGateway, workspaceToolCorrectionErrorCode(err), workspaceToolCorrectionPublicMessage(err))
@@ -3737,6 +4127,21 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// strLimit truncates s to at most n bytes (at a UTF-8 rune boundary), for logs.
+func strLimit(s string, n int) string {
+	if n < 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	end := n
+	for end > 0 && s[end]&0xC0 == 0x80 {
+		end--
+	}
+	return s[:end] + "…"
 }
 
 func extractOIDTID(accessToken string) (oid, tid string) {

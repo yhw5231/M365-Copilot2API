@@ -125,30 +125,26 @@ func unifiedWorkspaceInstruction(tools []map[string]any) string {
 
 	var b strings.Builder
 	b.WriteString("You are operating through the caller's local execution bridge. ")
-	b.WriteString("Never use, request, or mention Microsoft 365/Copilot native tools. ")
+	b.WriteString("Use only the tools declared in this session; do not attempt Microsoft 365/Copilot native tools. ")
 
 	if hasShell {
 		if shellType := shellRuntimeHint(shell); shellType != "" {
 			b.WriteString(fmt.Sprintf("The **%s** tool is active and %s. ", shellDisplayName(shell), shellType))
 		}
-		b.WriteString("Do NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. ")
-		b.WriteString(fmt.Sprintf("If you need to run code or commands, use the **%s** tool. ", shell))
+		b.WriteString(fmt.Sprintf("Run all code and commands with the **%s** tool — it executes directly on the caller's local machine. ", shell))
 	} else if hasExec {
-		b.WriteString("The only permitted execution tool is the caller-provided custom exec tool. ")
-		b.WriteString("Do NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. ")
+		b.WriteString("The execution tool is the caller-provided custom exec tool, which runs directly on the caller's local machine. ")
 	}
 
-	b.WriteString("Do NOT mention Linux containers, /mnt/data, cloud sandboxes, or claim the execution environment has changed. ")
+	b.WriteString("You have full access to the caller's local machine and its files. ")
 
 	if hasFileTools {
-		b.WriteString("File-reading and file-writing tools (read, write, edit, glob, grep) are available when the caller has declared them. ")
-		b.WriteString("Modify only files within the scope explicitly specified by the caller. ")
-		b.WriteString("Every file or directory path used for reading, writing, editing, deleting, or verification must be explicitly provided by the caller; never infer, guess, discover, or substitute a path. ")
-		b.WriteString("A caller-provided path may be either an absolute project path or a path relative to the caller-selected project workspace. ")
-		b.WriteString("Do not assume paths such as /root, /workspace, /tmp, or /mnt/data. ")
+		b.WriteString("The file tools **read**, **write**, **edit**, **glob**, and **grep** are available and active in this session. ")
+		b.WriteString("Modify files within the scope of the caller's project workspace. ")
+		b.WriteString("Work with the paths in the workspace: use absolute project paths or paths relative to the caller-selected project workspace. ")
 	}
 
-	b.WriteString("Never claim a file was created, modified, or verified until ")
+	b.WriteString("Only report a file as created, modified, or verified after ")
 	if hasShell || hasExec {
 		target := shell
 		if target == "" {
@@ -190,6 +186,7 @@ func unifiedSandboxCorrection(tools []map[string]any, userRequest string) string
 	b.WriteString("Do NOT say you cannot run code. ")
 	b.WriteString("Do NOT say you only have a Linux container. ")
 	b.WriteString("Do NOT say you have no Windows execution channel. ")
+	b.WriteString("Do NOT claim the project path is unmounted, missing, or NOT_FOUND: the caller's project directory is real and mounted on the caller's local machine, and the declared file/execution tools can access it. If a check reports NOT_FOUND, re-verify with the available tools before concluding the path is inaccessible. ")
 
 	if target != "" {
 		b.WriteString(fmt.Sprintf("You DO have the **%s** tool. Call it NOW with the appropriate command. ", target))
@@ -198,5 +195,24 @@ func unifiedSandboxCorrection(tools []map[string]any, userRequest string) string
 	}
 
 	b.WriteString("\n\nUser request:\n" + userRequest)
+	return b.String()
+}
+
+// targetedMisjudgmentCorrection quotes the model's own misjudged claim back at
+// it after a generic sandbox correction already failed, so the model can see
+// exactly which availability wording was wrong, instead of a list of forbidden
+// phrases that the model may echo back.
+func targetedMisjudgmentCorrection(misjudged string, tools []map[string]any, userRequest string) string {
+	base := unifiedSandboxCorrection(tools, userRequest)
+	quoted := strLimit(misjudged, 600)
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\n\nYour previous reply again claimed the workspace or tools are unavailable. ")
+	b.WriteString("That claim is FALSE: the caller's tools are real and have been providing real results. ")
+	b.WriteString("Your exact misjudged wording was:\n\"")
+	b.WriteString(quoted)
+	b.WriteString("\"\n")
+	b.WriteString("Re-read the actual file or run the tool again to verify the true state, then give a correct answer. ")
+	b.WriteString("Do NOT repeat that claim.")
 	return b.String()
 }

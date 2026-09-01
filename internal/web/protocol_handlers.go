@@ -175,6 +175,25 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			Status:       status,
 			Error:        errMsg,
 		})
+		// Keep the debug trace record in sync so the console shows the real
+		// token counts instead of 0/0 for every Responses streaming request.
+		if tr := traceFromRequest(r); tr != nil {
+			s.trace.update(tr.ID, func(rec *traceRecord) {
+				rec.Model = model
+				rec.Stream = true
+				rec.ReasoningLevel = o.ReasoningEffort
+				rec.InputTokens = int64(est.Values["input_tokens"].(int))
+				rec.OutputTokens = int64(est.Values["output_tokens"].(int))
+				rec.CachedTokens = cached
+				rec.TTFTMs = ttft
+				rec.DurationMs = time.Since(startedAt).Milliseconds()
+				rec.StatusCode = status
+				if errMsg != "" {
+					rec.Status = "error"
+					rec.Error = errMsg
+				}
+			})
+		}
 	}()
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
@@ -688,6 +707,20 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		DurationMs:   time.Since(startedAt).Milliseconds(),
 		Status:       200,
 	})
+	// Keep the debug trace record in sync so the console shows the real token
+	// counts instead of 0/0 for every Responses request.
+	if tr := traceFromRequest(r); tr != nil {
+		s.trace.update(tr.ID, func(rec *traceRecord) {
+			rec.Model = firstNonEmpty(body.Model, "m365-copilot")
+			rec.Stream = false
+			rec.ReasoningLevel = o.ReasoningEffort
+			rec.InputTokens = int64(estimate.Values["input_tokens"].(int))
+			rec.OutputTokens = int64(estimate.Values["output_tokens"].(int))
+			rec.CachedTokens = cached
+			rec.DurationMs = time.Since(startedAt).Milliseconds()
+			rec.StatusCode = 200
+		})
+	}
 	// Retain the normalized history so a subsequent previous_response_id can
 	// validate its function_call_output against the original tool call. The
 	// Responses API `store` parameter opts the client out of history retention.

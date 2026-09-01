@@ -35,6 +35,30 @@ func TestNeedsWorkspaceToolMisjudgmentCorrection(t *testing.T) {
 		t.Fatal("completed tool call must suppress correction")
 	}
 
+	// Gate 2 exception: a FAILED completed tool call is the strongest trigger for
+	// sandbox hallucination (the model retroactively denies even successful calls
+	// after an edit mismatch). Detection must stay armed.
+	failedLedger := agentLedger{Completed: []toolEvidence{
+		{ID: "ok", Name: "pwsh", Arguments: `{"cmd":"dir"}`},
+		{ID: "bad", Name: "edit", Arguments: `{"file_path":"x.py"}`, Result: "Error: old_string was not found", Failed: true},
+	}}
+	if !needsWorkspaceToolMisjudgmentCorrection("当前会话没有任何可用工具", execTools, "修复项目", failedLedger) {
+		t.Fatal("failed completed tool call must keep correction armed")
+	}
+	if !needsWorkspaceToolMisjudgmentCorrection("当前工作目录为 /mnt/data，其中没有项目文件", execTools, "修复项目", failedLedger) {
+		t.Fatal("mnt/data sole-environment claim must be detected after a failed call")
+	}
+	if !needsWorkspaceToolMisjudgmentCorrection("/mnt/d/NET/ai/ythh-1 不存在，本轮无法继续", execTools, "修复项目", failedLedger) {
+		t.Fatal("missing /mnt/d/ caller path claim must be detected after a failed call")
+	}
+
+	// Echo suppression must still win even with a failed call in the ledger:
+	// the user asked about /mnt/data, so the model explaining it is not a
+	// misjudgment.
+	if needsWorkspaceToolMisjudgmentCorrection("当前工作目录为 /mnt/data，其中没有项目文件", execTools, "为什么我的工作目录是 /mnt/data？", failedLedger) {
+		t.Fatal("user-echoed workspace vocabulary must suppress correction even after a failed call")
+	}
+
 	// Empty text never fires.
 	if needsWorkspaceToolMisjudgmentCorrection("   ", execTools, "修复项目", agentLedger{}) {
 		t.Fatal("empty text must not fire")

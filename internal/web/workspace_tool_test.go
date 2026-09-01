@@ -1,6 +1,7 @@
 package web
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -151,8 +152,11 @@ func TestUnifiedWorkspaceInstruction_FileTools(t *testing.T) {
 	if got == "" {
 		t.Fatal("expected non-empty instruction for file tools")
 	}
-	if !containsString(got, "never infer, guess, discover") {
-		t.Fatal("expected instruction to forbid path inference")
+	if !containsString(got, "available and active in this session") {
+		t.Fatal("expected instruction to confirm file tools are active")
+	}
+	if containsString(got, "never infer, guess, discover") {
+		t.Fatal("instruction must not forbid path inference, got:", got)
 	}
 }
 
@@ -230,6 +234,13 @@ func TestIsWorkspaceToolMisjudgment(t *testing.T) {
 		{name: "long EN denial beyond 50-char window is not base-detected", text: "I have verified the three files that need changes and prepared the final explanation. Note that the current session does not provide any file operation interface, but this is background.", want: false},
 		{name: "opening misjudgment inside long reply", text: "目前仍无法继续修改：当前会话实际没有可调用的文件操作接口。我已经完成了前序分析，接下来需要修改配置、请求处理器和测试套件三个文件，并补充对应的用例说明。", want: true},
 		{name: "exact phrase caught mid-reply", text: "我已经完成了前序分析，接下来需要修改配置、请求处理器和测试套件三个文件。但当前会话只提供 linux 容器。以上是完整说明。", want: true},
+		{name: "reported bug — project path unmounted with NOT_FOUND", text: "无法继续修改或验证：当前执行环境未挂载项目路径 `D:\\NET\\ai\\ythh-1`，检查结果为 `NOT_FOUND`。目标仍未完成，`admin.py` 的语法修复、管理员路由注册、登录与管理前端、数据库迁移及测试均尚未验证。", want: true},
+		{name: "reported bug — unmounted with drive letter and intermediate words", text: "当前执行环境未挂载项目路径 D:\\NET\\ai\\ythh-1，检查结果为 NOT_FOUND", want: true},
+		{name: "reported bug — unmounted project workspace", text: "当前会话未挂载工作区 D:\\NET\\ai\\ythh-1，无法继续", want: true},
+		{name: "reported bug — workspace files not found, cannot safely modify", text: "目标仍未完成验证。当前可执行环境中未发现项目工作区文件，因此无法安全修改 `D:\\NET\\ai\\ythh-1`。待完成项：修复 admin.py 第 71 行为 `) -> list[UserResponse]:` 注册管理员路由 完成登录页及 Token 会话 完成用户权限管理与系统设置页面 执行迁移、编译和自动化测试验证", want: true},
+		{name: "reported bug — workspace files not found, cannot safely modify (no backticks)", text: "当前可执行环境中未发现项目工作区文件，因此无法安全修改 D:\\NET\\ai\\ythh-1。", want: true},
+		{name: "reported bug — 可执行环境 no workspace files", text: "当前可执行环境中没有项目文件，无法继续修改 D:\\NET\\ai\\ythh-1", want: true},
+		{name: "reported bug — 可执行环境 no directory", text: "当前可执行环境中缺少项目目录，因此无法修改 D:\\NET\\ai\\ythh-1", want: true},
 		{name: "ordinary container discussion", text: "The service deploys in a Linux container.", want: false},
 		{name: "ordinary path discussion", text: "Copy the generated file to /mnt/data before returning it.", want: false},
 		{name: "legitimate tool error", text: "The command failed with exit code 1.", want: false},
@@ -356,4 +367,106 @@ func containsSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestMisjudgmentInRecentHistory(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "pwsh"}},
+		{"type": "function", "function": map[string]any{"name": "read"}},
+		{"type": "function", "function": map[string]any{"name": "edit"}},
+		{"type": "function", "function": map[string]any{"name": "glob"}},
+	}
+	tests := []struct {
+		name     string
+		msgs     []oaiMsg
+		toolMaps []map[string]any
+		want     bool
+	}{
+		{
+			name: "variant 4 in last assistant message",
+			msgs: []oaiMsg{
+				{Role: "user", Content: "Previous conversation"},
+				{Role: "assistant", Content: "目标仍未完成验证。当前可执行环境中未发现项目工作区文件，因此无法安全修改 `D:\\NET\\ai\\ythh-1`。待完成项：修复 admin.py。"},
+			},
+			toolMaps: tools,
+			want:     true,
+		},
+		{
+			name: "variant 4 two assistants back, generic refusal last",
+			msgs: []oaiMsg{
+				{Role: "assistant", Content: "目标仍未完成验证。当前可执行环境中未发现项目工作区文件，因此无法安全修改 `D:\\NET\\ai\\ythh-1`。"},
+				{Role: "assistant", Content: "无法继续修改"},
+			},
+			toolMaps: tools,
+			want:     true,
+		},
+		{
+			name: "clean history — no misjudgment",
+			msgs: []oaiMsg{
+				{Role: "assistant", Content: "目标仍处于进行中，尚未完成验证。需要修复 admin.py 第 71 行。"},
+			},
+			toolMaps: tools,
+			want:     false,
+		},
+		{
+			name: "empty history",
+			msgs: []oaiMsg{},
+			want: false,
+		},
+		{
+			name: "variant 2 misjudgment (old wording)",
+			msgs: []oaiMsg{
+				{Role: "assistant", Content: "无法继续修改或验证：当前执行环境未挂载项目路径 `D:\\NET\\ai\\ythh-1`，检查结果为 `NOT_FOUND`。"},
+			},
+			toolMaps: tools,
+			want:     true,
+		},
+		{
+			name: "plain status report (no misjudgment, just status)",
+			msgs: []oaiMsg{
+				{Role: "assistant", Content: "当前目标仍处于进行中，尚不能标记完成。已确认：登录认证路由已创建。仍需修复和验证：admin.py 第 72 行存在语法错误。"},
+			},
+			toolMaps: tools,
+			want:     false,
+		},
+		{
+			name: "nil toolMaps — variant 4 via base detector",
+			msgs: []oaiMsg{
+				{Role: "assistant", Content: "当前可执行环境中未发现项目工作区文件，因此无法安全修改 D:\\NET\\ai\\ythh-1。"},
+			},
+			toolMaps: nil,
+			want:     true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := misjudgmentInRecentHistory(tt.msgs, tt.toolMaps); got != tt.want {
+				t.Fatalf("misjudgmentInRecentHistory() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTargetedMisjudgmentCorrection(t *testing.T) {
+	tools := []map[string]any{
+		{"name": "pwsh", "description": "Run PowerShell", "type": "function"},
+		{"name": "read", "description": "Read file", "type": "function"},
+	}
+	base := unifiedSandboxCorrection(tools, "fix the file")
+	quoted := "工作区无法访问"
+	result := targetedMisjudgmentCorrection(quoted, tools, "fix the file")
+	if !strings.Contains(result, "工作区无法访问") {
+		t.Fatal("targetedMisjudgmentCorrection should quote the misjudged text")
+	}
+	if !strings.HasPrefix(result, base) {
+		t.Fatal("targetedMisjudgmentCorrection should start with the base correction")
+	}
+	if strings.Count(result, "工作区无法访问") < 1 {
+		t.Fatal("targetedMisjudgmentCorrection should include the quoted text at least once")
+	}
+	// Empty misjudged text should still produce valid output
+	empty := targetedMisjudgmentCorrection("", tools, "fix the file")
+	if !strings.HasPrefix(empty, base) {
+		t.Fatal("targetedMisjudgmentCorrection with empty text should still start with base")
+	}
 }

@@ -528,6 +528,36 @@ func goalRoundRequest(messages []oaiMsg, task *taskLedger, tools []chathub.Tool)
 // Examples: "Round: 1/256", "Round: 3/256".
 var roundCounterPattern = regexp.MustCompile(`Round:\s*\d+\s*/\s*\d+`)
 
+// forceGoalRoundToolChoice reports whether the current request is a
+// goal-protocol continuation round whose most recent assistant reply was a
+// text-only status report (no tool call). In that state the agent loop would
+// treat the turn as completed and immediately re-inject the goal, producing
+// the classic "stuck in a loop of status reports" failure. The caller forces
+// tool_choice=required so the model must emit a tool call instead of another
+// "goal is still incomplete" text-only turn.
+func forceGoalRoundToolChoice(messages []oaiMsg, task *taskLedger, tools []chathub.Tool) bool {
+	if task == nil || len(tools) == 0 {
+		return false
+	}
+	if !goalRoundRequest(messages, task, tools) {
+		return false
+	}
+	// Walk backwards to the most recent assistant reply (the turn before the
+	// current goal round). If it carried no tool call, it was a status report.
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.Role != "assistant" {
+			continue
+		}
+		text := strings.TrimSpace(contentToString(m.Content))
+		if text == "" {
+			continue
+		}
+		return len(m.ToolCalls) == 0
+	}
+	return false
+}
+
 // goalRoundCounter extracts the current and max round numbers from a message
 // containing the round counter. Returns (current, max, ok). When the current
 // round reaches or exceeds max, the round budget is exhausted.

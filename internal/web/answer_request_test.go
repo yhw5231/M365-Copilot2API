@@ -77,3 +77,21 @@ func TestBuildAnswerRequestMCPForwardsTools(t *testing.T) {
 		t.Fatalf("MCP URL not set: %q", req.MCPServerURL)
 	}
 }
+
+func TestBuildAnswerRequestRouterInjectsToolListWithLedger(t *testing.T) {
+	ledger := agentLedger{Completed: []toolEvidence{{ID: "call_1", Name: "read_file", Arguments: `{}`, Result: "ok"}}}
+	req := buildAnswerRequest("[user]\nsummarize", "magic", answerRequestTestBody(), ledger, "router", "")
+	if len(req.Tools) != 0 || req.ToolChoice != nil {
+		t.Fatalf("router answer must not forward native tools: tools=%d choice=%#v", len(req.Tools), req.ToolChoice)
+	}
+	if !strings.Contains(req.Text, "TOOLS DECLARED IN THIS SESSION") || !strings.Contains(req.Text, "read_file") {
+		t.Fatalf("router answer with ledger should embed read-only tool list: %q", req.Text)
+	}
+}
+
+func TestBuildAnswerRequestRouterOmitsToolListWithoutLedger(t *testing.T) {
+	req := buildAnswerRequest("[user]\nhello", "magic", answerRequestTestBody(), agentLedger{}, "router", "")
+	if strings.Contains(req.Text, "TOOLS DECLARED IN THIS SESSION") {
+		t.Fatalf("empty-ledger router answer must stay byte-identical, no tool list: %q", req.Text)
+	}
+}

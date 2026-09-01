@@ -161,3 +161,100 @@ func TestCompletionGuardRejectsUnsupportedSuccess(t *testing.T) {
 		t.Fatal("plain conversational answer rejected")
 	}
 }
+
+// TestAgentLedgerHasCompletedSkipsFailedCalls ensures hasCompleted returns true
+// only for non-failed (successful) calls. A failed call with the same name and
+// arguments must NOT be treated as completed, so the model can retry it.
+func TestAgentLedgerHasCompletedSkipsFailedCalls(t *testing.T) {
+	success := agentLedger{Completed: []toolEvidence{{Name: "edit", Arguments: `{"file_path":"x.py","old_string":"a","new_string":"b"}`, Failed: false}}}
+	if !success.hasCompleted("edit", `{"file_path":"x.py","old_string":"a","new_string":"b"}`) {
+		t.Fatal("successful call must be reported as completed")
+	}
+	failed := agentLedger{Completed: []toolEvidence{{Name: "edit", Arguments: `{"file_path":"x.py","old_string":"a","new_string":"b"}`, Failed: true}}}
+	if failed.hasCompleted("edit", `{"file_path":"x.py","old_string":"a","new_string":"b"}`) {
+		t.Fatal("failed call must NOT be reported as completed")
+	}
+	empty := agentLedger{}
+	if empty.hasCompleted("edit", `{}`) {
+		t.Fatal("empty ledger must not report completed")
+	}
+	canonLedger := agentLedger{Completed: []toolEvidence{{Name: "read", Arguments: `{"file_path": "x.py", "limit": 10}`, Failed: false}}}
+	if !canonLedger.hasCompleted("read", `{"limit":10,"file_path":"x.py"}`) {
+		t.Fatal("canonical args must match regardless of key order")
+	}
+}
+
+func TestAgentLedgerHasEditIdentityFailure(t *testing.T) {
+	// No completed calls -> false
+	if (agentLedger{}).hasEditIdentityFailure() {
+		t.Fatal("empty ledger must not flag edit identity failure")
+	}
+	// Successful edit -> false
+	ok := agentLedger{Completed: []toolEvidence{{Name: "edit", Arguments: `{}`, Result: "file updated", Failed: false}}}
+	if ok.hasEditIdentityFailure() {
+		t.Fatal("successful edit must not flag identity failure")
+	}
+	// edit failed with exactly the old==new error -> true
+	ident := agentLedger{Completed: []toolEvidence{{Name: "edit", Arguments: `{"file_path":"x.py","old_string":"a","new_string":"a"}`, Result: "Error: old_string and new_string must differ", Failed: true}}}
+	if !ident.hasEditIdentityFailure() {
+		t.Fatal("edit failing with old_string==new_string must be flagged")
+	}
+	// Different old/new content but same failure signature -> still true
+	// (this is the case that defeats same-signature repeated-failure tracking)
+	ident2 := agentLedger{Completed: []toolEvidence{{Name: "edit", Arguments: `{"file_path":"x.py","old_string":"@router.get...","new_string":"@router.get..."}`, Result: "Error: old_string and new_string must differ", Failed: true}}}
+	if !ident2.hasEditIdentityFailure() {
+		t.Fatal("edit with different args but same identity failure must still be flagged")
+	}
+	// A different edit failure (old_string not found) -> false
+	notFound := agentLedger{Completed: []toolEvidence{{Name: "edit", Arguments: `{}`, Result: "Error: old_string not found in file", Failed: true}}}
+	if notFound.hasEditIdentityFailure() {
+		t.Fatal("edit failing with old_string-not-found must NOT be flagged as identity failure")
+	}
+	// A non-edit tool failure -> false
+	pwshFail := agentLedger{Completed: []toolEvidence{{Name: "pwsh", Arguments: `{}`, Result: "Error: command not found", Failed: true}}}
+	if pwshFail.hasEditIdentityFailure() {
+		t.Fatal("pwsh failure must not be flagged as edit identity failure")
+	}
+}
+
+func TestAgentLedgerHasPwshIdentityWrite(t *testing.T) {
+	// Empty ledger -> false
+	if (agentLedger{}).hasPwshIdentityWrite() {
+		t.Fatal("empty ledger must not flag pwsh identity write")
+	}
+	// pwsh command assigning a line to the same value it asserts -> true
+	identityCmd := "$path = 'x.py'; $lines = Get-Content -LiteralPath $path; if ($lines[70].Trim() -ne ') -> list') { throw 'x' }; $lines[70] = ') -> list'; Set-Content -LiteralPath $path -Value $lines"
+	ident := agentLedger{Completed: []toolEvidence{{Name: "pwsh", Arguments: fmt.Sprintf(`{"command":%q}`, identityCmd), Result: "Error: SyntaxError", Failed: true}}}
+	if !ident.hasPwshIdentityWrite() {
+		t.Fatal("pwsh assigning line to asserted value must be flagged as identity write")
+	}
+	// pwsh assigning a line to a DIFFERENT value -> false
+	fixCmd := "$path = 'x.py'; $lines = Get-Content -LiteralPath $path; if ($lines[70].Trim() -ne ') -> list') { throw 'x' }; $lines[70] = ') -> list[UserResponse]:'; Set-Content -LiteralPath $path -Value $lines"
+	fix := agentLedger{Completed: []toolEvidence{{Name: "pwsh", Arguments: fmt.Sprintf(`{"command":%q}`, fixCmd), Result: "ok", Failed: false}}}
+	if fix.hasPwshIdentityWrite() {
+		t.Fatal("pwsh assigning a corrected value must NOT be flagged")
+	}
+	// pwsh with no line assignment -> false
+	noAssign := agentLedger{Completed: []toolEvidence{{Name: "pwsh", Arguments: `{"command":"Get-Location"}`, Result: "ok", Failed: false}}}
+	if noAssign.hasPwshIdentityWrite() {
+		t.Fatal("pwsh without line assignment must not be flagged")
+	}
+	// non-shell tool -> false
+	editOnly := agentLedger{Completed: []toolEvidence{{Name: "edit", Arguments: `{}`, Result: "ok", Failed: false}}}
+	if editOnly.hasPwshIdentityWrite() {
+		t.Fatal("edit call must not be flagged as pwsh identity write")
+	}
+	// Real command captured from the failing goal-loop trace: asserts line 70
+	// is ') -> list' then assigns line 70 to the same broken value -> true.
+	realCmd := `$path = 'D:\NET\ai\ythh-1\src\recruitment_agent\api\routes\admin.py'; $lines = Get-Content -LiteralPath $path -Encoding UTF8; if ($lines.Count -lt 71 -or $lines[70].Trim() -ne ') -> list') { throw 'Expected invalid signature was not found at line 71.' }; $lines[70] = ') -> list'; Set-Content -LiteralPath $path -Value $lines -Encoding UTF8; python -m py_compile src\recruitment_agent\api\routes\admin.py src\recruitment_agent\api\routes\auth.py src\recruitment_agent\api\app.py`
+	real := agentLedger{Completed: []toolEvidence{{Name: "pwsh", Arguments: fmt.Sprintf(`{"command":%q}`, realCmd), Result: "Error: SyntaxError expected ':'", Failed: true}}}
+	if !real.hasPwshIdentityWrite() {
+		t.Fatal("real trace pwsh command must be flagged as identity write")
+	}
+	// Same command but assigning the CORRECTED line -> false.
+	fixedCmd := `$path = 'D:\NET\ai\ythh-1\src\recruitment_agent\api\routes\admin.py'; $lines = Get-Content -LiteralPath $path -Encoding UTF8; if ($lines.Count -lt 71 -or $lines[70].Trim() -ne ') -> list') { throw 'x' }; $lines[70] = ') -> list[UserResponse]:'; Set-Content -LiteralPath $path -Value $lines -Encoding UTF8`
+	fixed := agentLedger{Completed: []toolEvidence{{Name: "pwsh", Arguments: fmt.Sprintf(`{"command":%q}`, fixedCmd), Result: "ok", Failed: false}}}
+	if fixed.hasPwshIdentityWrite() {
+		t.Fatal("real trace command assigning corrected line must NOT be flagged")
+	}
+}

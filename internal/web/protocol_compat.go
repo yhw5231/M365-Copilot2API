@@ -171,7 +171,7 @@ func shouldStoreResponsesHistory(store *bool) bool {
 	return store == nil || *store
 }
 
-const customExecWorkspaceInstruction = `You are operating through the caller's local OpenCode execution bridge. Never use, request, or mention Microsoft 365/Copilot native tools. The only permitted execution tool is the caller-provided custom exec tool. Modify only files within the scope explicitly specified by the caller. Every file or directory path used for reading, writing, editing, deleting, or verification must be explicitly provided by the caller; never infer, guess, discover, or substitute a path. A caller-provided path may be either an absolute project path or a path relative to the caller-selected project workspace. Do not assume paths such as /root, /workspace, /tmp, or /mnt/data. Never claim a file was created, modified, or verified until custom exec returns a successful result. After every execution, use custom exec to verify the result.`
+const customExecWorkspaceInstruction = `You are operating through the caller's local OpenCode execution bridge. Use only the tools declared in this session; do not attempt Microsoft 365/Copilot native tools. The execution tool is the caller-provided custom exec tool, which runs directly on the caller's local machine. You have full access to the caller's local machine and its files. Modify files within the scope of the caller's project workspace. Work with the paths in the workspace: use absolute project paths or paths relative to the caller-selected project workspace. Only report a file as created, modified, or verified after custom exec returns a successful result. After every execution, use custom exec to verify the result.`
 
 func (r responsesRequest) openAI() (oaiReq, error) {
 	o := oaiReq{Model: r.Model, AccountID: r.AccountID, Stream: r.Stream, ToolChoice: r.ToolChoice, User: r.User, ParallelToolCalls: r.ParallelToolCalls, Metadata: r.Metadata}
@@ -252,7 +252,9 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 		}
 		o.Messages = append(o.Messages, oaiMsg{Role: "user", Content: v})
 	case []any:
-		for _, raw := range v {
+		for i := 0; i < len(v); {
+			raw := v[i]
+			i++
 			m, ok := raw.(map[string]any)
 			if !ok {
 				continue
@@ -292,28 +294,46 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 					id, _ = m["id"].(string)
 				}
 				o.Messages = append(o.Messages, oaiMsg{Role: "tool", ToolCallID: id, Content: m["output"]})
-			case "function_call":
-				// Responses clients replay a prior tool call as a
-				// function_call item. The canonical pairing key is `call_id`,
-				// but some clients (e.g. the DSH harness) replay the item with
-				// only the item `id`. Falling back keeps the tool conversation
-				// valid instead of failing the whole request with a 400
-				// ("assistant tool call missing id").
-				id := responsesToolCallID(m)
-				name, _ := m["name"].(string)
-				args := m["arguments"]
-				if s, ok := args.(string); ok {
-					var x any
-					if json.Unmarshal([]byte(s), &x) == nil {
-						args = x
+			case "function_call", "custom_tool_call":
+				// DSH (and other OpenAI Responses clients) replay parallel tool
+				// calls from a single assistant turn as consecutive separate
+				// function_call/custom_tool_call items in the input array.
+				// Emitting one oaiMsg per item would produce multiple
+				// consecutive assistant messages, breaking the tool protocol
+				// ("tool results missing before assistant message" 400).
+				// Group consecutive call items into ONE assistant message
+				// with multiple tool calls.
+				var calls []map[string]any
+				for j := i - 1; j < len(v); j++ {
+					cm, cok := v[j].(map[string]any)
+					if !cok {
+						break
+					}
+					ctyp, _ := cm["type"].(string)
+					if ctyp != "function_call" && ctyp != "custom_tool_call" {
+						break
+					}
+					i = j + 1 // advance the outer loop past this item
+					id := responsesToolCallID(cm)
+					name, _ := cm["name"].(string)
+					switch ctyp {
+					case "function_call":
+						args := cm["arguments"]
+						if s, ok := args.(string); ok {
+							var x any
+							if json.Unmarshal([]byte(s), &x) == nil {
+								args = x
+							}
+						}
+						calls = append(calls, map[string]any{"id": id, "type": "function", "function": map[string]any{"name": name, "arguments": mustJSON(args)}})
+					case "custom_tool_call":
+						input, _ := cm["input"].(string)
+						calls = append(calls, map[string]any{"id": id, "type": "custom", "function": map[string]any{"name": name, "arguments": mustJSON(map[string]any{"input": input})}})
 					}
 				}
-				o.Messages = append(o.Messages, oaiMsg{Role: "assistant", ToolCalls: []map[string]any{{"id": id, "type": "function", "function": map[string]any{"name": name, "arguments": mustJSON(args)}}}})
-			case "custom_tool_call":
-				id := responsesToolCallID(m)
-				name, _ := m["name"].(string)
-				input, _ := m["input"].(string)
-				o.Messages = append(o.Messages, oaiMsg{Role: "assistant", ToolCalls: []map[string]any{{"id": id, "type": "custom", "function": map[string]any{"name": name, "arguments": mustJSON(map[string]any{"input": input})}}}})
+				if len(calls) > 0 {
+					o.Messages = append(o.Messages, oaiMsg{Role: "assistant", ToolCalls: calls})
+				}
 			default:
 				role, _ := m["role"].(string)
 				if role == "" {

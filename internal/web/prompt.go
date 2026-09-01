@@ -6,6 +6,41 @@ import (
 	"strings"
 )
 
+// userEchoCheckPrompt returns the user's genuine question text for the
+// workspace-vocabulary echo check. The full flattened prompt
+// (flattenPromptMessages) includes harness-injected blocks — the DSH
+// runtime-context snapshot ("Current runtime context ... sandbox ...") and
+// goal-round continuation templates — whose vocabulary (e.g. "sandbox") must
+// NOT count as the user having asked about the workspace. Feeding the whole
+// prompt to userPromptMentionsWorkspace permanently disables the misjudgment
+// gate (echo suppression gate 3) for every request, because the snapshot's
+// "sandbox" always matches a workspaceEchoTerm. Only the caller's own user-role
+// messages (minus injected blocks) are eligible for echo suppression.
+func userEchoCheckPrompt(messages []oaiMsg) string {
+	var parts []string
+	for _, m := range messages {
+		if m.Role != "user" {
+			continue
+		}
+		t := strings.TrimSpace(contentToString(m.Content))
+		if t == "" {
+			continue
+		}
+		// Skip harness-injected runtime-context snapshots (DSH "Current runtime
+		// context. ..." blocks that describe the file sandbox / policy).
+		if strings.HasPrefix(t, "Current runtime context.") || strings.Contains(t, "This snapshot supersedes earlier runtime-context snapshots") {
+			continue
+		}
+		// Skip goal-round continuation templates injected by the harness; the
+		// Objective inside is still covered by the caller's original question.
+		if strings.Contains(t, "<goal_round>") {
+			continue
+		}
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, "\n")
+}
+
 func flattenPromptMessages(messages []oaiMsg, attachments []chathub.Attachment) (string, []chathub.Attachment) {
 	var systemParts []string
 	var rest []oaiMsg

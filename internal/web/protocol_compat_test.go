@@ -69,8 +69,8 @@ func TestResponsesCustomExecIsExclusiveTool(t *testing.T) {
 	if len(o.Tools) != 1 || o.Tools[0].Type != "custom" {
 		t.Fatalf("tools=%#v, want only custom exec", o.Tools)
 	}
-	if !strings.Contains(fmt.Sprint(o.Messages[0].Content), "Never use") {
-		t.Fatalf("missing native-tool prohibition: %#v", o.Messages)
+	if !strings.Contains(fmt.Sprint(o.Messages[0].Content), "local execution bridge") || !strings.Contains(fmt.Sprint(o.Messages[0].Content), "exec tool") {
+		t.Fatalf("missing positive workspace instruction: %#v", o.Messages)
 	}
 }
 
@@ -164,6 +164,49 @@ func TestResponsesCustomToolCallWithoutCallIDFallsBackToItemID(t *testing.T) {
 	}
 	if err := validateToolConversation(o.Messages); err != nil {
 		t.Fatalf("custom tool continuation rejected: %v", err)
+	}
+}
+
+// TestResponsesParallelFunctionCallsReplay reproduces the DSH harness replay of
+// a single assistant turn that made several parallel tool calls. DSH emits each
+// call as a consecutive standalone function_call item followed by all of its
+// function_call_output items. The converter must group consecutive call items
+// into ONE assistant message; otherwise validateToolConversation rejects the
+// request with "tool results missing before assistant message" (observed as a
+// 400 on the a127 / M365-Copilot2API gateway, turn 13 of a long session).
+func TestResponsesParallelFunctionCallsReplay(t *testing.T) {
+	r := responsesRequest{Model: "m", Input: []any{
+		map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "增加登录页，增加用户权限管理，增加系统设置（管理员）"}}},
+		map[string]any{"type": "function_call", "call_id": "fc_1", "id": "fc_1", "name": "read", "arguments": `{"file_path":"a.py","limit":2000}`},
+		map[string]any{"type": "function_call", "call_id": "fc_2", "id": "fc_2", "name": "read", "arguments": `{"file_path":"b.py","limit":2000}`},
+		map[string]any{"type": "function_call", "call_id": "fc_3", "id": "fc_3", "name": "read", "arguments": `{"file_path":"c.py","limit":2000}`},
+		map[string]any{"type": "function_call", "call_id": "fc_4", "id": "fc_4", "name": "read", "arguments": `{"file_path":"d.py","limit":2000}`},
+		map[string]any{"type": "function_call_output", "call_id": "fc_1", "output": "a"},
+		map[string]any{"type": "function_call_output", "call_id": "fc_2", "output": "b"},
+		map[string]any{"type": "function_call_output", "call_id": "fc_3", "output": "c"},
+		map[string]any{"type": "function_call_output", "call_id": "fc_4", "output": "d"},
+		map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "完成"}}},
+	}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Messages) != 7 {
+		t.Fatalf("messages=%#v, want 7 (user, assistant-with-4-calls, 4x tool, assistant)", o.Messages)
+	}
+	// The four consecutive function_call items must be grouped into ONE
+	// assistant message carrying four tool calls.
+	if o.Messages[1].Role != "assistant" || len(o.Messages[1].ToolCalls) != 4 {
+		t.Fatalf("expected one assistant message with 4 tool calls, got %#v", o.Messages[1])
+	}
+	for i, call := range o.Messages[1].ToolCalls {
+		want := fmt.Sprintf("fc_%d", i+1)
+		if id, _ := call["id"].(string); id != want {
+			t.Fatalf("tool call %d id = %q, want %q", i, id, want)
+		}
+	}
+	if err := validateToolConversation(o.Messages); err != nil {
+		t.Fatalf("grouped parallel tool continuation rejected: %v", err)
 	}
 }
 
