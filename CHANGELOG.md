@@ -8,6 +8,14 @@
 
 ### 新增
 
+- **网关总并发限制（Gateway concurrency）**：新增独立于账号并发的网关级并发
+  上限，控制整个网关同时处理的请求数，防止服务器被挤爆。默认 `0`（不限）；
+  可通过 `M365_GATEWAY_CONCURRENCY` 环境变量或 Web 控制台「账号调度」页的
+  「网关总并发」设置。达到上限后，新的请求**立即返回 HTTP 503**（不排队），
+  管理、认证、健康检查与静态资源端点不受限，保证过载时仍可登录控制台调整。
+  实现于 `internal/web/gateway_concurrency.go`，由
+  `gatewayConcurrencyMiddleware` 统一准入。
+
 - **`X-M365-Execution-Environment` 响应头**：所有 SSE / 流式响应统一携带
   `X-M365-Execution-Environment: m365-copilot2api-relay`，客户端可据此识别
   部署边界，拒绝"托管容器/云端环境"冒充本机的结果。由

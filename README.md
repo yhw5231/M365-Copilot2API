@@ -272,6 +272,7 @@ server {
 | `M365_CONTEXT_SIMILARITY` | `0.6` | 上下文相似度复用阈值（0~1，Jaccard 相似度） |
 | `M365_LOG_LEVEL` | `info` | 日志级别 |
 | `M365_ACCOUNT_DEFAULT_CONCURRENCY` | `8` | 每个账号同时进行的上游调用上限；其余账号仍可继续接收请求 |
+| `M365_GATEWAY_CONCURRENCY` | `0`（不限） | 网关总并发上限，独立于账号并发。达到上限后，新的请求**立即返回 HTTP 503**（不排队），保护服务器不被挤爆；`0` 表示不限 |
 | `M365_PUBLIC_IDENTITY_POLICY` | `false` | 公开身份策略总开关；仅在微软反代渠道显式设为 `true` 时启用身份预设及正文、推理、引用和流式清洗 |
 
 ### 自动清理

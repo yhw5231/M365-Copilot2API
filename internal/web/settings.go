@@ -295,6 +295,12 @@ type runtimeSettings struct {
 	// AccountConcurrency is the maximum number of simultaneous requests allowed
 	// for each account. It defaults to 1 and can be updated at runtime.
 	AccountConcurrency int `json:"accountConcurrency"`
+	// GatewayConcurrency is the maximum number of simultaneous requests the
+	// whole gateway accepts at once, independent of the per-account limit.
+	// 0 disables the gateway-wide cap (unlimited). Excess requests are rejected
+	// immediately with HTTP 503 instead of being queued, protecting the server
+	// from being overwhelmed. It can be updated at runtime.
+	GatewayConcurrency int `json:"gatewayConcurrency"`
 	// AccountRoutingRule controls selection for new sessions. Supported values
 	// are "available-first" and "round-robin". Existing sessions remain sticky
 	// to their assigned account while that account is available.
@@ -382,6 +388,7 @@ func defaultRuntimeSettings() runtimeSettings {
 		ToolPlanningMode:                toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
 		TraceMaxRecords:                 defaultTraceMaxRecords,
 		AccountConcurrency:              envInt("M365_ACCOUNT_DEFAULT_CONCURRENCY", defaultAccountConcurrency),
+		GatewayConcurrency:              envInt("M365_GATEWAY_CONCURRENCY", defaultGatewayConcurrency),
 		AccountRoutingRule:              "available-first",
 		AccountWarmSessionSeconds:       accountWarmSessionSecondsDefault(),
 		CacheOnAccountSwitch:            false,
@@ -412,6 +419,9 @@ var openSettingsStore = sync.OnceValue(func() *settingsStore {
 	// Missing JSON fields decode to zero values, so restore the documented defaults.
 	if s.v.AccountConcurrency < 1 {
 		s.v.AccountConcurrency = defaultAccountConcurrency
+	}
+	if s.v.GatewayConcurrency < 0 {
+		s.v.GatewayConcurrency = defaultGatewayConcurrency
 	}
 	if s.v.AccountRoutingRule == "" {
 		s.v.AccountRoutingRule = "available-first"
@@ -479,6 +489,9 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.AccountConcurrency < 1 || v.AccountConcurrency > 256 {
 		return fmt.Errorf("账号并发必须为 1-256")
+	}
+	if v.GatewayConcurrency < 0 || v.GatewayConcurrency > 65536 {
+		return fmt.Errorf("网关总并发必须为 0-65536（0 表示不限）")
 	}
 	if v.AccountRoutingRule != "available-first" && v.AccountRoutingRule != "round-robin" {
 		return fmt.Errorf("账号轮询规则必须为 available-first 或 round-robin")
@@ -630,6 +643,9 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 		outbound.SetProxyMode(v.proxyMode())
 		if s.accountConcurrency != nil {
 			s.accountConcurrency.SetLimit(v.AccountConcurrency)
+		}
+		if s.gatewayConcurrency != nil {
+			s.gatewayConcurrency.SetLimit(v.GatewayConcurrency)
 		}
 		jsonOut(w, map[string]any{"ok": true, "settings": v})
 	default:

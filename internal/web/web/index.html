@@ -662,6 +662,11 @@ if (response.output_text) {
               <p class="form-hint">Maximum simultaneous requests per account. The default is 1.</p>
             </div>
             <div class="form-group" style="margin:0">
+              <label class="form-label" for="gatewayConcurrency">Gateway concurrency</label>
+              <input class="form-input" id="gatewayConcurrency" type="number" min="0" step="1" value="0" inputmode="numeric">
+              <p class="form-hint">Maximum simultaneous requests for the whole gateway, independent of the per-account limit. 0 means unlimited. When the limit is reached, new requests are rejected immediately with HTTP 503 instead of being queued, protecting the server from being overwhelmed.</p>
+            </div>
+            <div class="form-group" style="margin:0">
               <label class="form-label" for="accountRoutingRule">账号路由规则</label>
               <select class="form-input" id="accountRoutingRule">
                 <option value="available-first">可用优先</option>
@@ -992,6 +997,8 @@ const localeText={
   'Save scheduling': {'zh-CN':'保存调度设置','zh-TW':'儲存調度設定'},
   'Account concurrency': {'zh-CN':'账号并发数','zh-TW':'帳號並行數'},
   'Maximum simultaneous requests per account. The default is 1.': {'zh-CN':'每个账号允许同时处理的最大请求数，默认为 1。','zh-TW':'每個帳號允許同時處理的最大請求數，預設為 1。'},
+  'Gateway concurrency': {'zh-CN':'网关总并发','zh-TW':'閘道總並行'},
+  'Maximum simultaneous requests for the whole gateway, independent of the per-account limit. 0 means unlimited. When the limit is reached, new requests are rejected immediately with HTTP 503 instead of being queued, protecting the server from being overwhelmed.': {'zh-CN':'整个网关同时允许处理的最大请求数，独立于账号并发。0 表示不限。达到上限后，新的请求会立即返回 HTTP 503 而不是排队等待，保护服务器不被挤爆。','zh-TW':'整個閘道同時允許處理的最大請求數，獨立於帳號並行。0 表示不限。達到上限後，新的請求會立即回傳 HTTP 503 而非排隊等待，保護伺服器不被塞爆。'},
   'Account routing rule': {'zh-CN':'账号路由规则','zh-TW':'帳號路由規則'},
   'Available first': {'zh-CN':'可用优先','zh-TW':'可用優先'},
   'Round robin': {'zh-CN':'轮询','zh-TW':'輪詢'},
@@ -1943,6 +1950,8 @@ async function loadAccountSchedulingSettings(){
     const s=d.settings||d||{};
     const concurrency=Number(s.accountConcurrency??s.accountDefaultConcurrency??s.defaultAccountConcurrency??1);
     $('accountConcurrency').value=Number.isInteger(concurrency)&&concurrency>0?concurrency:1;
+    const gatewayConcurrency=Number(s.gatewayConcurrency??s.gatewayDefaultConcurrency??0);
+    $('gatewayConcurrency').value=Number.isInteger(gatewayConcurrency)&&gatewayConcurrency>=0?gatewayConcurrency:0;
     $('accountRoutingRule').value=normalizeAccountRoutingRule(s.accountRoutingRule??s.accountSelectionRule??s.routingRule);
     const warmSeconds=Number(s.accountWarmSessionSeconds??s.accountWarmWindowSeconds??180);
     $('accountWarmSessionSeconds').value=Number.isInteger(warmSeconds)&&warmSeconds>0?warmSeconds:180;
@@ -1953,6 +1962,7 @@ async function loadAccountSchedulingSettings(){
     $('accountRateLimitCooldownSeconds').value=Number.isInteger(rateLimitCooldownSeconds)&&rateLimitCooldownSeconds>0?rateLimitCooldownSeconds:3600;
   }catch(e){
     $('accountConcurrency').value='1';
+    $('gatewayConcurrency').value='0';
     $('accountRoutingRule').value='available-first';
     $('accountWarmSessionSeconds').value='180';
     $('cacheOnAccountSwitch').checked=false;
@@ -1968,6 +1978,12 @@ async function saveAccountSchedulingSettings(){
     if(!Number.isInteger(concurrency)||concurrency<1){
       showNotice('账号并发值必须是大于或等于 1 的整数','error');
       $('accountConcurrency').focus();
+      return;
+    }
+    const gatewayConcurrency=Number.parseInt($('gatewayConcurrency').value,10);
+    if(!Number.isInteger(gatewayConcurrency)||gatewayConcurrency<0||gatewayConcurrency>65536){
+      showNotice('网关总并发必须是 0-65536 的整数（0 表示不限）','error');
+      $('gatewayConcurrency').focus();
       return;
     }
     const accountRoutingRule=normalizeAccountRoutingRule($('accountRoutingRule').value);
@@ -1991,12 +2007,13 @@ async function saveAccountSchedulingSettings(){
       return;
     }
     $('accountConcurrency').value=String(concurrency);
+    $('gatewayConcurrency').value=String(gatewayConcurrency);
     $('accountRoutingRule').value=accountRoutingRule;
     $('accountWarmSessionSeconds').value=String(warmSeconds);
     $('cacheOnAccountSwitch').checked=cacheOnAccountSwitch;
     $('accountQueueTimeoutSeconds').value=String(queueTimeoutSeconds);
     $('accountRateLimitCooldownSeconds').value=String(rateLimitCooldownSeconds);
-    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({accountConcurrency:concurrency,accountRoutingRule,accountWarmSessionSeconds:warmSeconds,cacheOnAccountSwitch,accountQueueTimeoutSeconds:queueTimeoutSeconds,accountRateLimitCooldownSeconds:rateLimitCooldownSeconds})});
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({accountConcurrency:concurrency,gatewayConcurrency,accountRoutingRule,accountWarmSessionSeconds:warmSeconds,cacheOnAccountSwitch,accountQueueTimeoutSeconds:queueTimeoutSeconds,accountRateLimitCooldownSeconds:rateLimitCooldownSeconds})});
     showNotice('账号调度设置已保存','success');
   }catch(e){showNotice(e.message,'error');}
 }

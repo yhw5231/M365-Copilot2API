@@ -234,3 +234,29 @@ func TestAccountQueueTimeoutSettingsDefaultsAndValidation(t *testing.T) {
 		t.Fatal("queue timeout above 86400 accepted")
 	}
 }
+
+func TestGatewayConcurrencySettingsDefaultsAndValidation(t *testing.T) {
+	t.Setenv("M365_GATEWAY_CONCURRENCY", "")
+	v := defaultRuntimeSettings()
+	if v.GatewayConcurrency != defaultGatewayConcurrency {
+		t.Fatalf("default gateway concurrency = %d, want %d", v.GatewayConcurrency, defaultGatewayConcurrency)
+	}
+	if err := validateSettings(v); err != nil {
+		t.Fatalf("defaults failed validation: %v", err)
+	}
+	// 0 = unlimited, must be accepted.
+	v.GatewayConcurrency = 0
+	if err := validateSettings(v); err != nil {
+		t.Fatalf("0 (unlimited) should be accepted: %v", err)
+	}
+	// Negative values must be rejected.
+	v.GatewayConcurrency = -1
+	if err := validateSettings(v); err == nil {
+		t.Fatal("negative gateway concurrency accepted")
+	}
+	// Above 65536 must be rejected.
+	v.GatewayConcurrency = 65537
+	if err := validateSettings(v); err == nil {
+		t.Fatal("gateway concurrency above 65536 accepted")
+	}
+}

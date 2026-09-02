@@ -119,6 +119,7 @@ type Server struct {
 	tokens              *auth.Store
 	accountPool         *accountHealth
 	accountConcurrency  *accountConcurrency
+	gatewayConcurrency  *gatewayConcurrency
 	sessionConcurrency  *sessionConcurrency
 	pkce                map[string]pendingPKCE
 	pkceStarts          map[string][]time.Time
@@ -209,6 +210,7 @@ func New() (*Server, error) {
 		tokens:             store,
 		accountPool:        newAccountHealth(),
 		accountConcurrency: newAccountConcurrency(),
+		gatewayConcurrency: newGatewayConcurrency(),
 		sessionConcurrency: newSessionConcurrency(),
 		pkce:               map[string]pendingPKCE{},
 		chat: func() *chathub.Client {
@@ -236,6 +238,7 @@ func New() (*Server, error) {
 	}
 	srv.chat.OnUpstream = srv.routeUpstreamTrace
 	srv.applyPersistedAccountConcurrency()
+	srv.applyPersistedGatewayConcurrency()
 	return srv, nil
 }
 
@@ -250,6 +253,20 @@ func (s *Server) applyPersistedAccountConcurrency() {
 	}
 	if saved := s.settings.get().AccountConcurrency; saved >= 1 {
 		s.accountConcurrency.SetLimit(saved)
+	}
+}
+
+// applyPersistedGatewayConcurrency seeds the runtime gateway-wide concurrency
+// limiter from settings.json after startup, mirroring the per-account limiter.
+// newGatewayConcurrency only reads M365_GATEWAY_CONCURRENCY / the built-in
+// default, so without this an upgrade would silently reset the gateway cap to
+// 0 (unlimited) while settings.json still held the configured value.
+func (s *Server) applyPersistedGatewayConcurrency() {
+	if s.settings == nil || s.gatewayConcurrency == nil {
+		return
+	}
+	if saved := s.settings.get().GatewayConcurrency; saved >= 0 {
+		s.gatewayConcurrency.SetLimit(saved)
 	}
 }
 
@@ -421,7 +438,54 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/images/files/", s.generatedImageFile)
 	m.HandleFunc("/vendor/", vendorFiles)
 	m.HandleFunc("/", s.rootPage)
-	return recoverPanics(requestID(httpTrace(securityHeaders(s.adminMiddleware(s.traceCaptureMiddleware(s.debugMiddleware(m)))))))
+	return recoverPanics(requestID(httpTrace(securityHeaders(s.adminMiddleware(s.gatewayConcurrencyMiddleware(s.traceCaptureMiddleware(s.debugMiddleware(m))))))))
+}
+
+// gatewayConcurrencyMiddleware is the gateway-wide admission gate. It bounds
+// the total number of concurrent requests the gateway processes at once,
+// independent of the per-account concurrency limiter. Once the cap is reached
+// (or a limit was configured), excess requests are rejected immediately with
+// HTTP 503 so the server sheds load instead of piling up queued work.
+// Admin, auth, health and static-file endpoints are exempt: the operator must
+// stay able to log into the console and raise the limit while under load.
+func (s *Server) gatewayConcurrencyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !gatewayAdmissionTracked(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		release, ok := s.gatewayConcurrency.TryAcquire()
+		if !ok {
+			w.Header().Set("Retry-After", "1")
+			writeOpenAIError(w, http.StatusServiceUnavailable, "rate_limit_error", "gateway is at capacity; too many simultaneous requests, please retry shortly")
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// gatewayAdmissionTracked reports whether a request path counts against the
+// gateway-wide concurrency cap. Management, auth, health, version and static
+// endpoints are excluded so the console and health probes stay reachable
+// during an overload.
+func gatewayAdmissionTracked(path string) bool {
+	if path == "/api/health" || path == "/api/version" || path == "/api/update" ||
+		path == "/" || path == "/login" || path == "/conversation" {
+		return false
+	}
+	if strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/auth/") ||
+		strings.HasPrefix(path, "/vendor/") || strings.HasPrefix(path, "/v1/images/files/") {
+		return false
+	}
+	if path == "/v1/mcp/sse" {
+		// The MCP SSE endpoint is a long-lived notification channel that
+		// performs no upstream work by itself; the actual tool calls run on
+		// /v1/mcp/message. Excluding it keeps idle client connections from
+		// consuming gateway slots and starving real requests.
+		return false
+	}
+	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/v1/")
 }
 
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
@@ -686,6 +750,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"tokenCache":         s.tokens.Path(),
 		"accountCount":       len(list),
 		"accountConcurrency": s.accountConcurrency.Snapshot(),
+		"gatewayConcurrency": s.gatewayConcurrency.Snapshot(),
 	})
 }
 
@@ -763,7 +828,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt: a.ExpiresAt, ImportedAt: a.ImportedAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
 		})
 	}
-	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot(), "accountConcurrency": concurrency, "timeZone": cfg.TimeZone})
+	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot(), "accountConcurrency": concurrency, "gatewayConcurrency": s.gatewayConcurrency.Snapshot(), "timeZone": cfg.TimeZone})
 }
 
 func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
