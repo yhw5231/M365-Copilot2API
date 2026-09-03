@@ -21,22 +21,21 @@ func TestRecordToolUsageRecordsInputAndCachedTokens(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer sk-tool-usage-test")
-	// An explicit session ID makes history eligible as cached tokens (the
-	// resolver only reuses upstream conversations when a session ID is sent).
-	req.Header.Set(sessionHeaderName, "tool-usage-session")
 	res := chathub.Result{Text: "tool routing result"}
+	// The call site passes the same cached count it reported to the client
+	// (history restored from a reused upstream conversation).
+	var wantCache int64
+	for _, msg := range body.Messages[:len(body.Messages)-1] {
+		wantCache += EstimateTokens(contentToString(msg.Content))
+	}
 
-	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second))
+	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second), wantCache)
 
 	if len(s.usage.records) != 1 {
 		t.Fatalf("usage record count=%d want 1", len(s.usage.records))
 	}
 	rec := s.usage.records[0]
 	wantInput := EstimateTokens(contentToString(body.Messages[len(body.Messages)-1].Content))
-	var wantCache int64
-	for _, msg := range body.Messages[:len(body.Messages)-1] {
-		wantCache += EstimateTokens(contentToString(msg.Content))
-	}
 	if rec.InputTokens != wantInput {
 		t.Fatalf("input tokens=%d want %d", rec.InputTokens, wantInput)
 	}
@@ -56,7 +55,7 @@ func TestRecordToolUsageSingleMessageHasNoCachedTokens(t *testing.T) {
 	body := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "current request only"}}}
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 
-	s.recordToolUsage(req, auth.AccountToken{}, body, chathub.Result{Text: "result"}, time.Now())
+	s.recordToolUsage(req, auth.AccountToken{}, body, chathub.Result{Text: "result"}, time.Now(), 0)
 
 	rec := s.usage.records[0]
 	if rec.InputTokens == 0 {
@@ -67,10 +66,11 @@ func TestRecordToolUsageSingleMessageHasNoCachedTokens(t *testing.T) {
 	}
 }
 
-// TestRecordToolUsageWithoutSessionIDHasNoCachedTokens guards against the
-// false-positive cache reporting that DSH/pi-ai triggers: it sends full history
-// every turn but no session_id header, so the resolver never reuses and the
-// history must NOT be reported as cached tokens.
+// TestRecordToolUsageReportsPassedCachedValue guards the accounting contract:
+// recordToolUsage records exactly the cached count the call site computed for
+// the client, never re-estimates it from headers. A caller that knows the
+// upstream conversation was reused passes its cached total and input tokens are
+// the residual; a caller with no reuse passes 0 and all messages count as input.
 func TestRecordToolUsageWithoutSessionIDHasNoCachedTokens(t *testing.T) {
 	s := &Server{usage: &usageLog{persist: &persistStore{flush: func() error { return nil }}}}
 	body := &oaiReq{
@@ -86,13 +86,13 @@ func TestRecordToolUsageWithoutSessionIDHasNoCachedTokens(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer sk-tool-usage-test")
 	res := chathub.Result{Text: "tool routing result"}
 
-	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second))
+	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second), 0)
 
 	rec := s.usage.records[0]
 	if rec.CacheTokens != 0 {
-		t.Fatalf("no session_id: cache tokens=%d want 0 (history must not be counted as cached)", rec.CacheTokens)
+		t.Fatalf("no reuse: cache tokens=%d want 0 (all messages are new input)", rec.CacheTokens)
 	}
 	if rec.InputTokens == 0 {
-		t.Fatalf("no session_id: input tokens must include all messages, got 0")
+		t.Fatalf("no reuse: input tokens must include all messages, got 0")
 	}
 }

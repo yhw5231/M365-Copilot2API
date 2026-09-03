@@ -1989,9 +1989,9 @@ type oaiReq struct {
 	// onto SessionKey so the session resolver keeps the upstream conversation
 	// alive across turns — that reuse is what produces a non-zero
 	// cached_tokens for clients that only send prompt_cache_key.
-	PromptCacheKey      string   `json:"prompt_cache_key,omitempty"`
-	ConversationIDC     string   `json:"conversationId,omitempty"`
-	SessionIDC          string   `json:"sessionId,omitempty"`
+	PromptCacheKey  string `json:"prompt_cache_key,omitempty"`
+	ConversationIDC string `json:"conversationId,omitempty"`
+	SessionIDC      string `json:"sessionId,omitempty"`
 	// NewConversation forces a fresh upstream conversation: the session
 	// resolver, user-session and conversation-cache reuse paths are all skipped
 	// so the full message history is submitted to a brand-new conversation.
@@ -2719,7 +2719,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				calls = calls[:1]
 			}
 			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
-			s.recordToolUsage(r, acc, &body, routeRes, startedAt)
+			s.recordToolUsage(r, acc, &body, routeRes, startedAt, cachedTokens())
 			return
 		}
 		// Required tool choice: when the gateway forced tool_choice=required
@@ -2748,7 +2748,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						calls = calls[:1]
 					}
 					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, retryRes)
-					s.recordToolUsage(r, acc, &body, retryRes, startedAt)
+					s.recordToolUsage(r, acc, &body, retryRes, startedAt, cachedTokens())
 					return
 				}
 			}
@@ -2768,7 +2768,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						calls = calls[:1]
 					}
 					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, recoveryRes)
-					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt)
+					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt, cachedTokens())
 					return
 				}
 			}
@@ -3154,7 +3154,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				calls = calls[:1]
 			}
 			_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, toolResult)
-			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, false)
+			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, cachedTokens(), false)
 			return
 		}
 		if noTools {
@@ -3217,7 +3217,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
 		}
 		_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
-		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
+		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, cachedTokens(), true)
 		return
 	}
 	// Ask the upstream model to select and validate the next tool. The gateway
@@ -3298,7 +3298,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				calls = calls[:1]
 			}
 			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
-			s.recordToolUsage(r, acc, &body, routeRes, startedAt)
+			s.recordToolUsage(r, acc, &body, routeRes, startedAt, cachedTokens())
 			return
 		}
 		if fmt.Sprint(body.ToolChoice) == "required" {
@@ -3318,7 +3318,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						calls = calls[:1]
 					}
 					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, retryRes)
-					s.recordToolUsage(r, acc, &body, retryRes, startedAt)
+					s.recordToolUsage(r, acc, &body, retryRes, startedAt, cachedTokens())
 					return
 				}
 			}
@@ -3338,7 +3338,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						calls = calls[:1]
 					}
 					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, recoveryRes)
-					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt)
+					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt, cachedTokens())
 					return
 				}
 			}
@@ -3737,8 +3737,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						_ = keepalive.lockedWrite("data: " + mustJSON(usageChunk) + "\n\n")
 					}
 					_ = keepalive.lockedWrite("data: [DONE]\n\n")
-					s.recordToolUsage(r, acc, &body, res, startedAt)
-					s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, false)
+					s.recordToolUsage(r, acc, &body, res, startedAt, cachedTokens())
+					s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, cachedTokens(), false)
 					return
 				}
 				// Required tool choice on the reasoning stream: when the gateway
@@ -3837,8 +3837,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 							_ = keepalive.lockedWrite("data: " + mustJSON(usageChunk) + "\n\n")
 						}
 						_ = keepalive.lockedWrite("data: [DONE]\n\n")
-						s.recordToolUsage(r, acc, &body, retryRes, startedAt)
-						s.bindConversation(acc, &body, r, retryRes, answerPrompt, startedAt, task, false)
+						s.recordToolUsage(r, acc, &body, retryRes, startedAt, cachedTokens())
+						s.bindConversation(acc, &body, r, retryRes, answerPrompt, startedAt, task, cachedTokens(), false)
 						return
 					}
 					// The retry still produced no tool call. Before failing the
@@ -3898,8 +3898,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 								_ = keepalive.lockedWrite("data: " + mustJSON(usageChunk) + "\n\n")
 							}
 							_ = keepalive.lockedWrite("data: [DONE]\n\n")
-							s.recordToolUsage(r, acc, &body, recRes, startedAt)
-							s.bindConversation(acc, &body, r, recRes, answerPrompt, startedAt, task, false)
+							s.recordToolUsage(r, acc, &body, recRes, startedAt, cachedTokens())
+							s.bindConversation(acc, &body, r, recRes, answerPrompt, startedAt, task, cachedTokens(), false)
 							return
 						}
 					}
@@ -4054,7 +4054,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
 		}
 		_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
-		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
+		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, cachedTokens(), true)
 		return
 	} else {
 		res, err = s.chatWithAccount(ctx, acc.ID, account, answerReq)
@@ -4259,7 +4259,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		s.recordContentReviewStop(r, &body, acc, prompt, startedAt, res.Text, body.Stream)
 		s.dropFilteredSession(r, &body)
 	} else if res.ConversationID != "" {
-		s.bindConversation(acc, &body, r, res, prompt, startedAt, task, true)
+		s.bindConversation(acc, &body, r, res, prompt, startedAt, task, cachedTokens(), true)
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			w.Header().Set(sessionHeaderName, resolved.SessionID)
@@ -4455,7 +4455,7 @@ func sessionIDFromRequest(r *http.Request) string {
 // bindConversation 鍦ㄨ姹傚畬鎴愬悗鐧昏浼氳瘽瑙ｆ瀽鍣ㄧ储寮曚笌缂撳瓨缁熻锛屾祦寮忎笌闈炴祦寮?
 // 璺緞鍏辩敤銆俧inalRound 涓?false 鏃惰烦杩囨湇鍔＄鐘舵€佷慨姝ｏ紙宸ュ叿璋冪敤杞棤娉曞畨鍏?
 // 鍒ゆ柇瀹屾垚鎺緸鐨勭湡瀹炴剰鍥撅級銆?
-func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time, task *taskLedger, finalRound bool) {
+func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time, task *taskLedger, cached int64, finalRound bool) {
 	if res.ConversationID == "" {
 		return
 	}
@@ -4501,36 +4501,14 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	}
 
 	apiKey := extractAPIKey(r)
-	// Only count history tokens when the request carries an explicit session ID
-	// (header or body session_key mapped from prompt_cache_key) AND the session
-	// was actually reused upstream. Without a session id the resolver always
-	// returns IsNew, so there is no upstream reuse and counting history tokens
-	// as "cached" would be misleading. DSH/pi-ai sends full history every turn;
-	// its prompt_cache_key now provides the session identity, so history tokens
-	// are correctly attributed as cached.
-	historyTokens := int64(0)
-	explicitID := explicitSessionID(r, body)
-	if explicitID != "" {
-		upper := len(body.Messages) - 1
-		if upper < 0 {
-			upper = 0
-		}
-		for _, msg := range body.Messages[:upper] {
-			historyTokens += EstimateTokens(contentToString(msg.Content))
-		}
-		// Single-turn incremental reuse (explicit_incremental): the request carried
-		// only the current turn, but the upstream conversation already held the
-		// persisted history. Account those pre-existing tokens as cached history so
-		// the server-side usage record matches the cached_tokens reported to the
-		// client. A first turn has no session binding yet, so this stays zero.
-		if upper == 0 && body.SessionID != "" {
-			if sess, ok := s.sessionResolver.GetSession(body.SessionID); ok && len(sess.ContextHistory) > 0 {
-				for _, msg := range sess.ContextHistory {
-					historyTokens += EstimateTokens(contentToString(msg.Content))
-				}
-			}
-		}
-	}
+	// The caller passes the same cached-token count that the downstream response
+	// reports (cachedTokens() in openaiChat, the responses/messages handlers'
+	// own computation). The gateway must record what it actually served from a
+	// reused upstream conversation regardless of HOW the reuse happened
+	// (session_key / prompt_cache_key / conversation_id / previous_response_id),
+	// so the admin panel and trace records can never show 0 while the client
+	// sees a non-zero cached_tokens. cached is already 0 for fresh
+	// conversations, so no separate IsNew guard is needed here.
 	newTokens := EstimateTokens(prompt)
 	outTokens := EstimateTokens(res.Text)
 	durMs := time.Since(startedAt).Milliseconds()
@@ -4540,7 +4518,7 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 		speed = float64(outTokens) / (float64(durMs) / 1000.0)
 	}
 	sessions := s.sessionResolver.ListSessions()
-	cacheStats.RecordRequest(apiKey, historyTokens > 0, newTokens, historyTokens, len(sessions))
+	cacheStats.RecordRequest(apiKey, cached > 0, newTokens, cached, len(sessions))
 	keyLabel := apiKeyPrefix(r)
 	s.usage.record(UsageRecord{
 		Time:           time.Now(),
@@ -4552,7 +4530,7 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 		Stream:         body.Stream,
 		InputTokens:    newTokens,
 		OutputTokens:   outTokens,
-		CacheTokens:    historyTokens,
+		CacheTokens:    cached,
 		TTFTMs:         ttft,
 		SpeedTPs:       speed,
 		DurationMs:     durMs,
@@ -4566,7 +4544,7 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 			rec.ReasoningLevel = body.ReasoningEffort
 			rec.InputTokens = newTokens
 			rec.OutputTokens = outTokens
-			rec.CachedTokens = historyTokens
+			rec.CachedTokens = cached
 			rec.TTFTMs = ttft
 			rec.SpeedTPs = speed
 			rec.DurationMs = durMs
@@ -4576,20 +4554,18 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 
 // recordToolUsage records a successful usage entry for requests that return a
 // tool-call response short-circuit (routed tool turns) without a final answer.
-func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *oaiReq, res chathub.Result, startedAt time.Time) {
-	// Tool-call short-circuits do not pass through bindConversation, so calculate
-	// their request and cached-history tokens here instead of leaving them zero.
-	// Only count history as cached when the request carries an explicit session
-	// ID (the resolver never reuses without it), matching bindConversation.
-	var inputTokens, cacheTokens int64
-	last := len(body.Messages) - 1
-	for i, msg := range body.Messages {
-		tokens := EstimateTokens(contentToString(msg.Content))
-		if i < last && explicitSessionID(r, body) != "" {
-			cacheTokens += tokens
-		} else {
-			inputTokens += tokens
-		}
+func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *oaiReq, res chathub.Result, startedAt time.Time, cached int64) {
+	// Tool-call short-circuits do not pass through bindConversation, so record
+	// their tokens here. The cached value is the same one the downstream usage
+	// chunk reports (cachedTokens() at the call site), so the admin panel and
+	// trace never show 0 while the client sees cached_tokens > 0.
+	var inputTokens int64
+	for _, msg := range body.Messages {
+		inputTokens += EstimateTokens(contentToString(msg.Content))
+	}
+	inputTokens -= cached
+	if inputTokens < 0 {
+		inputTokens = 0
 	}
 	outputTokens := EstimateTokens(res.Text)
 	durationMs := time.Since(startedAt).Milliseconds()
@@ -4604,7 +4580,7 @@ func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *o
 		Stream:         body.Stream,
 		InputTokens:    inputTokens,
 		OutputTokens:   outputTokens,
-		CacheTokens:    cacheTokens,
+		CacheTokens:    cached,
 		TTFTMs:         res.TTFTMs,
 		DurationMs:     durationMs,
 		Status:         200,
@@ -4617,7 +4593,7 @@ func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *o
 			rec.ReasoningLevel = body.ReasoningEffort
 			rec.InputTokens = inputTokens
 			rec.OutputTokens = outputTokens
-			rec.CachedTokens = cacheTokens
+			rec.CachedTokens = cached
 			rec.TTFTMs = res.TTFTMs
 			rec.DurationMs = durationMs
 		})
