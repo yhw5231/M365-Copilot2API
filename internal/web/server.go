@@ -3151,6 +3151,31 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			text.Reset()
 			text.WriteString(res.Text)
 		}
+		// A bare internal routing marker (e.g. "NO_TOOL_NEEDED: no file or
+		// code change is being performed") is a protocol token between the
+		// gateway and the upstream model, never a deliverable for the user.
+		// Forwarding it as the final answer lets a client believe the round
+		// completed with no work done, and the marker then poisons the
+		// conversation history where the model keeps echoing it. Intercept
+		// it and rerun once for a real answer; a second marker fails the
+		// request instead of reaching the client.
+		if len(toolMaps) > 0 && isBareNoToolMarker(res.Text) {
+			recoveryReq := answerReq
+			recoveryReq.Text = noToolMarkerRecoveryText(toolMaps, prompt+"\n"+ledger.RouterContext())
+			recRes, recErr := s.chatWithAccount(ctx, acc.ID, account, recoveryReq)
+			if recErr == nil && !isBareNoToolMarker(recRes.Text) && strings.TrimSpace(recRes.Text) != "" {
+				log.Printf("[req-trace] id=%s stage=internal_marker_recovered text_len=%d", requestID, len(recRes.Text))
+				res = recRes
+				text.Reset()
+				text.WriteString(res.Text)
+			} else {
+				log.Printf("[req-trace] id=%s stage=internal_marker_unrecovered err=%v", requestID, recErr)
+				_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned an internal tool-selection marker instead of an answer", "type": "upstream_error", "code": "upstream_internal_marker"}})+"\n\n")
+				_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+				s.markTraceError(r, errors.New("upstream returned bare NO_TOOL_NEEDED marker"), http.StatusBadGateway)
+				return
+			}
+		}
 		rawCalls := streamedTools
 		if len(rawCalls) == 0 {
 			rawCalls = fencedToolCalls(text.String(), toolMaps, body.ToolChoice)
@@ -4102,6 +4127,29 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 				return false
 			}
+			// A bare internal routing marker must not reach the client here
+			// either (same rule as the content-stream path). Marker answers are
+			// short, so they always sit inside the still-buffered text window:
+			// nothing has been emitted yet and the authoritative res.Text can be
+			// replaced safely. Rerun once for a real answer; a second marker
+			// fails the request instead of being forwarded.
+			if len(toolMaps) > 0 && !textGateMisjudged && !corrected && isBareNoToolMarker(res.Text) {
+				recoveryReq := answerReq
+				recoveryReq.Text = noToolMarkerRecoveryText(toolMaps, prompt+"\n"+ledger.RouterContext())
+				recRes, recErr := s.chatWithAccount(ctx, acc.ID, account, recoveryReq)
+				if recErr == nil && !isBareNoToolMarker(recRes.Text) && strings.TrimSpace(recRes.Text) != "" {
+					log.Printf("[req-trace] id=%s stage=internal_marker_recovered_reasoning text_len=%d", requestID, len(recRes.Text))
+					res = recRes
+					bufferedContent.Reset()
+					bufferedContent.WriteString(res.Text)
+				} else {
+					log.Printf("[req-trace] id=%s stage=internal_marker_unrecovered_reasoning err=%v", requestID, recErr)
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned an internal tool-selection marker instead of an answer", "type": "upstream_error", "code": "upstream_internal_marker"}})+"\n\n")
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+					s.markTraceError(r, errors.New("upstream returned bare NO_TOOL_NEEDED marker"), http.StatusBadGateway)
+					return
+				}
+			}
 			if textGateMisjudged || corrected {
 				// correction content already written inline above
 				if reviewTail() {
@@ -4365,6 +4413,26 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
 				return
 			}
+		}
+	}
+	// A bare internal routing marker (e.g. "NO_TOOL_NEEDED: no file or code
+	// change is being performed") is a protocol token between the gateway and
+	// the upstream model, never a deliverable for the user. Intercept it before
+	// any client output and rerun once for a real answer; a second marker fails
+	// the request (502) instead of being forwarded — forwarding it would let a
+	// client believe the round completed with no work done and would poison the
+	// conversation history with a marker the model keeps echoing.
+	if len(toolMaps) > 0 && isBareNoToolMarker(res.Text) {
+		recoveryReq := answerReq
+		recoveryReq.Text = noToolMarkerRecoveryText(toolMaps, prompt+"\n"+ledger.RouterContext())
+		recRes, recErr := s.chatWithAccount(ctx, acc.ID, account, recoveryReq)
+		if recErr == nil && !isBareNoToolMarker(recRes.Text) && strings.TrimSpace(recRes.Text) != "" {
+			log.Printf("[req-trace] id=%s stage=internal_marker_recovered_sync text_len=%d", requestID, len(recRes.Text))
+			res = recRes
+		} else {
+			log.Printf("[req-trace] id=%s stage=internal_marker_unrecovered_sync err=%v", requestID, recErr)
+			writeOpenAIError(w, http.StatusBadGateway, "upstream_internal_marker", "upstream returned an internal tool-selection marker instead of an answer")
+			return
 		}
 	}
 	if isContentPolicyBlock(res.Text) {
