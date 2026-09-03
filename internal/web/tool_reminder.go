@@ -64,5 +64,5 @@ func injectToolReminder(messages []oaiMsg, tools []chathub.Tool) []oaiMsg {
 	text := fmt.Sprintf(`[TOOL_REMINDER] Declared tools in this session: %s.
 
 Do NOT claim these tools are unavailable, and do NOT claim the workspace lacks file or shell access: their schemas are in your instructions alongside this message. Before editing a file, read it first and make sure old_string and new_string DIFFER — an edit whose old and new strings are identical is rejected. End this round with at least one verified tool call or a completed change; a status-only message does not advance the task.`, list)
-	return append(messages, oaiMsg{Role: "system", Content: text})
+	return append(messages, oaiMsg{Role: "system", Content: text, ServiceInjected: true})
 }

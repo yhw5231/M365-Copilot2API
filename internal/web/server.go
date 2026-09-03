@@ -1958,6 +1958,26 @@ type oaiMsg struct {
 	ToolCallID       string           `json:"tool_call_id,omitempty"`
 	ToolCalls        []map[string]any `json:"tool_calls,omitempty"`
 	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	// ServiceInjected marks messages the gateway appended to the request itself
+	// (tool reminders, corrective instructions, round-limit notices). They are
+	// sent upstream so the model sees them, but they must never enter session
+	// history or prefix matching: the client never echoes them back, so storing
+	// them shifts every later comparison into a context reset (full replay).
+	// Never serialized.
+	ServiceInjected bool `json:"-"`
+}
+
+// withoutServiceInjected filters gateway-injected messages (ServiceInjected)
+// out of a message list, preserving the client's original order.
+func withoutServiceInjected(msgs []oaiMsg) []oaiMsg {
+	out := make([]oaiMsg, 0, len(msgs))
+	for _, m := range msgs {
+		if m.ServiceInjected {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 type oaiReq struct {
@@ -1984,6 +2004,14 @@ type oaiReq struct {
 	ConversationID      string   `json:"conversation_id"`
 	SessionID           string   `json:"session_id"`
 	SessionKey          string   `json:"session_key"`
+	// ClientMessages is the client's original message list captured immediately
+	// after decode, BEFORE the gateway applies budget trimming and injects tool
+	// reminders / corrections. Session binding, prefix matching, incremental
+	// slicing, history storage, and cache accounting all key off this pristine
+	// copy: gateway-injected content would otherwise shift the prefix match and
+	// turn every tool-carrying reuse into a context reset (full replay, cache 0).
+	// Never serialized; openaiChat always re-captures it on entry.
+	ClientMessages []oaiMsg `json:"-"`
 	// PromptCacheKey is the OpenAI-standard per-session cache-affinity key that
 	// relays (sub2api / codex-style clients) send on chat completions. It maps
 	// onto SessionKey so the session resolver keeps the upstream conversation
@@ -2231,6 +2259,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
 		return
 	}
+	// Capture the client's own messages before the gateway injects tool
+	// reminders / corrections and before budget trimming. Session history and
+	// prefix matching compare against this pristine copy: the client echoes it
+	// back verbatim next turn, so any injected/trimmed divergence would shift
+	// the prefix and force a full replay (cache 0) on every request.
+	body.ClientMessages = cloneMessages(body.Messages)
 	// prompt_cache_key (OpenAI cache-affinity) doubles as the downstream session
 	// identity, exactly like the Responses adapter's mapping. Without it the
 	// resolver sees a brand-new session every turn, the upstream conversation is
@@ -2308,7 +2342,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// so the model can finalize its answer gracefully.
 		if strings.Contains(err.Error(), "round limit") {
 			body.Messages = append(body.Messages,
-				oaiMsg{Role: "system", Content: fmt.Sprintf("Tool round limit reached (%d). You must now summarize your work and provide a final answer. Do NOT call any more tools.", maxToolRounds())},
+				oaiMsg{Role: "system", Content: fmt.Sprintf("Tool round limit reached (%d). You must now summarize your work and provide a final answer. Do NOT call any more tools.", maxToolRounds()), ServiceInjected: true},
 			)
 		} else if strings.Contains(err.Error(), "repeated tool failure") || strings.Contains(err.Error(), "stuck tool loop") {
 			// The model repeated the same tool call and it failed again. Instead
@@ -2333,7 +2367,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					"Your recent tool call repeated and failed (%s). Change strategy: re-read the target file first, verify the exact current content, then retry with a DIFFERENT, correct old_string/new_string pair (or use a different tool). Do NOT repeat the same failing call unchanged.", sig)
 			}
 			body.Messages = append(body.Messages,
-				oaiMsg{Role: "system", Content: correctionMsg},
+				oaiMsg{Role: "system", Content: correctionMsg, ServiceInjected: true},
 			)
 		} else {
 			w.Header().Set("Content-Type", "application/json")
@@ -2379,7 +2413,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			sb.WriteString(" The compiler is still rejecting the file: " + detail.SyntaxError + ". You must replace the offending line with CORRECTED, DIFFERENT content (e.g. a missing colon or return type annotation), not write the same broken text back.")
 		}
 		sb.WriteString(" If you just want to verify file content, use the read tool instead of edit. Do NOT submit edit with old_string == new_string, and do NOT write a line back to the same broken value.")
-		body.Messages = append(body.Messages, oaiMsg{Role: "system", Content: sb.String()})
+		body.Messages = append(body.Messages, oaiMsg{Role: "system", Content: sb.String(), ServiceInjected: true})
 	}
 	var prompt string
 	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
@@ -2489,8 +2523,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				resolvedConversationID = resolved.ConversationID
 				body.ConversationID = resolved.ConversationID
 				body.SessionID = resolved.SessionID
-				if resolved.HistoryLen > 0 && resolved.HistoryLen < len(body.Messages) {
-					incPrompt, incAtt := flattenPromptMessages(body.Messages[resolved.HistoryLen:], nil)
+				if resolved.HistoryLen > 0 && resolved.HistoryLen < len(body.ClientMessages) {
+					// Slice the increment from the client's ORIGINAL messages (the
+					// prefix was matched against ClientMessages). Budget trimming
+					// shortens body.Messages from the head, so slicing the mutated
+					// copy would misalign the index; the pristine capture keeps it
+					// correct. The upstream conversation already holds the matched
+					// history, so the increment carries only the new client
+					// messages — the injected tool reminder was part of the
+					// previously sent context and does not need re-sending.
+					incPrompt, incAtt := flattenPromptMessages(body.ClientMessages[resolved.HistoryLen:], nil)
 					incPrompt = strings.TrimSpace(incPrompt)
 					if incPrompt != "" {
 						answerPrompt = incPrompt
@@ -3141,6 +3183,45 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		calls, _ = validateCalls("stream", calls)
 		calls = filterCompletedCalls(calls, ledger)
+		// Unfulfilled tool claims: the answer *asserts* a completed file/code
+		// change ("已修正…/已更新文件…", "fixed …/updated …") but the round
+		// produced no tool call in any encoding. Forwarding the prose as the
+		// final answer makes the client believe the change happened when it did
+		// not (the model often misreads "不用进行测试" — "no tests needed" — as
+		// "skip the change"). Run one soft repair that demands a real call;
+		// with no calls the original text is forwarded unchanged.
+		if len(calls) == 0 && len(toolMaps) > 0 && unfulfilledRepairEnabled() && unfulfilledToolClaimed(res.Text) {
+			repairPrompt := unfulfilledClaimRepairText(toolMaps, prompt+"\n"+ledger.RouterContext())
+			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: repairPrompt, Tone: tone, Attachments: body.Attachments})
+			if repairErr == nil {
+				repaired, parsed := parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
+				if !parsed || len(repaired) == 0 {
+					repaired = fencedToolCalls(repairRes.Text, toolMaps, body.ToolChoice)
+				}
+				if len(repaired) == 0 {
+					repaired = xmlToolCalls(repairRes.Text, toolMaps, body.ToolChoice)
+				}
+				repaired = filterCompletedCalls(repaired, ledger)
+				repaired, _ = validateCalls("stream-unfulfilled-repair", repaired)
+				if len(repaired) > 0 {
+					repaired = limitToolCalls(repaired, adaptiveToolCallLimit(repaired, configuredToolCallLimit(s.settings)))
+					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(repaired) > 1 {
+						repaired = repaired[:1]
+					}
+					log.Printf("[req-trace] id=%s stage=unfulfilled_claim_repaired count=%d names=%v", requestID, len(repaired), func() []string {
+						var n []string
+						for _, c := range repaired {
+							n = append(n, c.Name)
+						}
+						return n
+					}())
+					_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), repaired, repairRes)
+					s.bindConversation(acc, &body, r, repairRes, answerPrompt, startedAt, task, cachedTokens(), false)
+					return
+				}
+			}
+			log.Printf("[req-trace] id=%s stage=unfulfilled_claim_unrepaired text_len=%d err=%v", requestID, len(res.Text), repairErr)
+		}
 		if len(calls) > 0 {
 			log.Printf("[req-trace] id=%s stage=tool_calls_detected count=%d names=%v", requestID, len(calls), func() []string {
 				var n []string
@@ -3685,6 +3766,84 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 				calls = filterCompletedCalls(calls, ledger)
 				calls, _ = validateCalls("reasoning-stream", calls)
+				// Unfulfilled tool claims on the reasoning stream, same as the
+				// content-stream path: an answer that asserts a completed
+				// change ("已修正…/已更新文件…") without any encoded tool call
+				// is repaired once to force a real call, so the client executes
+				// it instead of believing the prose. Only reasoning was
+				// streamed inline so far; the content is still buffered and can
+				// be replaced by the repair.
+				if len(calls) == 0 && len(toolMaps) > 0 && unfulfilledRepairEnabled() && unfulfilledToolClaimed(res.Text) && !textGateMisjudged && !corrected {
+					repairReq := answerReq
+					repairReq.Text = unfulfilledClaimRepairText(toolMaps, prompt+"\n"+ledger.RouterContext())
+					repairRes, repairErr := s.chatWithAccountReasoning(ctx, acc.ID, account, repairReq, nil, nil)
+					if repairErr == nil {
+						repaired, parsed := parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
+						if !parsed || len(repaired) == 0 {
+							repaired = fencedToolCalls(repairRes.Text, toolMaps, body.ToolChoice)
+						}
+						if len(repaired) == 0 {
+							repaired = xmlToolCalls(repairRes.Text, toolMaps, body.ToolChoice)
+						}
+						repaired = filterCompletedCalls(repaired, ledger)
+						repaired, _ = validateCalls("reasoning-stream-unfulfilled-repair", repaired)
+						if len(repaired) > 0 {
+							repaired = limitToolCalls(repaired, adaptiveToolCallLimit(repaired, configuredToolCallLimit(s.settings)))
+							if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(repaired) > 1 {
+								repaired = repaired[:1]
+							}
+							scope := fmt.Sprintf("%d:%v:reasoning-unfulfilled-repair", len(body.Messages), completedCallIDs(ledger))
+							for i := range repaired {
+								repaired[i].ID = scopedCallID(repaired[i].Name, string(repaired[i].Arguments), i, scope)
+							}
+							writeToolChunk := func(delta map[string]any, finish any) error {
+								chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}}}
+								return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
+							}
+							_ = writeToolChunk(map[string]any{"role": "assistant", "content": nil}, nil)
+							for i, tc := range repaired {
+								typ := tc.Type
+								if typ == "" {
+									typ = "function"
+								}
+								isLast := i == len(repaired)-1
+								_ = writeToolChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil)
+								args := string(tc.Arguments)
+								const argChunkSize = 512
+								for off := 0; off < len(args); off += argChunkSize {
+									end := off + argChunkSize
+									if end > len(args) {
+										end = len(args)
+									}
+									for end < len(args) && !utf8.RuneStart(args[end]) {
+										end++
+									}
+									argChunk := args[off:end]
+									isLastArgChunk := off+argChunkSize >= len(args)
+									var finish any
+									if isLast && isLastArgChunk {
+										finish = "tool_calls"
+									}
+									_ = writeToolChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "function": map[string]any{"arguments": argChunk}}}}, finish)
+								}
+								if len(args) == 0 && isLast {
+									_ = writeToolChunk(map[string]any{}, "tool_calls")
+								}
+							}
+							if body.shouldSendStreamUsage() {
+								pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
+								ct := EstimateTokens(repairRes.Text)
+								usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedTokens())}
+								_ = keepalive.lockedWrite("data: " + mustJSON(usageChunk) + "\n\n")
+							}
+							_ = keepalive.lockedWrite("data: [DONE]\n\n")
+							s.recordToolUsage(r, acc, &body, repairRes, startedAt, cachedTokens())
+							s.bindConversation(acc, &body, r, repairRes, answerPrompt, startedAt, task, cachedTokens(), false)
+							return
+						}
+					}
+					log.Printf("[req-trace] id=%s stage=unfulfilled_claim_unrepaired reasoning text_len=%d err=%v", requestID, len(res.Text), repairErr)
+				}
 				if len(calls) > 0 {
 					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
 					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
@@ -4476,7 +4635,17 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 		}
 	}
 	historyBody := *body
-	historyBody.Messages = append(cloneMessages(body.Messages), oaiMsg{
+	// Store the client's ORIGINAL messages (ClientMessages, captured before the
+	// gateway injected tool reminders / corrections and before budget trimming)
+	// plus the assistant reply. The client echoes exactly these messages back on
+	// the next turn; if injected or trimmed content were stored, the prefix
+	// match would shift and every tool-carrying request would be treated as a
+	// context reset (full replay, cache 0).
+	history := body.ClientMessages
+	if len(history) == 0 {
+		history = withoutServiceInjected(body.Messages)
+	}
+	historyBody.Messages = append(cloneMessages(history), oaiMsg{
 		Role:             "assistant",
 		Content:          res.Text,
 		ReasoningContent: res.Reasoning,
@@ -4560,7 +4729,11 @@ func (s *Server) recordToolUsage(r *http.Request, acc auth.AccountToken, body *o
 	// chunk reports (cachedTokens() at the call site), so the admin panel and
 	// trace never show 0 while the client sees cached_tokens > 0.
 	var inputTokens int64
-	for _, msg := range body.Messages {
+	msgs := body.ClientMessages
+	if len(msgs) == 0 {
+		msgs = withoutServiceInjected(body.Messages)
+	}
+	for _, msg := range msgs {
 		inputTokens += EstimateTokens(contentToString(msg.Content))
 	}
 	inputTokens -= cached

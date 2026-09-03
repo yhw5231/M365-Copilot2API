@@ -254,6 +254,17 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	explicitID := explicitSessionID(r, body)
 	key := extractAPIKey(r)
 
+	// Compare against the client's original messages, not the gateway-mutated
+	// copy: injected tool reminders / corrections and budget trimming would
+	// shift the prefix and turn every tool-carrying reuse into a context reset
+	// (full replay, cache 0). openaiChat captures ClientMessages before any
+	// mutation; fall back to withoutServiceInjected(body.Messages) for standalone
+	// callers (tests, runOpenAIAdapter's serialized oaiReq) that never inject.
+	msgs := body.ClientMessages
+	if len(msgs) == 0 {
+		msgs = withoutServiceInjected(body.Messages)
+	}
+
 	// 瀹㈡埛绔樉寮忔寚瀹氱殑浼氳瘽 ID 鏄渶楂樹紭鍏堢殑缁帴璇箟锛氫笉鍙備笌浠讳綍韬唤鍒ゅ畾锛?
 	// 鐢辫皟鐢ㄦ柟涓诲姩鍐冲畾瑕佺户缁摢涓簯绔璇濄€?
 	if explicitID != "" {
@@ -269,14 +280,14 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 				MatchedBy:      "explicit",
 				IsNew:          false,
 			}
-			if n := contextPrefixLen(sess.ContextHistory, body.Messages); n > 0 {
+			if n := contextPrefixLen(sess.ContextHistory, msgs); n > 0 {
 				result.HistoryLen = n
 				result.MatchedBy = fmt.Sprintf("explicit_prefix_%d", n)
 				return result
 			}
 			// A request containing only the current turn is a normal incremental
 			// client mode, not evidence that the client compacted its context.
-			if len(body.Messages) <= 1 {
+			if len(msgs) <= 1 {
 				result.MatchedBy = "explicit_incremental"
 				result.StoredContext = cloneMessages(sess.ContextHistory)
 				return result
