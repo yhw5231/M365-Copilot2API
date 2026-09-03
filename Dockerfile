@@ -7,7 +7,32 @@ COPY . .
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X m365-copilot2api/internal/web.Version=${VERSION#v} -X m365-copilot2api/internal/web.Commit=${COMMIT} -X m365-copilot2api/internal/web.BuildTime=${BUILD_TIME}" -o /out/m365-copilot2api ./cmd/server
+# docker compose build never passes build-args, which left every local rebuild
+# reporting "dev/unknown" in /api/version — deployers could not tell whether the
+# container actually carries the new code. When the build context includes the
+# git history, derive the values from it; CI passes the explicit ARGs and they
+# take precedence over the git-derived defaults.
+RUN set -eu; \
+    if [ "${VERSION}" = "dev" ] && [ -d .git ]; then \
+        apk add --no-cache git >/dev/null 2>&1 || true; \
+        VERSION="$(git describe --tags --match 'v[0-9]*' --always 2>/dev/null || echo dev)"; \
+    fi; \
+    if [ "${COMMIT}" = "unknown" ] && [ -d .git ]; then \
+        COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"; \
+    fi; \
+    if [ "${BUILD_TIME}" = "unknown" ]; then \
+        BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+    fi; \
+    printf '%s' "${VERSION#v}" > /tmp/version; \
+    printf '%s' "${COMMIT}" > /tmp/commit; \
+    printf '%s' "${BUILD_TIME}" > /tmp/buildtime; \
+    echo "build metadata: version=$(cat /tmp/version) commit=$(cat /tmp/commit) build_time=$(cat /tmp/buildtime)"
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags="-s -w \
+    -X m365-copilot2api/internal/web.Version=$(cat /tmp/version) \
+    -X m365-copilot2api/internal/web.Commit=$(cat /tmp/commit) \
+    -X m365-copilot2api/internal/web.BuildTime=$(cat /tmp/buildtime)" \
+    -o /out/m365-copilot2api ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache su-exec tzdata \

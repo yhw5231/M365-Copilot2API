@@ -4,7 +4,7 @@
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本号遵循
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [v0.5.1] - 2026-09-03
 
 ### 变更
 
@@ -18,6 +18,48 @@
   `accounts.json` 并封存为 `accounts.json.migrated`（不删除）；旧环境变量
   `M365_CONFIG` / `M365_TOKEN_CACHE` / `M365_TOKEN_FILE` 仅作为迁移来源识别，
   不再决定存储位置。启用了 `M365_TOKEN_ENC_KEY` 时账号文件同样密文落盘。
+- **控制台翻译循环修复**：`translatePage` 自身的 DOM 写入不再触发
+  MutationObserver 无限重入（此前会造成控制台白屏卡死）；时区下拉仅在标签
+  变化时写回。
+- **模型路由推理等级覆盖下游请求**：模型路由在后台配置的推理等级现在优先于
+  客户端请求的 `reasoning.effort`（未配置等级的路由沿用客户端请求值），
+  保证每条路由始终以调好的等级运行。
+
+### 修复
+
+- **启动阻塞导致 Web 页面打不开**：启动时的全量令牌刷新改为后台执行。此前
+  `RefreshExpiredTokens` 在 HTTP 监听之前同步串行刷新所有过期账号（每账号
+  一次网络往返），账号较多时耗时数分钟，期间 Web 控制台与 API 全部不可达，
+  日志停在 `auto-cleanup enabled` 后没有 `listening on` 行。
+- **调试记录（调试页）字段失真**：`/v1/responses` 完成回调不再用原始客户端
+  值覆盖推理等级（常为空导致"完成时变空"），也不再覆盖上游真实首字耗时
+  （适配器侧测量受推理门控影响接近总耗时，导致"完成时≈总耗时"）。
+- **下游缓存值恒为 0**：内部 chat 请求强制携带
+  `stream_options.include_usage=true`，恢复 `/v1/responses` 流式链路的内层
+  缓存信号（此前内层 usage 分块被门控抑制）；usage 分块恢复默认发送（客户端
+  显式 `include_usage=false` 才省略），兼容不声明 `stream_options` 的中转层。
+- **`store:false` 时响应 id 为 `<nil>`**：`/v1/responses` 在关闭历史保留时
+  回退新生成 `resp_` id，不再返回字面量 `"<nil>"`。
+- **Anthropic 端点错误形状**：`/v1/messages` 的 401/503/500/404 改按官方
+  `{type:"error",error:{type,message}}` 返回并映射 `error.type`；流式上游失败
+  转为流内 `error` 事件，等待期间发 `ping` 保活，防止中间代理空闲断连。
+- **`/v1/responses` 流式兼容性**：增加 keep-alive；修复 message/tool 输出项
+  `output_index` 冲突与 message 项未闭合；流式期间长推理静默不再断连。
+- **chat 流式协议保真**：usage 分块调整为官方顺序（finish 分块后跟空
+  `choices` 的 usage 分块）；空完成不再以成功流收尾；流内错误帧补 `type`
+  字段；`response.failed` 的 `code` 改字符串。
+- **请求校验与状态码**：`/v1/responses`、`/v1/messages` 请求体加 10MiB 上限
+  并正确返回 413；405 带 `Allow: POST`；未知 `/v1/*` 路径返回 JSON 404。
+- **用量口径**：工具调用非流式 usage 的 prompt/completion 口径修正；
+  `/v1/responses` usage 补 `output_tokens_details.reasoning_tokens`（含 chat
+  别名），非流式输出估算纳入推理内容；`input` 数组中的字符串项不再被静默
+  丢弃；`stop`/`n`/`seed`/`logprobs` 被忽略时在 `m365_ignored_parameters`
+  中如实披露。
+- **容器构建版本元数据**：`docker compose build` 未传 build-args 时自动从
+  git 历史推导版本号/提交/构建时间，`/api/version` 不再显示 `dev/unknown`，
+  部署后可直接核对容器内的实际代码版本。
+
+## [Unreleased]
 
 ### 新增
 
