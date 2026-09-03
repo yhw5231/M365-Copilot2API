@@ -966,6 +966,7 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		Endpoint:     "/v1/messages",
 		InputTokens:  int64(estimate.Values["input_tokens"].(int)),
 		OutputTokens: int64(estimate.Values["output_tokens"].(int)),
+		CacheTokens:  cachedTokensFromUsage(out["usage"]),
 		DurationMs:   time.Since(startedAt).Milliseconds(),
 		Status:       200,
 	})

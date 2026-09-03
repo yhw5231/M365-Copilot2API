@@ -1984,6 +1984,12 @@ type oaiReq struct {
 	ConversationID      string   `json:"conversation_id"`
 	SessionID           string   `json:"session_id"`
 	SessionKey          string   `json:"session_key"`
+	// PromptCacheKey is the OpenAI-standard per-session cache-affinity key that
+	// relays (sub2api / codex-style clients) send on chat completions. It maps
+	// onto SessionKey so the session resolver keeps the upstream conversation
+	// alive across turns — that reuse is what produces a non-zero
+	// cached_tokens for clients that only send prompt_cache_key.
+	PromptCacheKey      string   `json:"prompt_cache_key,omitempty"`
 	ConversationIDC     string   `json:"conversationId,omitempty"`
 	SessionIDC          string   `json:"sessionId,omitempty"`
 	// NewConversation forces a fresh upstream conversation: the session
@@ -2224,6 +2230,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
 		return
+	}
+	// prompt_cache_key (OpenAI cache-affinity) doubles as the downstream session
+	// identity, exactly like the Responses adapter's mapping. Without it the
+	// resolver sees a brand-new session every turn, the upstream conversation is
+	// recreated each time, and cached_tokens stays 0 for relays that only send
+	// this key (sub2api / codex-style clients).
+	if body.SessionKey == "" {
+		body.SessionKey = strings.TrimSpace(body.PromptCacheKey)
 	}
 	// Whether the client explicitly pinned an account in the request body.
 	// Session-bound accounts (session_key / session_id / previous_response_id)

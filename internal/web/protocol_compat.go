@@ -438,10 +438,34 @@ type anthropicRequest struct {
 	Stream        bool               `json:"stream,omitempty"`
 	MaxTokens     int                `json:"max_tokens,omitempty"`
 	StopSequences []string           `json:"stop_sequences,omitempty"`
+	// PromptCacheKey and metadata.user_id carry the relay's stable per-session
+	// identity (relays forward session_id/prompt_cache_key; Claude Code clients
+	// send metadata.user_id). Mapping them onto SessionKey lets the session
+	// resolver reuse the upstream conversation across turns, which is what
+	// produces a non-zero cache_read_input_tokens for Anthropic clients.
+	PromptCacheKey string                `json:"prompt_cache_key,omitempty"`
+	Metadata       *anthropicReqMetadata `json:"metadata,omitempty"`
+}
+
+// anthropicReqMetadata carries the Anthropic-standard request metadata subset
+// the gateway uses for session affinity.
+type anthropicReqMetadata struct {
+	UserID string `json:"user_id,omitempty"`
 }
 
 func (r anthropicRequest) openAI() (oaiReq, error) {
 	o := oaiReq{Model: r.Model, Stream: r.Stream}
+	// Session affinity: prompt_cache_key wins (explicit cache key), then the
+	// Anthropic-standard metadata.user_id. Without a stable identity the
+	// resolver starts a fresh upstream conversation every turn and the cache
+	// fields in the downstream usage can never become non-zero.
+	if key := strings.TrimSpace(r.PromptCacheKey); key != "" {
+		o.SessionKey = key
+	} else if r.Metadata != nil {
+		if uid := strings.TrimSpace(r.Metadata.UserID); uid != "" {
+			o.SessionKey = uid
+		}
+	}
 	if r.MaxTokens > 0 {
 		mt := r.MaxTokens
 		o.MaxCompletionTokens = &mt
