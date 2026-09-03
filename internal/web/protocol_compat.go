@@ -90,6 +90,24 @@ func ignoredSamplingParams(body *oaiReq) ([]string, bool) {
 	if body.PresencePenalty != nil && *body.PresencePenalty != 0 {
 		ignored = append(ignored, "presence_penalty")
 	}
+	// Generation-shape controls the upstream cannot honor. They are accepted
+	// for compatibility but naming them in the note keeps the response honest
+	// instead of silently dropping a parameter the client asked for.
+	if body.Stop != nil {
+		ignored = append(ignored, "stop")
+	}
+	if body.N != nil && *body.N > 1 {
+		ignored = append(ignored, "n")
+	}
+	if body.Seed != nil {
+		ignored = append(ignored, "seed")
+	}
+	if body.Logprobs != nil && *body.Logprobs {
+		ignored = append(ignored, "logprobs")
+	}
+	if body.TopLogprobs != nil && *body.TopLogprobs > 0 {
+		ignored = append(ignored, "top_logprobs")
+	}
 	return ignored, len(ignored) > 0
 }
 
@@ -255,6 +273,15 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 		for i := 0; i < len(v); {
 			raw := v[i]
 			i++
+			// Plain string items are official Responses input ("hi" ≡
+			// {"type":"message","role":"user","content":"hi"}); dropping them
+			// silently emptied the whole request for clients like `input: ["hi"]`.
+			if s, ok := raw.(string); ok {
+				if strings.TrimSpace(s) != "" {
+					o.Messages = append(o.Messages, oaiMsg{Role: "user", Content: s})
+				}
+				continue
+			}
 			m, ok := raw.(map[string]any)
 			if !ok {
 				continue

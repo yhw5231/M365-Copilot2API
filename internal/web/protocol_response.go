@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,7 +22,18 @@ func openAIChoice(v map[string]any) (map[string]any, string) {
 	return m, finish
 }
 
-func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src map[string]any) {
+// anthropicMessageParts carries the projected Anthropic message plus the
+// pieces the SSE emitter needs to replay it as content blocks.
+type anthropicMessageParts struct {
+	out          map[string]any
+	blocks       []any
+	stop         string
+	outputTokens int64
+}
+
+// buildAnthropicMessage projects an internal OpenAI-style result into the
+// Anthropic message envelope (id/type/role/content blocks/stop_reason/usage).
+func buildAnthropicMessage(model string, src map[string]any) anthropicMessageParts {
 	id := "msg_" + uuid.NewString()
 	msg, finish := openAIChoice(src)
 	sanitizePublicAssistantMessage(msg, model)
@@ -108,23 +120,90 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 			withInputCacheDetails(outUsage, cached)
 		}
 	}
+	return anthropicMessageParts{out: out, blocks: blocks, stop: stop, outputTokens: outputTokens}
+}
+
+func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src map[string]any) {
+	parts := buildAnthropicMessage(model, src)
 	if !stream {
-		jsonOut(w, out)
+		jsonOut(w, parts.out)
 		return
 	}
+	sender := startAnthropicStream(w)
+	defer sender.stop()
+	sender.emitMessage(parts)
+}
+
+// anthropicStreamSender serializes Anthropic SSE frames against the ping
+// keepalive goroutine. The upstream generation is buffered by the adapter, so
+// without pings a long "thinking" phase produces zero bytes and idle proxies
+// kill the connection before the first content block.
+type anthropicStreamSender struct {
+	mu      sync.Mutex
+	w       http.ResponseWriter
+	f       http.Flusher
+	done    chan struct{}
+	once    sync.Once
+	aborted bool
+}
+
+// startAnthropicStream sets the SSE headers and begins the ping keepalive.
+func startAnthropicStream(w http.ResponseWriter) *anthropicStreamSender {
 	setSSEHeaders(w)
 	f, _ := w.(http.Flusher)
-	aborted := false
-	emit := func(n string, v any) {
-		if aborted {
+	s := &anthropicStreamSender{w: w, f: f, done: make(chan struct{})}
+	go s.pingLoop()
+	return s
+}
+
+func (s *anthropicStreamSender) pingLoop() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.done:
 			return
-		}
-		if err := sseWriteFrame(w, f, n, v); err != nil {
-			aborted = true
+		case <-ticker.C:
+			if err := s.frame("ping", map[string]any{"type": "ping"}); err != nil {
+				return
+			}
 		}
 	}
-	emit("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": []any{}, "stop_reason": nil, "usage": out["usage"]}})
-	for i, b := range blocks {
+}
+
+func (s *anthropicStreamSender) frame(name string, v any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.aborted {
+		return fmt.Errorf("anthropic stream aborted")
+	}
+	if err := sseWriteFrame(s.w, s.f, name, v); err != nil {
+		s.aborted = true
+		return err
+	}
+	return nil
+}
+
+// stop ends the keepalive goroutine. Safe to call multiple times.
+func (s *anthropicStreamSender) stop() {
+	s.once.Do(func() { close(s.done) })
+}
+
+// emitError reports a mid-stream failure as an Anthropic error event (the SSE
+// headers are already sent, so an HTTP status is no longer possible).
+func (s *anthropicStreamSender) emitError(errType, message string) {
+	_ = s.frame("error", map[string]any{"type": "error", "error": map[string]any{"type": errType, "message": sanitizePublicInternalText(message)}})
+}
+
+// emitMessage replays the built message as the official Anthropic event
+// sequence: message_start → content_block_start/delta/stop → message_delta →
+// message_stop.
+func (s *anthropicStreamSender) emitMessage(parts anthropicMessageParts) {
+	emit := func(name string, v any) {
+		_ = s.frame(name, v)
+	}
+	emit("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": parts.out["id"], "type": "message", "role": "assistant", "model": parts.out["model"], "content": []any{}, "stop_reason": nil, "usage": parts.out["usage"]}})
+	for i, b := range parts.blocks {
 		m, _ := b.(map[string]any)
 		startBlock := b
 		blockType := ""
@@ -151,7 +230,7 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 		}
 		emit("content_block_stop", map[string]any{"type": "content_block_stop", "index": i})
 	}
-	emit("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"output_tokens": outputTokens}})
+	emit("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": parts.stop, "stop_sequence": nil}, "usage": map[string]any{"output_tokens": parts.outputTokens}})
 	emit("message_stop", map[string]any{"type": "message_stop"})
 }
 

@@ -12,7 +12,13 @@ import (
 // writeResponsesResult projects an internal OpenAI-style result into the
 // Responses events and completion shape consumed by Codex.
 func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src map[string]any) {
-	id := firstNonEmpty(fmt.Sprint(src["m365_response_id"]), "resp_"+uuid.NewString())
+	// The stored id is present only when history retention is on (store != false);
+	// with store:false the key is absent and a naive fmt.Sprint would produce the
+	// literal "<nil>", so type-assert and fall back to a fresh id.
+	id, _ := src["m365_response_id"].(string)
+	if id == "" {
+		id = "resp_" + uuid.NewString()
+	}
 	msg, _ := openAIChoice(src)
 	sanitizePublicAssistantMessage(msg, model)
 	var output []any

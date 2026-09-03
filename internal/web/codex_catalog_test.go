@@ -216,9 +216,9 @@ func TestIsReasoningTone(t *testing.T) {
 
 func TestResolveReasoningEffort(t *testing.T) {
 	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "xhigh"}}
-	// A requested level is trusted.
-	if got := resolveReasoningEffort("high", "gpt-5.6-sol", mappings); got != "high" {
-		t.Fatalf("explicit effort got=%q", got)
+	// The route's configured level overrides any requested level.
+	if got := resolveReasoningEffort("high", "gpt-5.6-sol", mappings); got != "xhigh" {
+		t.Fatalf("explicit effort got=%q want route default xhigh", got)
 	}
 	// "auto" resolves to the model's configured default.
 	if got := resolveReasoningEffort("auto", "gpt-5.6-sol", mappings); got != "xhigh" {

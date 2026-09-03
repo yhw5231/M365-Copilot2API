@@ -64,6 +64,12 @@ func securityHeaders(next http.Handler) http.Handler {
 
 func (s *Server) rootPage(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" && r.URL.Path != "/login" && r.URL.Path != "/conversation" {
+		if strings.HasPrefix(r.URL.Path, "/v1/") {
+			// Unmatched /v1/* routes answer in the API error dialect: a
+			// plain-text 404 makes SDKs raise unparseable-body errors.
+			writeEndpointError(w, r, http.StatusNotFound, "invalid_request_error", "unknown API endpoint: "+r.URL.Path)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}

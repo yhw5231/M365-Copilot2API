@@ -240,18 +240,19 @@ func defaultReasoningLevel(model string, mappings []modelMapping) (string, bool)
 }
 
 // resolveReasoningEffort computes the effective reasoning level for a request.
-// "auto" asks the backend to pick the model's default — the same semantics as
-// omitting reasoning_effort — so it resolves to the model route's configured
-// default when one exists and stays empty otherwise.
+// The model route's configured level is authoritative: when the operator set
+// one for the mapping it overrides whatever the downstream client requested,
+// so every request to that route runs at the level the backend was tuned for.
+// Routes without a configured level honor the request's own effort ("auto" —
+// the same semantics as omitting reasoning_effort — resolves to nothing and
+// falls back to the permissive tone behavior).
 func resolveReasoningEffort(requested, model string, mappings []modelMapping) string {
+	if level, ok := defaultReasoningLevel(model, mappings); ok {
+		return level
+	}
 	effort := strings.TrimSpace(requested)
 	if strings.EqualFold(effort, "auto") {
 		effort = ""
-	}
-	if effort == "" {
-		if level, ok := defaultReasoningLevel(model, mappings); ok {
-			return level
-		}
 	}
 	return effort
 }

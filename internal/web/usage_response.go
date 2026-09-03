@@ -99,6 +99,20 @@ func numberToInt64(v any) int64 {
 	return 0
 }
 
+// withOutputReasoningDetails stamps the OpenAI Responses-style
+// output_tokens_details.reasoning_tokens breakdown (plus the Chat Completions
+// completion_tokens_details alias) onto a usage map. The gateway derives the
+// count from the reasoning transcript it observed, so clients that split
+// reasoning tokens from visible completion tokens see a faithful breakdown.
+func withOutputReasoningDetails(usage map[string]any, reasoningTokens int64) map[string]any {
+	if reasoningTokens < 0 {
+		reasoningTokens = 0
+	}
+	usage["output_tokens_details"] = map[string]any{"reasoning_tokens": reasoningTokens}
+	usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": reasoningTokens}
+	return usage
+}
+
 // withInputCacheDetails stamps the OpenAI Responses / Anthropic style
 // input_tokens_details.cached_tokens breakdown onto a usage map. cached is
 // clamped to the input size so text_tokens can never go negative.

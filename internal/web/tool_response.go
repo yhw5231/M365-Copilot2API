@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sendUsage bool, cachedTokens int64, calls []detectedToolCall, res chathub.Result) error {
+func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sendUsage bool, promptTokens, cachedTokens int64, calls []detectedToolCall, res chathub.Result) error {
 	toolCalls := toolCallMaps(calls)
 	msg := map[string]any{"role": "assistant", "content": nil, "tool_calls": toolCalls}
 	if res.Reasoning != "" {
@@ -15,11 +15,15 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sen
 			msg["reasoning_content"] = reasoning
 		}
 	}
-	pt := EstimateTokens(res.Text)
-	for _, tc := range calls {
-		pt += EstimateTokens(string(tc.Arguments))
-	}
+	// promptTokens arrives from the caller (the full logical prompt); the
+	// completion is the visible answer text that produced the tool calls plus
+	// the emitted arguments. Counting the answer into the prompt (the old
+	// behavior) produced identical prompt/completion numbers.
+	pt := promptTokens
 	ct := EstimateTokens(res.Text)
+	for _, tc := range calls {
+		ct += EstimateTokens(string(tc.Arguments))
+	}
 	if stream {
 		setSSEHeaders(w)
 		flusher, _ := w.(http.Flusher)

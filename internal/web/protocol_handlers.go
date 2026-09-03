@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,6 +68,16 @@ type innerStreamError struct {
 // history prepend) so the adapter can compute cached_tokens = input_tokens - new_input_tokens.
 func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, o oaiReq, model string, newMessages []oaiMsg, startedAt time.Time, storeHistory *bool) {
 	o.Stream = true
+	// The adapter derives the downstream cached_tokens from the inner stream's
+	// usage chunk (innerCachedTokens). The inner request is gateway-internal:
+	// always ask for its usage regardless of what the downstream client sent,
+	// otherwise the cache signal is silently lost and every /v1/responses
+	// streaming row reports cached_tokens=0. The downstream-facing usage chunk
+	// emitted by this adapter is NOT affected by this flag; its gating is a
+	// Responses-protocol concern and handled by the protocol itself.
+	o.StreamOptions = &struct {
+		IncludeUsage bool `json:"include_usage"`
+	}{IncludeUsage: true}
 	tenant := extractAPIKey(r)
 	b, _ := json.Marshal(o)
 	r2 := r.Clone(r.Context())
@@ -93,12 +104,19 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 
 	setSSEHeaders(w)
 	flusher, _ := w.(http.Flusher)
+	// Keep the connection alive during long silent phases (upstream reasoning
+	// can run for minutes after response.created): emit SSE comment frames on
+	// a timer. All payload writes go through the keepalive mutex so frames
+	// never interleave with the comments.
+	keepalive := startSSEKeepalive(w, flusher, 0)
+	defer keepalive.stop()
 	var abortErr error
 	emit := func(name string, v any) error {
 		if abortErr != nil {
 			return abortErr
 		}
-		if err := writeSSE(r, w, flusher, name, v); err != nil {
+		b, _ := json.Marshal(v)
+		if err := keepalive.lockedWriteCtx(r.Context(), "event: "+name+"\ndata: "+string(b)+"\n\n"); err != nil {
 			abortErr = err
 			return err
 		}
@@ -161,39 +179,35 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		if !firstDeltaAt.IsZero() {
 			ttft = firstDeltaAt.Sub(startedAt).Milliseconds()
 		}
-		s.usage.record(UsageRecord{
-			Time:         time.Now(),
-			APIKeyPrefix: extractAPIKey(r),
-			Model:        model,
-			Endpoint:     "/v1/responses",
-			Stream:       true,
-			InputTokens:  int64(est.Values["input_tokens"].(int)),
-			OutputTokens: int64(est.Values["output_tokens"].(int)),
-			CacheTokens:  cached,
-			TTFTMs:       ttft,
-			DurationMs:   time.Since(startedAt).Milliseconds(),
-			Status:       status,
-			Error:        errMsg,
-		})
+		// The model route's configured reasoning level overrides whatever the
+		// client sent; resolve it once and use it for both the trace and the
+		// usage row so every record shows the level the upstream actually ran.
+		effectiveEffort := resolveReasoningEffort(o.ReasoningEffort, model, currentSettings().ModelMappings)
 		// Keep the debug trace record in sync so the console shows the real
 		// token counts instead of 0/0 for every Responses streaming request.
+		usageTTFT := ttft
 		if tr := traceFromRequest(r); tr != nil {
 			s.trace.update(tr.ID, func(rec *traceRecord) {
-				rec.Model = model
-				rec.Stream = true
-				rec.ReasoningLevel = o.ReasoningEffort
-				rec.InputTokens = int64(est.Values["input_tokens"].(int))
-				rec.OutputTokens = int64(est.Values["output_tokens"].(int))
-				rec.CachedTokens = cached
-				rec.TTFTMs = ttft
-				rec.DurationMs = time.Since(startedAt).Milliseconds()
-				rec.StatusCode = status
-				if errMsg != "" {
-					rec.Status = "error"
-					rec.Error = errMsg
-				}
+				usageTTFT = applyResponsesStreamTraceUpdate(rec, model, effectiveEffort,
+					int64(est.Values["input_tokens"].(int)), int64(est.Values["output_tokens"].(int)), cached,
+					ttft, time.Since(startedAt).Milliseconds(), status, errMsg)
 			})
 		}
+		s.usage.record(UsageRecord{
+			Time:           time.Now(),
+			APIKeyPrefix:   extractAPIKey(r),
+			Model:          model,
+			ReasoningLevel: effectiveEffort,
+			Endpoint:       "/v1/responses",
+			Stream:         true,
+			InputTokens:    int64(est.Values["input_tokens"].(int)),
+			OutputTokens:   int64(est.Values["output_tokens"].(int)),
+			CacheTokens:    cached,
+			TTFTMs:         usageTTFT,
+			DurationMs:     time.Since(startedAt).Milliseconds(),
+			Status:         status,
+			Error:          errMsg,
+		})
 	}()
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
@@ -262,12 +276,16 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			emit("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "output_index": msgIndex, "content_index": 0, "item_id": messageID, "delta": content})
 		}
 		if rawCalls, ok := delta["tool_calls"].([]any); ok {
-			// When reasoning is present the reasoning item occupies
-			// output_index 0; tool call items must follow at index 1, 2, ...
-			// to avoid colliding with it.
+			// output_index must stay unique across the whole stream. The
+			// reasoning item (0) and the message item (1 when reasoning started,
+			// else 0) are already claimed once they exist, so tool items start
+			// after both.
 			callOffset := 0
 			if reasoningStarted {
 				callOffset = 1
+			}
+			if textStarted {
+				callOffset++
 			}
 			for _, raw := range rawCalls {
 				tc, ok := raw.(map[string]any)
@@ -343,7 +361,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			"type": "response.failed",
 			"response": map[string]any{
 				"id": id, "object": "response", "status": "failed", "model": model,
-				"error": map[string]any{"code": status, "message": errMsg},
+				"error": map[string]any{"code": strconv.Itoa(status), "message": errMsg},
 			},
 		})
 		return
@@ -393,10 +411,27 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		}
 		sort.Ints(keys)
 		// Keep the output_index sequence consistent with the streaming phase:
-		// reasoning item holds index 0 when present, tool calls follow after it.
+		// reasoning item holds index 0 when present, the streamed message item
+		// (if any) follows, tool calls come last.
 		callOffset := 0
 		if reasoningStarted {
 			callOffset = 1
+		}
+		if textStarted {
+			callOffset++
+		}
+		// The streamed message item was added and delta'd but not yet closed —
+		// emit its done events and include it in the output before the tool
+		// items so clients never see an unfinished output item.
+		if textStarted {
+			msgIndex := 0
+			if reasoningStarted {
+				msgIndex = 1
+			}
+			item := map[string]any{"type": "message", "id": messageID, "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "id": contentID, "text": text.String(), "annotations": []any{}}}}
+			output = append(output, item)
+			emit("response.output_text.done", map[string]any{"type": "response.output_text.done", "output_index": msgIndex, "content_index": 0, "item_id": messageID, "text": text.String()})
+			emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": msgIndex, "item": item})
 		}
 		// The emitted call ids become the pending registry for the next
 		// stateless Responses continuation turn.
@@ -484,6 +519,12 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	}
 	// Always stamp both spellings (see the non-streaming responses() path).
 	withInputCacheDetails(estimate.Values, cached)
+	// Reasoning-token breakdown: the reasoning transcript streamed above is
+	// part of the estimate's completion; surface its share like the official
+	// API's output_tokens_details.reasoning_tokens.
+	if count, _ := tokenEstimator(model); count != nil {
+		withOutputReasoningDetails(estimate.Values, int64(count(reasoning.String())))
+	}
 	resp := map[string]any{"id": id, "object": "response", "created_at": created, "status": "completed", "model": model, "output": output, "usage": estimate.Values, "m365": localUsageMetadata(estimate.Source)}
 	// Store the response for subsequent previous_response_id (same semantics as
 	// the non-streaming path in responses()).
@@ -527,6 +568,44 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	emit("response.completed", map[string]any{"type": "response.completed", "response": resp})
 }
 
+// applyResponsesStreamTraceUpdate reconciles the debug trace record when a
+// streaming /v1/responses request completes. Two in-flight values are
+// authoritative and must survive completion instead of being overwritten:
+//
+//   - ReasoningLevel: the caller passes the effective level (the model route's
+//     configured level, which overrides the client's request). The raw client
+//     effort is empty for most Responses clients and would blank the level.
+//   - TTFTMs: routeUpstreamTrace recorded the upstream first-token latency.
+//     The adapter only observes its first delta after the reasoning gate
+//     releases the answer text, so its own measurement can land near the total
+//     duration; it only fills a gap (upstream died before any delta).
+//
+// It returns the effective first-token latency (upstream when available) so
+// the /v1/responses usage row stays consistent with the inner chat row.
+func applyResponsesStreamTraceUpdate(rec *traceRecord, model, effort string, inputTokens, outputTokens, cachedTokens, adapterTTFT, durationMs int64, status int, errMsg string) int64 {
+	rec.Model = model
+	rec.Stream = true
+	if effort != "" {
+		rec.ReasoningLevel = effort
+	}
+	rec.InputTokens = inputTokens
+	rec.OutputTokens = outputTokens
+	rec.CachedTokens = cachedTokens
+	ttft := adapterTTFT
+	if rec.TTFTMs > 0 {
+		ttft = rec.TTFTMs
+	} else {
+		rec.TTFTMs = adapterTTFT
+	}
+	rec.DurationMs = durationMs
+	rec.StatusCode = status
+	if errMsg != "" {
+		rec.Status = "error"
+		rec.Error = errMsg
+	}
+	return ttft
+}
+
 func (s *Server) runOpenAIAdapter(r *http.Request, o oaiReq) (map[string]any, []byte, int, error) {
 	o.Stream = false
 	b, _ := json.Marshal(o)
@@ -562,11 +641,19 @@ func dropSystemInstructions(messages []oaiMsg) []oaiMsg {
 func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	startedAt := time.Now()
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeResponsesError(w, 405, "invalid_request_error", "method not allowed")
 		return
 	}
 	var body responsesRequest
-	if json.NewDecoder(r.Body).Decode(&body) != nil {
+	// Bound the body like the chat endpoint does: without the cap these
+	// handlers read unbounded client input straight into memory.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, requestBodyLimit(r))).Decode(&body); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeResponsesError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
+			return
+		}
 		writeResponsesError(w, 400, "invalid_request_error", "bad json")
 		return
 	}
@@ -658,8 +745,15 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	outputForUsage := ""
+	reasoningForUsage := ""
 	if msg != nil {
 		outputForUsage = fmt.Sprint(msg["content"])
+		// The reasoning transcript is part of the completion, exactly like the
+		// streaming path's estimate; including it keeps both Responses paths'
+		// output_tokens consistent and lets the reasoning-token breakdown add
+		// up to the reported completion size.
+		reasoningForUsage, _ = msg["reasoning_content"].(string)
+		outputForUsage += reasoningForUsage
 		if calls, ok := msg["tool_calls"].([]any); ok {
 			outputForUsage += fmt.Sprint(calls)
 		}
@@ -682,6 +776,11 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	// regardless of which format they parse. cached is 0 for a fresh
 	// conversation and the aliases still resolve to the same input count.
 	withInputCacheDetails(estimate.Values, cached)
+	// Reasoning-token breakdown (official output_tokens_details.reasoning_tokens
+	// shape, with the chat-spelling alias).
+	if count, _ := tokenEstimator(firstNonEmpty(body.Model, "m365-copilot")); count != nil {
+		withOutputReasoningDetails(estimate.Values, int64(count(reasoningForUsage)))
+	}
 	out["usage"] = estimate.Values
 	out["m365_usage_source"] = estimate.Source
 	if body.Store != nil {
@@ -696,16 +795,21 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		out["m365_ignored_parameters"] = params
 		out["m365_sampling_note"] = samplingNote
 	}
+	// The model route's configured reasoning level overrides whatever the
+	// client sent; resolve it once and use it for both the trace and the
+	// usage row so every record shows the level the upstream actually ran.
+	effectiveEffort := resolveReasoningEffort(o.ReasoningEffort, firstNonEmpty(body.Model, "m365-copilot"), currentSettings().ModelMappings)
 	s.usage.record(UsageRecord{
-		Time:         time.Now(),
-		APIKeyPrefix: extractAPIKey(r),
-		Model:        firstNonEmpty(body.Model, "m365-copilot"),
-		Endpoint:     "/v1/responses",
-		InputTokens:  int64(estimate.Values["input_tokens"].(int)),
-		OutputTokens: int64(estimate.Values["output_tokens"].(int)),
-		CacheTokens:  cached,
-		DurationMs:   time.Since(startedAt).Milliseconds(),
-		Status:       200,
+		Time:           time.Now(),
+		APIKeyPrefix:   extractAPIKey(r),
+		Model:          firstNonEmpty(body.Model, "m365-copilot"),
+		ReasoningLevel: effectiveEffort,
+		Endpoint:       "/v1/responses",
+		InputTokens:    int64(estimate.Values["input_tokens"].(int)),
+		OutputTokens:   int64(estimate.Values["output_tokens"].(int)),
+		CacheTokens:    cached,
+		DurationMs:     time.Since(startedAt).Milliseconds(),
+		Status:         200,
 	})
 	// Keep the debug trace record in sync so the console shows the real token
 	// counts instead of 0/0 for every Responses request.
@@ -713,7 +817,9 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		s.trace.update(tr.ID, func(rec *traceRecord) {
 			rec.Model = firstNonEmpty(body.Model, "m365-copilot")
 			rec.Stream = false
-			rec.ReasoningLevel = o.ReasoningEffort
+			if effectiveEffort != "" {
+				rec.ReasoningLevel = effectiveEffort
+			}
 			rec.InputTokens = int64(estimate.Values["input_tokens"].(int))
 			rec.OutputTokens = int64(estimate.Values["output_tokens"].(int))
 			rec.CachedTokens = cached
@@ -793,11 +899,19 @@ func responsesOutputHasContent(src map[string]any) bool {
 func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 	startedAt := time.Now()
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeAnthropicError(w, 405, "invalid_request_error", "method not allowed")
 		return
 	}
 	var body anthropicRequest
-	if json.NewDecoder(r.Body).Decode(&body) != nil {
+	// Bound the body like the chat endpoint does: without the cap these
+	// handlers read unbounded client input straight into memory.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, requestBodyLimit(r))).Decode(&body); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
+			return
+		}
 		writeAnthropicError(w, 400, "invalid_request_error", "bad json")
 		return
 	}
@@ -806,13 +920,31 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, 400, "invalid_request_error", err.Error())
 		return
 	}
+	// The adapter buffers the whole upstream generation, so a streaming client
+	// would see zero bytes for the entire "thinking" phase and idle proxies
+	// would cut the connection. Start the SSE ping keepalive BEFORE the
+	// upstream call; failures surface as an in-stream Anthropic error event
+	// (the SSE headers are already sent, so an HTTP status is no longer
+	// possible, and OpenAI-shaped JSON would break Anthropic SDK parsing).
+	var sender *anthropicStreamSender
+	if body.Stream {
+		sender = startAnthropicStream(w)
+		defer sender.stop()
+	}
+	emitAnthropicUpstreamError := func(status int, message string) {
+		if sender == nil {
+			writeAnthropicError(w, status, anthropicErrorType(status, ""), message)
+			return
+		}
+		sender.emitError(anthropicErrorType(status, ""), message)
+	}
 	out, raw, status, err := s.runOpenAIAdapter(r, o)
 	if status >= 400 {
-		writeAnthropicError(w, status, "api_error", errorMessage(raw, "upstream protocol error"))
+		emitAnthropicUpstreamError(status, errorMessage(raw, "upstream protocol error"))
 		return
 	}
 	if err != nil {
-		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream protocol error: "+err.Error())
+		emitAnthropicUpstreamError(http.StatusBadGateway, "upstream protocol error: "+err.Error())
 		return
 	}
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, "")
@@ -826,5 +958,9 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		DurationMs:   time.Since(startedAt).Milliseconds(),
 		Status:       200,
 	})
-	writeAnthropicResult(w, firstNonEmpty(body.Model, "m365-copilot"), body.Stream, out)
+	if sender != nil {
+		sender.emitMessage(buildAnthropicMessage(firstNonEmpty(body.Model, "m365-copilot"), out))
+		return
+	}
+	writeAnthropicResult(w, firstNonEmpty(body.Model, "m365-copilot"), false, out)
 }

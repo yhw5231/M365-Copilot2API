@@ -457,7 +457,7 @@ func (s *Server) gatewayConcurrencyMiddleware(next http.Handler) http.Handler {
 		release, ok := s.gatewayConcurrency.TryAcquire()
 		if !ok {
 			w.Header().Set("Retry-After", "1")
-			writeOpenAIError(w, http.StatusServiceUnavailable, "rate_limit_error", "gateway is at capacity; too many simultaneous requests, please retry shortly")
+			writeEndpointError(w, r, http.StatusServiceUnavailable, "rate_limit_error", "gateway is at capacity; too many simultaneous requests, please retry shortly")
 			return
 		}
 		defer release()
@@ -506,7 +506,7 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/v1/") {
 			if !s.validAPIKey(r) {
-				writeOpenAIError(w, http.StatusUnauthorized, "auth_error", "valid API key required")
+				writeEndpointError(w, r, http.StatusUnauthorized, "auth_error", "valid API key required")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -580,6 +580,7 @@ func pruneAdminSessions(m map[string]time.Time, now time.Time) {
 
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -718,6 +719,7 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, map[string]string{"status": "updated"})
 	default:
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, 405, "invalid_request_error", "method not allowed")
 	}
 }
@@ -756,6 +758,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -833,6 +836,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -856,6 +860,7 @@ func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) scheduleAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -914,6 +919,7 @@ func (s *Server) tokenHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) clearCooldown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -923,6 +929,7 @@ func (s *Server) clearCooldown(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -942,6 +949,7 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) provisionAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -1024,6 +1032,7 @@ func oldestPKCEState(states map[string]pendingPKCE) string {
 
 func (s *Server) bindProxy(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -1518,6 +1527,7 @@ func sseRaw(ctx context.Context, w http.ResponseWriter, f http.Flusher, payload 
 
 func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -1831,6 +1841,7 @@ func (s *Server) recoverRequiredToolMisjudgment(
 
 func (s *Server) adminModelSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -1841,6 +1852,7 @@ func (s *Server) adminModelSync(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -1851,6 +1863,7 @@ func (s *Server) adminModels(w http.ResponseWriter, r *http.Request) {
 // 锛堟ā鍨嬫祴璇曡蛋鏈嶅姟绔处鍙锋睜锛屽瘑閽ュ垪琛ㄨ櫧鍙噸澶嶆樉绀哄畬鏁?key锛屼篃涓嶅洖浼犲瘑閽ユ槑鏂囷級銆?
 func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -1924,6 +1937,7 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) openaiModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -1990,6 +2004,10 @@ type oaiReq struct {
 }
 
 func (r *oaiReq) shouldSendStreamUsage() bool {
+	// Usage is sent by default so existing relays (one-api / new-api style)
+	// keep receiving token accounting without opting in. A client can opt OUT
+	// explicitly with stream_options.include_usage=false; the official
+	// opt-in-only semantics would silently starve those relays of usage data.
 	if r.StreamOptions == nil {
 		return true
 	}
@@ -2192,6 +2210,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[req-trace] id=%s stage=http_return total_ms=%d", requestID, time.Since(startedAt).Milliseconds())
 	}()
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -2685,7 +2704,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), cachedTokens(), calls, routeRes)
+			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
 			s.recordToolUsage(r, acc, &body, routeRes, startedAt)
 			return
 		}
@@ -2714,7 +2733,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 						calls = calls[:1]
 					}
-					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), cachedTokens(), calls, retryRes)
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, retryRes)
 					s.recordToolUsage(r, acc, &body, retryRes, startedAt)
 					return
 				}
@@ -2734,7 +2753,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 						calls = calls[:1]
 					}
-					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), cachedTokens(), calls, recoveryRes)
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, recoveryRes)
 					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt)
 					return
 				}
@@ -2963,7 +2982,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			} else if text.Len() > 0 {
 				_ = emitText(text.String())
 			}
-			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "type": "upstream_error", "code": code}})+"\n\n")
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 			return
 		}
@@ -3029,7 +3048,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(calls) == 0 {
 				log.Printf("[tool-validation] id=%s stage=stream-repair failed", requestID)
-				_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream selected an undeclared tool and repair failed", "code": "invalid_tool_call"}})+"\n\n")
+				_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream selected an undeclared tool and repair failed", "type": "upstream_error", "code": "invalid_tool_call"}})+"\n\n")
 				_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 				return
 			}
@@ -3048,7 +3067,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), cachedTokens(), calls, toolResult)
+			_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, toolResult)
 			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, false)
 			return
 		}
@@ -3063,14 +3082,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 			return
 		}
+		// Official order: finish chunk first, then the usage chunk (empty
+		// choices) — the usage chunk must never precede the finish chunk.
+		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
+		_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(finishChunk)+"\n\n")
 		if body.shouldSendStreamUsage() {
 			pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
 			ct := EstimateTokens(res.Text)
-			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}}, "usage": usageWithCache(pt, ct, cachedTokens())}
+			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{}, "usage": usageWithCache(pt, ct, cachedTokens())}
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
 		}
-		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
-		_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(finishChunk)+"\n\n")
 		_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
 		return
@@ -3152,7 +3173,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, routeRes)
+			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
 			s.recordToolUsage(r, acc, &body, routeRes, startedAt)
 			return
 		}
@@ -3172,7 +3193,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 						calls = calls[:1]
 					}
-					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, retryRes)
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, retryRes)
 					s.recordToolUsage(r, acc, &body, retryRes, startedAt)
 					return
 				}
@@ -3192,7 +3213,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 						calls = calls[:1]
 					}
-					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, recoveryRes)
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, recoveryRes)
 					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt)
 					return
 				}
@@ -3412,7 +3433,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 				res2, correctionErr := runCorrection(unifiedSandboxCorrection(toolMaps, prompt))
 				if correctionErr != nil {
-					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "code": "workspace_tool_correction_failed"}})+"\n\n")
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "type": "upstream_error", "code": "workspace_tool_correction_failed"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 					s.markTraceError(r, correctionErr, http.StatusBadGateway)
 					return
@@ -3428,14 +3449,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					bufferedReasoning.Reset()
 					res2, correctionErr = runCorrection(targetedMisjudgmentCorrection(res2.Text, toolMaps, prompt))
 					if correctionErr != nil {
-						_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "code": "workspace_tool_correction_failed"}})+"\n\n")
+						_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "type": "upstream_error", "code": "workspace_tool_correction_failed"}})+"\n\n")
 						_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 						s.markTraceError(r, correctionErr, http.StatusBadGateway)
 						return
 					}
 				}
 				if needsWorkspaceToolMisjudgmentCorrection(res2.Text, toolMaps, echoPrompt, activeLedger) {
-					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream repeatedly misidentified workspace or tool availability", "code": "workspace_tool_misjudgment"}})+"\n\n")
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream repeatedly misidentified workspace or tool availability", "type": "upstream_error", "code": "workspace_tool_misjudgment"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 					s.markTraceError(r, errors.New("upstream repeatedly misidentified workspace or tool availability"), http.StatusBadGateway)
 					return
@@ -3549,7 +3570,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					retryReq.Text = retryText
 					retryRes, retryErr := s.chatWithAccountReasoning(ctx, acc.ID, account, retryReq, retryOnDelta, retryOnReasoning)
 					if retryErr != nil {
-						_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream required-tool retry failed", "code": "upstream_error"}})+"\n\n")
+						_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream required-tool retry failed", "type": "upstream_error", "code": "upstream_error"}})+"\n\n")
 						_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 						s.markTraceError(r, retryErr, http.StatusBadGateway)
 						return
@@ -3673,7 +3694,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 							return
 						}
 					}
-					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "model did not select a required tool after constrained retry", "code": "upstream_error"}})+"\n\n")
+					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "model did not select a required tool after constrained retry", "type": "upstream_error", "code": "upstream_error"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 					s.markTraceError(r, errors.New("model did not select a required tool after constrained retry"), http.StatusBadGateway)
 					return
@@ -3745,7 +3766,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if content := contentFilter.Flush(); content != "" {
 				_ = writeChunk(map[string]any{"content": content})
 			}
-			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "type": "upstream_error", "code": code}})+"\n\n")
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 			return
 		}
@@ -3761,14 +3782,22 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("[usage] stream id=%s pt=%d ct=%d cached=%d res.Text=%d", id, pt, ct, cached, len(res.Text))
 		if err == nil && ct == 0 {
-			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned empty completion; the requested model may be unavailable for this tenant", "code": "upstream_error"}})+"\n\n")
+			// Empty completion is a failure, not a "successful" empty answer:
+			// emit the error frame, close with [DONE] and return. Falling
+			// through to the finish/usage chunks below let clients that ignore
+			// unknown frames render a clean stop with an empty message.
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned empty completion; the requested model may be unavailable for this tenant", "type": "upstream_error", "code": "upstream_empty_completion"}})+"\n\n")
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+			return
 		}
 		finish := "stop"
-		if err != nil {
-			finish = "stop"
+		// Official shape: the finish chunk carries no usage; when the client
+		// asked for stream usage it arrives in a final chunk with empty choices.
+		_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}})+"\n\n")
+		if body.shouldSendStreamUsage() {
+			usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{}, "usage": usageWithCache(pt, ct, cached)}
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
 		}
-		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}, "usage": usageWithCache(pt, ct, cached)}
-		_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, true)
 		return
@@ -3882,7 +3911,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, res)
+			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, res)
 			return
 		}
 	}
@@ -3894,7 +3923,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, res)
+			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, res)
 			return
 		}
 	}
@@ -3919,7 +3948,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 				}
 				calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-				_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), cachedTokens(), calls, routeRes)
+				_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
 				return
 			}
 		}
