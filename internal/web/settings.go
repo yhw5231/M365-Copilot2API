@@ -120,6 +120,14 @@ func (s *runtimeSettings) UnmarshalJSON(b []byte) error {
 			a.InjectToolReminder = envBoolDefault("M365_INJECT_TOOL_REMINDER", true)
 		}
 	}
+	// Same legacy guard for repairUnfulfilledToolClaims.
+	if !jsonHasKey(b, "repairUnfulfilledToolClaims") {
+		if cur := *s; cur.RepairUnfulfilledToolClaims {
+			a.RepairUnfulfilledToolClaims = true
+		} else {
+			a.RepairUnfulfilledToolClaims = envBoolDefault("M365_REPAIR_UNFULFILLED_TOOL_CLAIMS", true)
+		}
+	}
 	*s = runtimeSettings(a)
 	if strings.TrimSpace(s.ProxyMode) == "" {
 		var legacy struct {
@@ -259,14 +267,19 @@ type runtimeSettings struct {
 	// message that re-states the declared tool list and guards against the
 	// model concluding tools are unavailable or submitting identical old/new
 	// edit strings. Defaults to on; M365_INJECT_TOOL_REMINDER overrides.
-	InjectToolReminder  bool   `json:"injectToolReminder"`
-	ContextWindow       int    `json:"contextWindow"`
-	MaxOutputTokens     int    `json:"maxOutputTokens"`
-	ChatTimeoutSeconds  int    `json:"chatTimeoutSeconds"`
-	ImageTimeoutSeconds int    `json:"imageTimeoutSeconds"`
-	LogLevel            string `json:"logLevel"`
-	DebugLogPath        string `json:"debugLogPath"`
-	ListenAddress       string `json:"listenAddress"`
+	InjectToolReminder bool `json:"injectToolReminder"`
+	// RepairUnfulfilledToolClaims toggles the soft repair that detects answers
+	// claiming a completed file/code change while the round carried no tool
+	// call, and re-prompts the model to emit a real call. Defaults to on;
+	// M365_REPAIR_UNFULFILLED_TOOL_CLAIMS overrides.
+	RepairUnfulfilledToolClaims bool   `json:"repairUnfulfilledToolClaims"`
+	ContextWindow               int    `json:"contextWindow"`
+	MaxOutputTokens             int    `json:"maxOutputTokens"`
+	ChatTimeoutSeconds          int    `json:"chatTimeoutSeconds"`
+	ImageTimeoutSeconds         int    `json:"imageTimeoutSeconds"`
+	LogLevel                    string `json:"logLevel"`
+	DebugLogPath                string `json:"debugLogPath"`
+	ListenAddress               string `json:"listenAddress"`
 	// AccountsDir is the directory holding one JSON file per authorized
 	// account (each with a separate <account>.settings.json). Changing it
 	// requires a restart; the old single-file accounts.json is only honored
@@ -435,8 +448,9 @@ func accountWarmSessionSecondsDefault() int {
 func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
 		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 0),
-		InjectToolReminder: envBoolDefault("M365_INJECT_TOOL_REMINDER", true),
-		ContextWindow:      envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
+		InjectToolReminder:          envBoolDefault("M365_INJECT_TOOL_REMINDER", true),
+		RepairUnfulfilledToolClaims: envBoolDefault("M365_REPAIR_UNFULFILLED_TOOL_CLAIMS", true),
+		ContextWindow:               envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
 		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 600), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "warn"),
 		DebugLogPath: envPath("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), AccountsDir: envPath("M365_ACCOUNTS_DIR"),
 		SessionCachePath: envPath("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
