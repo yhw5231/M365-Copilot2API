@@ -67,3 +67,6 @@ _wip_backup_*
 # Test/experiment scripts (kept locally, excluded from the repo)
 /scripts/
 /test_pkce_auth_gateway.py
+
+# Local debug/analysis artifacts (kept locally, excluded from the repo)
+/.dsh_analysis/
