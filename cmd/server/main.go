@@ -30,7 +30,15 @@ func main() {
 	}
 	s.InitM365CloudClient()
 	s.StartAutoCleanup()
-	s.RefreshExpiredTokens()
+	// Token refresh is a serial network sweep over every authorized account
+	// and can run for minutes. It must not delay the HTTP listener: move it to
+	// the background so the console and API are reachable immediately, while
+	// per-request EnsureValid keeps serving tokens as they are needed.
+	go func() {
+		log.Println("[token-refresh] background sweep started")
+		s.RefreshExpiredTokens()
+		log.Println("[token-refresh] background sweep finished")
+	}()
 	listen := "127.0.0.1:9090"
 	if v := os.Getenv("M365_LISTEN"); v != "" {
 		listen = v
