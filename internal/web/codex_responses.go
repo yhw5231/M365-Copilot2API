@@ -61,6 +61,11 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 		}
 	}
 	resp := map[string]any{"id": id, "object": "response", "created_at": time.Now().Unix(), "status": "completed", "model": model, "output": output, "usage": usage, "m365": m365meta}
+	// Echo the effective reasoning level resolved by the inner chat request
+	// (the model route's configured level when it overrides the client value).
+	if eff, _ := src["reasoning_effort"].(string); eff != "" {
+		resp["reasoning"] = map[string]any{"effort": eff}
+	}
 	if v, ok := src["store"].(bool); ok {
 		resp["store"] = v
 	}

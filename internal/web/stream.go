@@ -127,6 +127,10 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	res.Text = sanitizePublicAssistantText(res.Text)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
+	if repl, hit := filterContentFull(res.Text); hit {
+		log.Printf("[content-filter] replaced chathub stream done text (%d bytes) with configured replacement", len(res.Text))
+		res.Text = repl
+	}
 
 	if !headersWritten {
 		setSSEHeaders(w)

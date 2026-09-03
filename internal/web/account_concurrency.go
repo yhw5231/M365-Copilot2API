@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"strconv"
@@ -657,7 +658,11 @@ func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, ac
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).ChatWithEvents(ctx, account, request, onEvent)
-	s.markAccountResult(accountID, err)
+	// A content-filter hit is a deliberate local termination of a healthy
+	// upstream; it must not count against the account's health.
+	if !errors.Is(err, errContentFilterHit) {
+		s.markAccountResult(accountID, err)
+	}
 	return result, err
 }
 
@@ -690,6 +695,10 @@ func (s *Server) chatWithAccountReasoning(ctx context.Context, accountID string,
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).ChatWithReasoning(ctx, account, request, onDelta, onReasoning)
-	s.markAccountResult(accountID, err)
+	// A content-filter hit is a deliberate local termination of a healthy
+	// upstream; it must not count against the account's health.
+	if !errors.Is(err, errContentFilterHit) {
+		s.markAccountResult(accountID, err)
+	}
 	return result, err
 }

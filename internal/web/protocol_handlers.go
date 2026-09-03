@@ -124,7 +124,18 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	}
 	id := "resp_" + uuid.NewString()
 	created := time.Now().Unix()
-	if err := emit("response.created", map[string]any{"type": "response.created", "response": map[string]any{"id": id, "object": "response", "status": "in_progress", "model": model, "output": []any{}}}); err != nil {
+	// The effective reasoning level mirrors what the inner chat request runs
+	// with: the model route's configured level overrides the client request.
+	// It is stamped on the response object so downstream clients can see which
+	// level actually ran.
+	effort := resolveReasoningEffort(o.ReasoningEffort, model, currentSettings().ModelMappings)
+	withReasoning := func(resp map[string]any) map[string]any {
+		if effort != "" {
+			resp["reasoning"] = map[string]any{"effort": effort}
+		}
+		return resp
+	}
+	if err := emit("response.created", map[string]any{"type": "response.created", "response": withReasoning(map[string]any{"id": id, "object": "response", "status": "in_progress", "model": model, "output": []any{}})}); err != nil {
 		return
 	}
 
@@ -180,9 +191,9 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			ttft = firstDeltaAt.Sub(startedAt).Milliseconds()
 		}
 		// The model route's configured reasoning level overrides whatever the
-		// client sent; resolve it once and use it for both the trace and the
-		// usage row so every record shows the level the upstream actually ran.
-		effectiveEffort := resolveReasoningEffort(o.ReasoningEffort, model, currentSettings().ModelMappings)
+		// client sent; reuse the effort resolved at stream start so every
+		// record shows the level the upstream actually ran.
+		effectiveEffort := effort
 		// Keep the debug trace record in sync so the console shows the real
 		// token counts instead of 0/0 for every Responses streaming request.
 		usageTTFT := ttft
@@ -525,7 +536,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	if count, _ := tokenEstimator(model); count != nil {
 		withOutputReasoningDetails(estimate.Values, int64(count(reasoning.String())))
 	}
-	resp := map[string]any{"id": id, "object": "response", "created_at": created, "status": "completed", "model": model, "output": output, "usage": estimate.Values, "m365": localUsageMetadata(estimate.Source)}
+	resp := withReasoning(map[string]any{"id": id, "object": "response", "created_at": created, "status": "completed", "model": model, "output": output, "usage": estimate.Values, "m365": localUsageMetadata(estimate.Source)})
 	// Store the response for subsequent previous_response_id (same semantics as
 	// the non-streaming path in responses()).
 	if shouldStoreResponsesHistory(storeHistory) && (text.Len() > 0 || len(calls) > 0 || reasoning.Len() > 0) {

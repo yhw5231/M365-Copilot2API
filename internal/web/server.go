@@ -2809,14 +2809,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		first := true
 		noTools := len(toolMaps) == 0
 		identityFilter := newPublicIdentityStreamFilter(model)
-		emitText := func(part string) error {
-			if part == "" {
-				return nil
-			}
-			// Push-only: the identity filter holds partial identity boundaries
-			// until a safe boundary is reached. The final Flush is called in
-			// flushText at the end of the stream.
-			part = identityFilter.Push(part)
+		contentReview := newContentStreamFilter()
+		writeContentDelta := func(part string) error {
 			if part == "" {
 				return nil
 			}
@@ -2829,19 +2823,73 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				first = false
 			}
 			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}}
+			if body.ReasoningEffort != "" {
+				chunk["reasoning_effort"] = body.ReasoningEffort
+			}
 			return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
 		}
-		flushText := func() error {
-			if part := identityFilter.Flush(); part != "" {
-				delta := map[string]any{"content": part}
-				if first {
-					delta["role"] = "assistant"
-					first = false
+		emitText := func(part string) error {
+			if part == "" {
+				return nil
+			}
+			// Content review runs before the identity filter: it sees the raw
+			// upstream text. A hit returns the sentinel so the caller aborts the
+			// upstream stream; the replacement is emitted once by
+			// finishContentReview before the stream is closed.
+			if contentReview != nil {
+				var hit bool
+				part, hit, _ = contentReview.push(part)
+				if hit {
+					return errContentFilterHit
 				}
-				chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}}
-				return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
+				if part == "" {
+					return nil
+				}
+			}
+			// Push-only: the identity filter holds partial identity boundaries
+			// until a safe boundary is reached. The final Flush is called in
+			// flushText at the end of the stream.
+			part = identityFilter.Push(part)
+			return writeContentDelta(part)
+		}
+		flushText := func() error {
+			if contentReview != nil {
+				out, hit, _ := contentReview.flush()
+				if hit {
+					return errContentFilterHit
+				}
+				if err := writeContentDelta(identityFilter.Push(out)); err != nil {
+					return err
+				}
+			}
+			if part := identityFilter.Flush(); part != "" {
+				return writeContentDelta(part)
 			}
 			return nil
+		}
+		// finishContentReview closes a stream that the content filter stopped:
+		// the configured replacement text is the final content delta, followed
+		// by the normal finish/usage/[DONE] frames. The session binding is
+		// dropped so the next turn starts a fresh upstream conversation.
+		finishContentReview := func() {
+			repl := contentReview.replacement()
+			if repl != "" {
+				if err := writeContentDelta(repl); err != nil {
+					return
+				}
+			}
+			finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
+			if body.ReasoningEffort != "" {
+				finishChunk["reasoning_effort"] = body.ReasoningEffort
+			}
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(finishChunk)+"\n\n")
+			if body.shouldSendStreamUsage() {
+				usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{}, "usage": usageWithCache(EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), EstimateTokens(repl), cachedTokens())}
+				_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
+			}
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+			s.recordContentReviewStop(r, &body, acc, prompt, startedAt, repl, true)
+			s.dropFilteredSession(r, &body)
 		}
 		res, err := s.chatWithAccountEvents(ctx, acc.ID, account, answerReq, func(ev chathub.StreamEvent) error {
 			if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
@@ -2863,6 +2911,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 		failoverTried := false
+		// A content-filter hit must never trigger the failover sweep below: the
+		// response is being replaced locally and the client may already have
+		// received content deltas.
+		if errors.Is(err, errContentFilterHit) {
+			finishContentReview()
+			return
+		}
 		if err != nil && !clientPinnedAccount && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
 			// A throttled stream may retry on the next healthy account: only the
 			// ": connected" preamble reached the client, so the retried stream is
@@ -2906,6 +2961,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 				err = err2
+				// A content-filter hit inside the retried stream is a local
+				// termination, not an account fault.
+				if errors.Is(err2, errContentFilterHit) {
+					break
+				}
 				s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown())
 				// A non-throttle, non-auth, non-proxy failure is permanent for
 				// this request; stop the sweep and report it.
@@ -2915,6 +2975,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err != nil {
+			// A content-filter hit that surfaces after the failover sweep still
+			// ends as a replaced response, not as a stream error.
+			if errors.Is(err, errContentFilterHit) {
+				finishContentReview()
+				return
+			}
 			// The failover sweep above already tried every healthy account. A
 			// final throttle/auth/proxy failure therefore means "no account can
 			// serve this right now" — surface it as a gateway-local capacity
@@ -3014,6 +3080,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if len(res.Text) > text.Len() && strings.HasPrefix(res.Text, text.String()) {
 				suffix := res.Text[text.Len():]
 				if err := emitText(suffix); err != nil {
+					// A keyword inside the recovered suffix still ends in a
+					// replaced response, not a dropped stream.
+					if errors.Is(err, errContentFilterHit) {
+						finishContentReview()
+						return
+					}
 					log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 					return
 				}
@@ -3075,16 +3147,54 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// Text was already forwarded inline; drain the identity filter tail
 			// so the final fragment reaches the client.
 			if err := flushText(); err != nil {
+				// A keyword found only in the held-back tail still ends in a
+				// replaced response, not a dropped stream.
+				if errors.Is(err, errContentFilterHit) {
+					finishContentReview()
+					return
+				}
 				log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 				return
 			}
 		} else if err := emitText(text.String()); err != nil {
+			// A keyword inside the buffered answer still ends in a replaced
+			// response, not a dropped stream.
+			if errors.Is(err, errContentFilterHit) {
+				finishContentReview()
+				return
+			}
 			log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 			return
+		} else {
+			// The buffered tools path pushes the whole answer in one emit, so
+			// the content-review holdback tail (and the identity filter tail)
+			// must be drained here or the answer would lose its final chars.
+			if contentReview != nil {
+				out, hit, _ := contentReview.flush()
+				if hit {
+					finishContentReview()
+					return
+				}
+				if part := identityFilter.Push(out); part != "" {
+					if err := writeContentDelta(part); err != nil {
+						log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+						return
+					}
+				}
+			}
+			if part := identityFilter.Flush(); part != "" {
+				if err := writeContentDelta(part); err != nil {
+					log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+					return
+				}
+			}
 		}
 		// Official order: finish chunk first, then the usage chunk (empty
 		// choices) — the usage chunk must never precede the finish chunk.
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
+		if body.ReasoningEffort != "" {
+			finishChunk["reasoning_effort"] = body.ReasoningEffort
+		}
 		_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(finishChunk)+"\n\n")
 		if body.shouldSendStreamUsage() {
 			pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
@@ -3294,6 +3404,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		contentFilter := newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
 		reasoningFilter := newPublicReasoningStreamFilter()
+		contentReview := newContentStreamFilter()
 		var bufferedContent strings.Builder
 		var bufferedReasoning strings.Builder
 
@@ -3311,6 +3422,42 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		textGateMisjudged := false
 		corrected := false
 
+		// reviewContent runs the content filter over a delta. A hit returns the
+		// sentinel so the caller aborts the upstream stream; finishContentReview
+		// then emits the replacement and closes the stream normally.
+		reviewContent := func(content string) (string, error) {
+			if contentReview == nil {
+				return content, nil
+			}
+			out, hit, _ := contentReview.push(content)
+			if hit {
+				return "", errContentFilterHit
+			}
+			return out, nil
+		}
+		// finishContentReview closes a stream that the content filter stopped:
+		// the configured replacement text is the final content delta, followed
+		// by the normal finish/usage/[DONE] frames. The session binding is
+		// dropped so the next turn starts a fresh upstream conversation.
+		finishContentReview := func() {
+			repl := contentReview.replacement()
+			if repl != "" {
+				_ = writeChunk(map[string]any{"content": repl})
+			}
+			finishFrame := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
+			if body.ReasoningEffort != "" {
+				finishFrame["reasoning_effort"] = body.ReasoningEffort
+			}
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(finishFrame)+"\n\n")
+			if body.shouldSendStreamUsage() {
+				usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{}, "usage": usageWithCache(EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), EstimateTokens(repl), cachedTokens())}
+				_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
+			}
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+			s.recordContentReviewStop(r, &body, acc, prompt, startedAt, repl, true)
+			s.dropFilteredSession(r, &body)
+		}
+
 		onDelta := func(content string) error {
 			bufferedContent.WriteString(content)
 			if textGateMisjudged {
@@ -3325,15 +3472,25 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						return nil
 					}
 					textGateReleased = true
-					if c := contentFilter.Push(textGateBuf.String()); c != "" {
-						return writeChunk(map[string]any{"content": c})
+					if c, err := reviewContent(textGateBuf.String()); err != nil {
+						return err
+					} else if c != "" {
+						if c = contentFilter.Push(c); c != "" {
+							return writeChunk(map[string]any{"content": c})
+						}
 					}
 					textGateBuf.Reset()
 				}
 				return nil
 			}
-			if c := contentFilter.Push(content); c != "" {
-				return writeChunk(map[string]any{"content": c})
+			c, err := reviewContent(content)
+			if err != nil {
+				return err
+			}
+			if c != "" {
+				if c = contentFilter.Push(c); c != "" {
+					return writeChunk(map[string]any{"content": c})
+				}
 			}
 			return nil
 		}
@@ -3348,6 +3505,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		res, err = s.chatWithAccountReasoning(ctx, acc.ID, account, answerReq, onDelta, onReasoning)
+		// A content-filter hit must never trigger the failover sweep below: the
+		// response is being replaced locally and the client may already have
+		// received content deltas.
+		if errors.Is(err, errContentFilterHit) {
+			finishContentReview()
+			return
+		}
 		if err != nil && !clientPinnedAccount && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err) || errors.Is(err, outbound.ErrNoProxyNode)) {
 			// Retry a throttled stream on the next healthy account; the client
 			// has only seen the ": connected" preamble so far, so the retry is
@@ -3376,6 +3540,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				} else {
 					cancel2()
 					err = err2
+					// A content-filter hit inside the retried stream is a local
+					// termination, not an account fault.
+					if errors.Is(err2, errContentFilterHit) {
+						break
+					}
 					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown())
 					if !(IsRateLimited(err2) || IsAuthFailure(err2) || errors.Is(err2, outbound.ErrNoProxyNode)) {
 						break
@@ -3414,8 +3583,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				bufferedReasoning.Reset()
 				correctionOnDelta := func(content string) error {
 					bufferedContent.WriteString(content)
-					if c := contentFilter.Push(content); c != "" {
-						return writeChunk(map[string]any{"content": c})
+					if c, err := reviewContent(content); err != nil {
+						return err
+					} else if c != "" {
+						if c = contentFilter.Push(c); c != "" {
+							return writeChunk(map[string]any{"content": c})
+						}
 					}
 					return nil
 				}
@@ -3432,6 +3605,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					return s.chatWithAccountReasoning(ctx, acc.ID, account, correctionReq, correctionOnDelta, correctionOnReasoning)
 				}
 				res2, correctionErr := runCorrection(unifiedSandboxCorrection(toolMaps, prompt))
+				// A keyword inside the corrected output still ends in a
+				// replaced response, never in a "correction failed" error.
+				if errors.Is(correctionErr, errContentFilterHit) {
+					finishContentReview()
+					return
+				}
 				if correctionErr != nil {
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "type": "upstream_error", "code": "workspace_tool_correction_failed"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
@@ -3448,6 +3627,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					bufferedContent.Reset()
 					bufferedReasoning.Reset()
 					res2, correctionErr = runCorrection(targetedMisjudgmentCorrection(res2.Text, toolMaps, prompt))
+					// A keyword inside the corrected output still ends in a
+					// replaced response, never in a "correction failed" error.
+					if errors.Is(correctionErr, errContentFilterHit) {
+						finishContentReview()
+						return
+					}
 					if correctionErr != nil {
 						_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream workspace/tool correction failed", "type": "upstream_error", "code": "workspace_tool_correction_failed"}})+"\n\n")
 						_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
@@ -3554,8 +3739,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					retryText := requiredToolRetryText(toolMaps, prompt, ledger)
 					retryOnDelta := func(content string) error {
 						bufferedContent.WriteString(content)
-						if c := contentFilter.Push(content); c != "" {
-							return writeChunk(map[string]any{"content": c})
+						if c, err := reviewContent(content); err != nil {
+							return err
+						} else if c != "" {
+							if c = contentFilter.Push(c); c != "" {
+								return writeChunk(map[string]any{"content": c})
+							}
 						}
 						return nil
 					}
@@ -3569,6 +3758,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					retryReq := answerReq
 					retryReq.Text = retryText
 					retryRes, retryErr := s.chatWithAccountReasoning(ctx, acc.ID, account, retryReq, retryOnDelta, retryOnReasoning)
+					// A keyword inside the retried output still ends in a
+					// replaced response, never in a retry error.
+					if errors.Is(retryErr, errContentFilterHit) {
+						finishContentReview()
+						return
+					}
 					if retryErr != nil {
 						_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream required-tool retry failed", "type": "upstream_error", "code": "upstream_error"}})+"\n\n")
 						_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
@@ -3715,23 +3910,69 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			//     buffered window, so send the authoritative completion text now.
 			//   - otherwise: text was already forwarded inline; drain the filter
 			//     tail for any remaining fragment.
+			// Every branch routes through reviewContent so a keyword found only
+			// in the still-buffered text ends in a replaced response, and the
+			// review filter's held-back tail is flushed at the very end.
+			closeReviewHit := func() {
+				finishContentReview()
+			}
+			reviewTail := func() bool {
+				if contentReview == nil {
+					return false
+				}
+				out, hit, _ := contentReview.flush()
+				if hit {
+					return true
+				}
+				if out != "" {
+					_ = writeChunk(map[string]any{"content": out})
+				}
+				return false
+			}
 			if textGateMisjudged || corrected {
 				// correction content already written inline above
+				if reviewTail() {
+					closeReviewHit()
+					return
+				}
 			} else if textGateActive && !textGateReleased {
-				if content := contentFilter.Push(res.Text) + contentFilter.Flush(); content != "" {
-					if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
+				content := contentFilter.Push(res.Text) + contentFilter.Flush()
+				if c, err := reviewContent(content); err != nil {
+					closeReviewHit()
+					return
+				} else if c != "" {
+					if writeErr := writeChunk(map[string]any{"content": c}); writeErr != nil {
 						return
 					}
 				}
+				if reviewTail() {
+					closeReviewHit()
+					return
+				}
 			} else {
 				if content := contentFilter.Flush(); content != "" {
-					if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
+					if c, err := reviewContent(content); err != nil {
+						closeReviewHit()
 						return
+					} else if c != "" {
+						if writeErr := writeChunk(map[string]any{"content": c}); writeErr != nil {
+							return
+						}
 					}
+				}
+				if reviewTail() {
+					closeReviewHit()
+					return
 				}
 			}
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
+			// A content-filter hit that surfaces through the error path still
+			// ends as a replaced response, not as a stream error.
+			if errors.Is(err, errContentFilterHit) {
+				finishContentReview()
+				return
+			}
 			// The failover sweep already tried every healthy account (when it
 			// ran at all); a final throttle/auth/proxy failure is a
 			// gateway-local capacity rejection, never the upstream's raw
@@ -3966,12 +4207,29 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	res.Text = capOutputTokens(res.Text, effectiveMaxOutput(&body))
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
+	// Content review (non-streaming): a keyword hit replaces the whole answer
+	// with the configured replacement text and drops the reasoning transcript,
+	// which may repeat the keyword. Tool-call responses returned above bypass
+	// the filter so agent loops are never corrupted by the replacement.
+	contentFiltered := false
+	if repl, hit := filterContentFull(res.Text); hit {
+		log.Printf("[content-filter] id=%s replaced response text (%d bytes) with configured replacement", requestID, len(res.Text))
+		res.Text = repl
+		res.Reasoning = ""
+		contentFiltered = true
+	} else if res.Reasoning != "" {
+		if _, hit := filterContentFull(res.Reasoning); hit {
+			res.Reasoning = ""
+		}
+	}
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
 
 	// Never serialize an empty assistant message as a successful completion.
 	// Some clients interpret finish_reason=stop with blank content as
 	// "completed response with no content". Image-only responses remain valid.
-	if strings.TrimSpace(res.Text) == "" && len(res.Images) == 0 {
+	// A content-filter hit with an empty replacement is an intentional deletion
+	// and passes through as a (near-)empty completion.
+	if strings.TrimSpace(res.Text) == "" && len(res.Images) == 0 && !contentFiltered {
 		log.Printf("[req-trace] id=%s stage=empty_completion model=%s reasoning_bytes=%d events=%d", requestID, model, len(res.Reasoning), len(res.Events))
 		writeOpenAIError(w, http.StatusBadGateway, "upstream_empty_completion", "upstream completed without assistant content; retry the request or verify that the requested model is available for this tenant")
 		return
@@ -3980,8 +4238,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Persist only the final validated response. This point is after workspace/tool
 	// misjudgment detection, the bounded corrective retry, tool-call recovery,
 	// content-policy handling, and completion-evidence normalization, but before
-	// either streaming or non-streaming client output.
-	if res.ConversationID != "" {
+	// either streaming or non-streaming client output. A content-filter hit
+	// skips the binding: the upstream conversation holds the tainted answer, so
+	// the session is terminated and the next turn starts fresh.
+	if contentFiltered {
+		s.recordContentReviewStop(r, &body, acc, prompt, startedAt, res.Text, body.Stream)
+		s.dropFilteredSession(r, &body)
+	} else if res.ConversationID != "" {
 		s.bindConversation(acc, &body, r, res, prompt, startedAt, task, true)
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
@@ -4008,11 +4271,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				"delta": map[string]any{"role": "assistant", "content": res.Text},
 			}},
 		}
+		if body.ReasoningEffort != "" {
+			chunk["reasoning_effort"] = body.ReasoningEffort
+		}
 		b, _ := json.Marshal(chunk)
 		_ = sseRaw(r.Context(), w, flusher, "data: "+string(b)+"\n\n")
 		pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
 		ct := EstimateTokens(res.Text)
 		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usageWithCache(pt, ct, cachedTokens())}
+		if body.ReasoningEffort != "" {
+			usageChunk["reasoning_effort"] = body.ReasoningEffort
+		}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		return
@@ -4062,10 +4331,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			"finish_reason": "stop",
 		}},
 		"m365": meta,
-		// 鎶娿€屽閲忚姹備腑琚笂娓镐細璇濆鐢ㄧ殑杈撳叆銆嶄互鏍囧噯瀛楁
-		// usage.prompt_tokens_details.cached_tokens 杩斿洖缁欎笅娓革紙sub2api 绛?
-		// 杞彂灞備笌瀹㈡埛绔嵁姝よ瘑鍒紦瀛樺懡涓級銆?
+		// 鎶娿€屽閲忚姹備腑琚笂娓镐細璇濆鐢ㄧ殑杈撳叆銆嶄互鏍囧噯瀛楁
+		// usage.prompt_tokens_details.cached_tokens 杩斿洖缁欎笅娓革紙sub2api 绁?
+		// 杞彂灞備笌瀹㈡埛绔嵁姝よ瘑鍒紦瀛樺懡涓紝銆?
 		"usage": usageWithCache(pt, ct, cached),
+	}
+	// Echo the effective reasoning level (the model route's configured level
+	// when it overrides the client request) so downstream callers can see which
+	// level actually ran.
+	if body.ReasoningEffort != "" {
+		completion["reasoning_effort"] = body.ReasoningEffort
 	}
 	if len(body.Metadata) > 0 {
 		completion["metadata"] = body.Metadata

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 	_ "time/tzdata"
+	"unicode/utf8"
 
 	"m365-copilot2api/internal/outbound"
 )
@@ -329,6 +330,17 @@ type runtimeSettings struct {
 	// TimeZone controls server-side calendar boundaries and frontend time display.
 	// It defaults to Asia/Shanghai and must be a valid IANA time zone name.
 	TimeZone string `json:"timeZone"`
+	// ContentFilterEnabled turns on upstream-response content review: when an
+	// enabled rule's keyword occurs in the assistant output, the whole answer
+	// is replaced by that rule's replacement text.
+	ContentFilterEnabled bool `json:"contentFilterEnabled"`
+	// ContentFilterRules is the ordered rule list; the first rule whose keyword
+	// matches wins. An empty replacement deletes the answer text.
+	ContentFilterRules []contentFilterRule `json:"contentFilterRules,omitempty"`
+	// ContentFilterOpeningBuffer is how many bytes of the response head the
+	// streaming filter may hold before releasing text, so a hit inside the
+	// opening window is replaced before any byte reaches the client.
+	ContentFilterOpeningBuffer int `json:"contentFilterOpeningBuffer,omitempty"`
 }
 
 type settingsStore struct {
@@ -441,6 +453,7 @@ func defaultRuntimeSettings() runtimeSettings {
 		AccountQueueTimeoutSeconds:      envInt("M365_ACCOUNT_QUEUE_TIMEOUT_SECONDS", defaultAccountQueueTimeoutSeconds),
 		AccountRateLimitCooldownSeconds: envInt("M365_RATE_LIMIT_COOLDOWN_SECONDS", defaultRateLimitCooldownSeconds),
 		TimeZone:                        firstNonEmptySetting(os.Getenv("M365_TIME_ZONE"), "Asia/Shanghai"),
+		ContentFilterOpeningBuffer:      contentFilterOpeningBufferDefault(),
 	}
 }
 func settingsPath() string {
@@ -661,6 +674,24 @@ func validateSettings(v runtimeSettings) error {
 		if !publicModelID.MatchString(strings.TrimSpace(id)) {
 			return fmt.Errorf("隐藏模型 ID 只能包含字母、数字、点、下划线或连字符，且长度为 1-128")
 		}
+	}
+	if len(v.ContentFilterRules) > 200 {
+		return fmt.Errorf("内容审查规则最多 200 条")
+	}
+	for i, rule := range v.ContentFilterRules {
+		keyword := strings.TrimSpace(rule.Keyword)
+		if keyword == "" {
+			return fmt.Errorf("内容审查规则 #%d 的关键词不能为空", i+1)
+		}
+		if utf8.RuneCountInString(keyword) > 512 {
+			return fmt.Errorf("内容审查规则 #%d 的关键词不能超过 512 字符", i+1)
+		}
+		if utf8.RuneCountInString(rule.Replacement) > 8192 {
+			return fmt.Errorf("内容审查规则 #%d 的替换文本不能超过 8192 字符", i+1)
+		}
+	}
+	if v.ContentFilterOpeningBuffer < 0 || v.ContentFilterOpeningBuffer > 65536 {
+		return fmt.Errorf("内容审查开头缓冲必须为 0-65536 字节")
 	}
 	return nil
 }

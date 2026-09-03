@@ -824,6 +824,7 @@ if (response.output_text) {
           <button class="tab active" role="tab" data-action="show-sub" data-page="settings" data-sub="general"><i data-lucide="sliders-horizontal" style="width:14px;height:14px"></i><span>常规设置</span></button>
           <button class="tab" role="tab" data-action="show-sub" data-page="settings" data-sub="password"><i data-lucide="key-round" style="width:14px;height:14px"></i><span>修改密码</span></button>
           <button class="tab" role="tab" data-action="show-sub" data-page="settings" data-sub="routing"><i data-lucide="route" style="width:14px;height:14px"></i><span>模型路由</span></button>
+          <button class="tab" role="tab" data-action="show-sub" data-page="settings" data-sub="censor"><i data-lucide="shield-check" style="width:14px;height:14px"></i><span>内容审查</span></button>
         </div>
         <div class="tab-pane" id="pane-settings-general">
         <div class="card"><div class="card-head"><span class="card-title">General</span><span style="font-size:11px;color:var(--muted)">Network, timeouts and display preferences</span></div><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:9090"><p class="form-hint">Restart required for changes to take effect.</p></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" min="5" max="3600" placeholder="120"></div><div class="form-group"><label class="form-label" for="setTimeZone">Time zone</label><select class="form-input" id="setTimeZone"><option value="Asia/Shanghai">北京时间 (Asia/Shanghai, UTC+08:00)</option><option value="UTC">UTC</option><option value="Asia/Tokyo">Asia/Tokyo (UTC+09:00)</option><option value="Asia/Singapore">Asia/Singapore (UTC+08:00)</option><option value="Europe/London">Europe/London</option><option value="Europe/Berlin">Europe/Berlin</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Denver">America/Denver</option><option value="America/Los_Angeles">America/Los_Angeles</option></select><p class="form-hint">All dates, times and daily statistics use this time zone. Defaults to Beijing time.</p></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div></div></div>
@@ -841,6 +842,20 @@ if (response.output_text) {
         <div class="card">
           <div class="card-head"><span class="card-title">Model routes</span><span style="font-size:11px;color:var(--muted)">Models route by mapping name; the mapping's tone is sent to the upstream (ChatHub).</span><button class="btn btn-sm" data-action="add-model-route-row"><i data-lucide="plus" style="width:13px;height:13px"></i> Add model</button></div>
           <div style="overflow-x:auto"><table class="table"><thead><tr><th>模型</th><th>Display name</th><th>Upstream mapping</th><th>Default reasoning level</th><th>Max input tokens</th><th>Enabled</th><th>Actions</th></tr></thead><tbody id="modelRouteRows"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody></table></div>
+        </div>
+        </div>
+        <div class="tab-pane" id="pane-settings-censor" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div><h2 style="font-size:18px;font-weight:700">内容审查</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">对上游返回内容进行审查：命中关键词（不区分大小写）时，仅返回该规则的自定义替换文本，后续内容不再发送并终止会话。</p></div>
+          <button class="btn primary" data-action="save-content-filter"><i data-lucide="save" style="width:14px;height:14px"></i> 保存内容审查</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">审查规则</span><span style="font-size:11px;color:var(--muted)">按顺序匹配，命中第一条即触发替换。</span><button class="btn btn-sm" data-action="add-content-filter-row"><i data-lucide="plus" style="width:13px;height:13px"></i> 添加规则</button></div>
+          <div class="card-body">
+            <div class="form-group"><label class="form-label" for="contentFilterEnabled" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="contentFilterEnabled" style="width:16px;height:16px;accent-color:var(--accent)">启用内容审查</label><p class="form-hint">启用后对所有对话响应（含流式与非流式）生效；工具调用响应不参与审查。</p></div>
+            <div class="form-group"><label class="form-label" for="contentFilterOpeningBuffer">开头缓冲（字节）</label><input class="form-input" id="contentFilterOpeningBuffer" type="number" min="0" max="65536" step="1" placeholder="256"><p class="form-hint">流式响应开头缓冲的字节数：关键词在开头缓冲内命中时，客户端只会看到替换文本（此前内容不外发）。0 表示仅保留关键词长度的尾部缓冲（关键词跨块必然被检出，但命中前已发送的内容无法撤回）。默认 256。</p></div>
+          </div>
+          <div style="overflow-x:auto"><table class="table"><thead><tr><th>关键词（句子）</th><th>替换文本（留空则删除内容）</th><th>Actions</th></tr></thead><tbody id="contentFilterRows"><tr><td colspan="3" class="empty">暂无规则</td></tr></tbody></table></div>
         </div>
         </div>
       </section>
@@ -1468,6 +1483,9 @@ document.addEventListener('click',e=>{
     case 'open-auth-url': openAuthUrl(); break;
     case 'save-model-routes': saveModelRoutes(); break;
     case 'add-model-route-row': addModelRouteRow(); break;
+    case 'save-content-filter': saveContentFilter(); break;
+    case 'add-content-filter-row': addContentFilterRow(); break;
+    case 'remove-content-filter-row': removeContentFilterRow(target); break;
     case 'copy-auth-url': copyAuthUrl(); break;
     case 'submit-callback': submitCallback(); break;
     case 'save-account-scheduling-settings': saveAccountSchedulingSettings(); break;
@@ -1537,7 +1555,7 @@ const PAGE_SUBS={
   usage:   ['overview','debug','logs'],
   accounts:['list','add','schedule'],
   proxies: ['config','list'],
-  settings:['general','password','routing'],
+  settings:['general','password','routing','censor'],
 };
 const SUB_PAGE_IDS=['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','settings'];
 
@@ -3236,6 +3254,7 @@ async function loadSettings(){
     routeMappings=(d.upstreamMappings&&d.upstreamMappings.length)?d.upstreamMappings:((d.upstreamTones||[]).map(t=>({name:t,tone:t,enabled:true})));
     routeLevels=(d.reasoningLevels||[]).map(x=>x&&x.effort).filter(Boolean);
     renderModelRoutes(d.catalogModels||[]);
+    renderContentFilter(s.contentFilterEnabled,s.contentFilterOpeningBuffer,s.contentFilterRules||[]);
   }catch(e){showNotice(e.message,'error');}
 }
 function renderModelRoutes(rows){
@@ -3278,6 +3297,57 @@ function removeModelRouteRow(btn){
   const model=tr.querySelector('code')?.textContent||tr.querySelector('[data-f="model"]')?.value||'this model';
   if(!confirm('Remove "'+model+'" from the routing table?'))return;
   tr.remove();
+}
+function renderContentFilter(enabled,openingBuffer,rules){
+  const enabledField=$('contentFilterEnabled');
+  if(enabledField)enabledField.checked=!!enabled;
+  const bufField=$('contentFilterOpeningBuffer');
+  if(bufField)bufField.value=openingBuffer!=null?openingBuffer:256;
+  const rows=rules||[];
+  if(!rows.length){$('contentFilterRows').innerHTML='<tr><td colspan="3" class="empty">暂无规则</td></tr>';return;}
+  $('contentFilterRows').innerHTML=rows.map(r=>contentFilterRowHtml(r.keyword,r.replacement)).join('');
+}
+function contentFilterRowHtml(keyword,replacement){
+  return `<tr>
+    <td><input class="form-input" style="min-width:220px" data-f="keyword" value="${escAttr(keyword||'')}" placeholder="Microsoft"></td>
+    <td><input class="form-input" style="min-width:260px" data-f="replacement" value="${escAttr(replacement||'')}" placeholder="替换为的自定义文本（留空则删除）"></td>
+    <td><button class="btn btn-sm danger" data-action="remove-content-filter-row"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button></td>
+  </tr>`;
+}
+function addContentFilterRow(){
+  const empty=$('contentFilterRows').querySelector('tr .empty');
+  if(empty)$('contentFilterRows').innerHTML='';
+  $('contentFilterRows').insertAdjacentHTML('beforeend',contentFilterRowHtml('',''));
+  try{lucide.createIcons();}catch(e){}
+  const rows=$('contentFilterRows').querySelectorAll('tr');
+  rows[rows.length-1].querySelector('[data-f="keyword"]').focus();
+}
+function removeContentFilterRow(btn){
+  const tr=btn.closest('tr');
+  if(!tr)return;
+  tr.remove();
+  if(!$('contentFilterRows').querySelector('tr'))$('contentFilterRows').innerHTML='<tr><td colspan="3" class="empty">暂无规则</td></tr>';
+}
+async function saveContentFilter(){
+  try{
+    const enabled=$('contentFilterEnabled').checked;
+    let openingBuffer=$('contentFilterOpeningBuffer').value.trim();
+    openingBuffer=openingBuffer===''?256:Number(openingBuffer);
+    if(!Number.isSafeInteger(openingBuffer)||openingBuffer<0||openingBuffer>65536)throw new Error('开头缓冲必须为 0-65536 的整数');
+    const rules=[...document.querySelectorAll('#contentFilterRows tr')].map(tr=>{
+      const g=f=>{const el=tr.querySelector(`[data-f="${f}"]`);return el?el.value:'';};
+      const keyword=(g('keyword')||'').trim();
+      if(!keyword)return null;
+      if(keyword.length>512)throw new Error('关键词不能超过 512 字符');
+      const replacement=g('replacement')||'';
+      if(replacement.length>8192)throw new Error('替换文本不能超过 8192 字符');
+      return {keyword,replacement};
+    }).filter(Boolean);
+    if(enabled&&!rules.length)throw new Error('启用内容审查前请至少添加一条规则（或先关闭开关）');
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({contentFilterEnabled:enabled,contentFilterOpeningBuffer:openingBuffer,contentFilterRules:rules})});
+    showNotice('内容审查已保存','success');
+    loadSettings();
+  }catch(e){showNotice(e.message,'error');}
 }
 async function saveModelRoutes(){
   try{
