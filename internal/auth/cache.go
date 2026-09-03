@@ -10,7 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -35,13 +38,53 @@ type AccountToken struct {
 	BoundProxy       string    `json:"boundProxy,omitempty"`
 }
 
+// Cache is the in-memory account set. It doubles as the reader for the legacy
+// single-file accounts.json that older versions wrote.
 type Cache struct {
 	Accounts []AccountToken `json:"accounts"`
 }
 
+// settingsSuffix marks the interim per-account settings file some builds of
+// the per-account layout wrote (<name>.settings.json). Those files are merged
+// back into the account file and removed on load.
+const settingsSuffix = ".settings.json"
+
+// accountSettingsFile is the interim on-disk format of one account's settings
+// (<accountsDir>/<account-name>.settings.json).
+type accountSettingsFile struct {
+	ScheduleDisabled bool   `json:"scheduleDisabled,omitempty"`
+	BoundProxy       string `json:"boundProxy,omitempty"`
+}
+
+// accountFile is the on-disk format of one account
+// (<accountsDir>/<account-name>.json). It holds both the credentials and the
+// per-account settings (scheduling toggle, bound proxy); the shared account
+// scheduling settings live in a separate store managed by the web layer.
+type accountFile struct {
+	ID               string    `json:"id"`
+	Email            string    `json:"email"`
+	DisplayName      string    `json:"displayName,omitempty"`
+	Status           string    `json:"status"`
+	ScheduleDisabled bool      `json:"scheduleDisabled,omitempty"`
+	AccessToken      string    `json:"accessToken"`
+	RefreshToken     string    `json:"refreshToken,omitempty"`
+	ExpiresAt        time.Time `json:"expiresAt"`
+	ImportedAt       time.Time `json:"importedAt,omitempty"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+	OID              string    `json:"oid,omitempty"`
+	TID              string    `json:"tid,omitempty"`
+	ClientID         string    `json:"clientId,omitempty"`
+	BoundProxy       string    `json:"boundProxy,omitempty"`
+}
+
 type Store struct {
-	mu       sync.Mutex
-	path     string
+	mu  sync.Mutex
+	dir string
+	// files maps account ID -> base file name (without extension) currently
+	// backing it on disk; taken maps lowercased base names -> account ID so a
+	// case-insensitive filesystem never lets two accounts share one file.
+	files    map[string]string
+	taken    map[string]string
 	data     Cache
 	nextIdx  int
 	inflight map[string]*inflightRefresh
@@ -62,10 +105,21 @@ func cryptoRandUint16() uint16 {
 	return binary.BigEndian.Uint16(b[:])
 }
 
-func CachePath() string {
-	// Explicit file paths win over a derived data directory. This matters when
-	// a deployment keeps general state in a mounted directory but puts account
-	// tokens on a separate volume.
+// AccountsDir returns the directory holding one JSON file per authorized
+// account. It defaults to <data dir>/accounts and can be relocated with
+// M365_ACCOUNTS_DIR.
+func AccountsDir() string {
+	if p := storage.EnvPath("M365_ACCOUNTS_DIR"); p != "" {
+		return p
+	}
+	return filepath.Join(storage.DataDir(), "accounts")
+}
+
+// LegacyCachePath returns the location of the pre-per-account single-file
+// store (accounts.json). It is only read once to import accounts into
+// AccountsDir; explicit file-path environment variables from older
+// deployments are honored as the migration source.
+func LegacyCachePath() string {
 	for _, name := range []string{"M365_CONFIG", "M365_TOKEN_CACHE", "M365_TOKEN_FILE"} {
 		if p := storage.EnvPath(name); p != "" {
 			return p
@@ -74,51 +128,333 @@ func CachePath() string {
 	return storage.Path("", "accounts.json")
 }
 
+// OpenStore opens (or creates) the per-account store. A non-empty path
+// overrides the accounts directory (used by tests); an empty path resolves
+// AccountsDir(). A legacy single-file cache next to the data directory is
+// imported automatically on first run.
 func OpenStore(path string) (*Store, error) {
-	if path == "" {
-		path = CachePath()
+	dir := path
+	if dir == "" {
+		dir = AccountsDir()
 	}
-	s := &Store{path: path, data: Cache{Accounts: []AccountToken{}}}
-	b, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return s, nil
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create accounts directory %q: %w", dir, err)
 	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(b, &s.data); err != nil {
-		return nil, err
-	}
-	// Normalize oid/tid for older cache entries.
-	legacyPlain := false
-	for i := range s.data.Accounts {
-		a := &s.data.Accounts[i]
-		if a.OID == "" {
-			a.OID = a.ID
-		}
-		if a.ID == "" {
-			a.ID = a.OID
-		}
-		if (a.AccessToken != "" && !strings.HasPrefix(a.AccessToken, encryptedTokenPrefix)) ||
-			(a.RefreshToken != "" && !strings.HasPrefix(a.RefreshToken, encryptedTokenPrefix)) {
-			legacyPlain = true
-		}
+	s := &Store{
+		dir:   dir,
+		files: map[string]string{},
+		taken: map[string]string{},
+		data:  Cache{Accounts: []AccountToken{}},
 	}
 	aead, err := tokenCipher()
 	if err != nil {
 		return nil, err
 	}
-	if aead != nil {
-		if err := decryptAccountsLocked(&s.data.Accounts, aead); err != nil {
-			return nil, err
-		}
-		// Migrate legacy plaintext storage: the next save rewrites every
-		// account with encrypted tokens.
-		if legacyPlain && len(s.data.Accounts) > 0 {
-			_ = s.saveLocked()
-		}
+	if err := s.loadPerAccount(aead); err != nil {
+		return nil, err
+	}
+	if err := s.importLegacy(aead); err != nil {
+		return nil, err
 	}
 	return s, nil
+}
+
+// normalizeLocked backfills oid/id for older records where only one was set.
+func normalizeLocked(a *AccountToken) {
+	if a.OID == "" {
+		a.OID = a.ID
+	}
+	if a.ID == "" {
+		a.ID = a.OID
+	}
+}
+
+// loadPerAccount reads every <name>.json (plus its <name>.settings.json) from
+// the accounts directory in deterministic file-name order. Unparseable files
+// are skipped with a warning so one damaged account cannot take the whole
+// gateway down; decrypt errors still fail hard (wrong M365_TOKEN_ENC_KEY must
+// never degrade into silently missing accounts).
+func (s *Store) loadPerAccount(aead cipher.AEAD) error {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, settingsSuffix) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	seen := map[string]bool{}
+	for _, name := range names {
+		base := strings.TrimSuffix(name, ".json")
+		b, err := os.ReadFile(filepath.Join(s.dir, name))
+		if err != nil {
+			return err
+		}
+		var rec accountFile
+		if err := json.Unmarshal(b, &rec); err != nil {
+			log.Printf("[accounts] WARNING: skipping unparseable account file %s: %v", name, err)
+			continue
+		}
+		normalizeAccountFile(&rec)
+		if rec.ID == "" || seen[rec.ID] {
+			log.Printf("[accounts] WARNING: skipping account file %s without a usable id (or duplicate)", name)
+			continue
+		}
+		seen[rec.ID] = true
+		acc := AccountToken{
+			ID:               rec.ID,
+			Email:            rec.Email,
+			DisplayName:      rec.DisplayName,
+			Status:           rec.Status,
+			ScheduleDisabled: rec.ScheduleDisabled,
+			AccessToken:      rec.AccessToken,
+			RefreshToken:     rec.RefreshToken,
+			ExpiresAt:        rec.ExpiresAt,
+			ImportedAt:       rec.ImportedAt,
+			UpdatedAt:        rec.UpdatedAt,
+			OID:              rec.OID,
+			TID:              rec.TID,
+			ClientID:         rec.ClientID,
+			BoundProxy:       rec.BoundProxy,
+		}
+		at, err := decryptToken(aead, acc.AccessToken)
+		if err != nil {
+			return fmt.Errorf("account %s accessToken: %w", acc.ID, err)
+		}
+		rt, err := decryptToken(aead, acc.RefreshToken)
+		if err != nil {
+			return fmt.Errorf("account %s refreshToken: %w", acc.ID, err)
+		}
+		acc.AccessToken, acc.RefreshToken = at, rt
+		normalizeLocked(&acc)
+		// Merge the interim per-account settings file (<name>.settings.json)
+		// written by an intermediate build back into the account record and
+		// remove the file; settings now live inside the account file itself.
+		var st accountSettingsFile
+		if sb, err := os.ReadFile(filepath.Join(s.dir, base+settingsSuffix)); err == nil {
+			if err := json.Unmarshal(sb, &st); err != nil {
+				log.Printf("[accounts] WARNING: ignoring unparseable interim settings file for %s: %v", base, err)
+			}
+			acc.ScheduleDisabled = st.ScheduleDisabled
+			acc.BoundProxy = st.BoundProxy
+			if err := os.Remove(filepath.Join(s.dir, base+settingsSuffix)); err != nil {
+				log.Printf("[accounts] WARNING: could not remove interim settings file for %s: %v", base, err)
+			}
+		}
+		s.data.Accounts = append(s.data.Accounts, acc)
+		s.files[acc.ID] = base
+		s.taken[strings.ToLower(base)] = acc.ID
+		// Encryption upgrade: a plaintext record on disk with a configured key
+		// is rewritten encrypted right away.
+		if aead != nil && (hasPlainToken(rec.AccessToken) || hasPlainToken(rec.RefreshToken)) {
+			if err := s.persistTokenFileLocked(acc); err != nil {
+				log.Printf("[accounts] WARNING: could not re-encrypt %s: %v", name, err)
+			}
+		} else if st.ScheduleDisabled || st.BoundProxy != "" {
+			// Fold the merged interim settings into the account file.
+			if err := s.persistTokenFileLocked(acc); err != nil {
+				log.Printf("[accounts] WARNING: could not merge settings into %s: %v", name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func hasPlainToken(v string) bool {
+	return v != "" && !strings.HasPrefix(v, encryptedTokenPrefix)
+}
+
+func normalizeAccountFile(rec *accountFile) {
+	if rec.OID == "" {
+		rec.OID = rec.ID
+	}
+	if rec.ID == "" {
+		rec.ID = rec.OID
+	}
+}
+
+// importLegacy merges the legacy single-file accounts.json into the per-account
+// directory. Only accounts missing from the directory are imported, so an
+// interrupted migration resumes cleanly on the next start. After a successful
+// import the legacy file is renamed out of the way (never deleted) so removed
+// accounts cannot resurrect from it on later restarts.
+func (s *Store) importLegacy(aead cipher.AEAD) error {
+	legacy := LegacyCachePath()
+	if strings.TrimSpace(legacy) == "" {
+		return nil
+	}
+	b, err := os.ReadFile(legacy)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read legacy account cache %q: %w", legacy, err)
+	}
+	var old Cache
+	if err := json.Unmarshal(b, &old); err != nil {
+		return fmt.Errorf("parse legacy account cache %q: %w", legacy, err)
+	}
+	existing := map[string]bool{}
+	for _, a := range s.data.Accounts {
+		existing[a.ID] = true
+	}
+	imported := 0
+	for _, a := range old.Accounts {
+		normalizeLocked(&a)
+		if a.ID == "" || existing[a.ID] {
+			continue
+		}
+		at, err := decryptToken(aead, a.AccessToken)
+		if err != nil {
+			return fmt.Errorf("account %s accessToken: %w", a.ID, err)
+		}
+		rt, err := decryptToken(aead, a.RefreshToken)
+		if err != nil {
+			return fmt.Errorf("account %s refreshToken: %w", a.ID, err)
+		}
+		a.AccessToken, a.RefreshToken = at, rt
+		if err := s.persistTokenFileLocked(a); err != nil {
+			return err
+		}
+		s.data.Accounts = append(s.data.Accounts, a)
+		existing[a.ID] = true
+		imported++
+	}
+	sealed := legacy + ".migrated"
+	if _, err := os.Stat(sealed); err == nil {
+		sealed = legacy + ".migrated-" + time.Now().Format("20060102-150405")
+	}
+	if err := os.Rename(legacy, sealed); err != nil {
+		// Without the rename a later restart would re-import removed accounts,
+		// but the per-account data itself is already consistent; keep serving.
+		log.Printf("[accounts] WARNING: legacy cache %q could not be renamed after import: %v", legacy, err)
+		return nil
+	}
+	if imported > 0 {
+		log.Printf("[accounts] imported %d account(s) from legacy %q into %q (one JSON per account)", imported, legacy, s.dir)
+	} else {
+		log.Printf("[accounts] sealed legacy cache %q (no new accounts to import)", legacy)
+	}
+	return nil
+}
+
+// sanitizeFileName converts an account name into a cross-platform safe file
+// name: Windows-reserved characters become underscores, control characters are
+// dropped, and reserved device names / trailing dots+spaces are neutralized.
+func sanitizeFileName(name string) string {
+	name = strings.TrimSpace(name)
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r < 0x20 || r == 0x7f:
+			// drop control characters
+		case strings.ContainsRune(`\/:*?"<>|`, r):
+			b.WriteRune('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.Trim(b.String(), " .")
+	if out == "" {
+		out = "account"
+	}
+	if reservedDeviceName(strings.SplitN(strings.ToUpper(out), ".", 2)[0]) {
+		out = "_" + out
+	}
+	return out
+}
+
+func reservedDeviceName(n string) bool {
+	switch n {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	}
+	return false
+}
+
+func shortID(id string) string {
+	r := []rune(sanitizeFileName(id))
+	if len(r) > 8 {
+		r = r[:8]
+	}
+	return string(r)
+}
+
+// reserveBaseLocked returns the base file name backing this account, updating
+// the id->file maps. When an account's email changes, the files saved under
+// the previous name are removed so exactly one file pair per account remains.
+func (s *Store) reserveBaseLocked(a AccountToken) (string, error) {
+	want := sanitizeFileName(firstNonEmpty(a.Email, a.ID))
+	if prev, ok := s.files[a.ID]; ok && prev != "" {
+		if strings.EqualFold(prev, want) {
+			return prev, nil
+		}
+		for _, suffix := range []string{".json", settingsSuffix} {
+			if err := os.Remove(filepath.Join(s.dir, prev+suffix)); err != nil && !os.IsNotExist(err) {
+				return "", err
+			}
+		}
+		if s.taken[strings.ToLower(prev)] == a.ID {
+			delete(s.taken, strings.ToLower(prev))
+		}
+	}
+	if owner, ok := s.taken[strings.ToLower(want)]; ok && owner != a.ID {
+		// Case-insensitive filename collision (e.g. two emails differing only
+		// in case): disambiguate deterministically with the account id.
+		want += "-" + shortID(a.ID)
+	}
+	s.files[a.ID] = want
+	s.taken[strings.ToLower(want)] = a.ID
+	return want, nil
+}
+
+// persistTokenFileLocked writes the account file (credentials + per-account
+// settings) with encrypted tokens. In-memory accounts always carry plaintext;
+// only the on-disk copy is sealed.
+func (s *Store) persistTokenFileLocked(a AccountToken) error {
+	aead, err := tokenCipher()
+	if err != nil {
+		return err
+	}
+	base, err := s.reserveBaseLocked(a)
+	if err != nil {
+		return err
+	}
+	rec := accountFile{
+		ID:               a.ID,
+		Email:            a.Email,
+		DisplayName:      a.DisplayName,
+		Status:           a.Status,
+		ScheduleDisabled: a.ScheduleDisabled,
+		ExpiresAt:        a.ExpiresAt,
+		ImportedAt:       a.ImportedAt,
+		UpdatedAt:        a.UpdatedAt,
+		OID:              a.OID,
+		TID:              a.TID,
+		ClientID:         a.ClientID,
+		BoundProxy:       a.BoundProxy,
+	}
+	if rec.AccessToken, err = encryptToken(aead, a.AccessToken); err != nil {
+		return err
+	}
+	if rec.RefreshToken, err = encryptToken(aead, a.RefreshToken); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(s.dir, base+".json"), b, 0o600)
 }
 
 // tokenCipher derives the AES-256-GCM AEAD from M365_TOKEN_ENC_KEY. A missing
@@ -168,7 +504,7 @@ func decryptToken(aead cipher.AEAD, stored string) (string, error) {
 		return stored, nil // legacy plaintext value
 	}
 	if aead == nil {
-		return "", errors.New("M365_TOKEN_ENC_KEY is not configured but accounts.json contains encrypted tokens")
+		return "", errors.New("M365_TOKEN_ENC_KEY is not configured but the account file contains encrypted tokens")
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(stored, encryptedTokenPrefix))
 	if err != nil || len(raw) < aead.NonceSize() {
@@ -181,57 +517,10 @@ func decryptToken(aead cipher.AEAD, stored string) (string, error) {
 	return string(plain), nil
 }
 
-// decryptAccountsLocked restores in-memory plaintext for every account. The
-// JSON file itself keeps ciphertext; only this process holds plaintext.
-func decryptAccountsLocked(accounts *[]AccountToken, aead cipher.AEAD) error {
-	for i := range *accounts {
-		a := &(*accounts)[i]
-		at, err := decryptToken(aead, a.AccessToken)
-		if err != nil {
-			return fmt.Errorf("account %s accessToken: %w", a.ID, err)
-		}
-		rt, err := decryptToken(aead, a.RefreshToken)
-		if err != nil {
-			return fmt.Errorf("account %s refreshToken: %w", a.ID, err)
-		}
-		a.AccessToken = at
-		a.RefreshToken = rt
-	}
-	return nil
-}
-
-func (s *Store) Path() string {
-	return s.path
-}
-
-func (s *Store) saveLocked() error {
-	aead, err := tokenCipher()
-	if err != nil {
-		return err
-	}
-	// Serialize a snapshot: in-memory tokens must stay plaintext for callers,
-	// only the on-disk copy carries ciphertext.
-	snap := Cache{Accounts: make([]AccountToken, len(s.data.Accounts))}
-	copy(snap.Accounts, s.data.Accounts)
-	if aead != nil {
-		for i := range snap.Accounts {
-			at, err := encryptToken(aead, snap.Accounts[i].AccessToken)
-			if err != nil {
-				return err
-			}
-			rt, err := encryptToken(aead, snap.Accounts[i].RefreshToken)
-			if err != nil {
-				return err
-			}
-			snap.Accounts[i].AccessToken = at
-			snap.Accounts[i].RefreshToken = rt
-		}
-	}
-	b, err := json.MarshalIndent(snap, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWrite(s.path, b, 0o600)
+// Dir returns the per-account storage directory (for diagnostics and the
+// health endpoint).
+func (s *Store) Dir() string {
+	return s.dir
 }
 
 func atomicWrite(path string, b []byte, perm os.FileMode) error {
@@ -253,7 +542,7 @@ func (s *Store) SetScheduleEnabled(id string, enabled bool) error {
 		if s.data.Accounts[i].ID == id {
 			s.data.Accounts[i].ScheduleDisabled = !enabled
 			s.data.Accounts[i].UpdatedAt = time.Now()
-			return s.saveLocked()
+			return s.persistTokenFileLocked(s.data.Accounts[i])
 		}
 	}
 	return errors.New("account not found")
@@ -325,9 +614,10 @@ func (s *Store) Upsert(tok TokenSet) (AccountToken, error) {
 	if !found {
 		s.data.Accounts = append(s.data.Accounts, acc)
 	}
-	return acc, s.saveLocked()
+	return acc, s.persistTokenFileLocked(acc)
 }
 
+// Delete removes the account from memory and deletes its file from disk.
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -338,7 +628,18 @@ func (s *Store) Delete(id string) error {
 		}
 	}
 	s.data.Accounts = next
-	return s.saveLocked()
+	base, ok := s.files[id]
+	if !ok {
+		return nil
+	}
+	for _, suffix := range []string{".json", settingsSuffix} {
+		if err := os.Remove(filepath.Join(s.dir, base+suffix)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove account file %q: %w", base+suffix, err)
+		}
+	}
+	delete(s.files, id)
+	delete(s.taken, strings.ToLower(base))
+	return nil
 }
 
 // UpdateRefreshToken persists a rotated refresh token (e.g. one returned by a
@@ -354,7 +655,7 @@ func (s *Store) UpdateRefreshToken(id, refreshToken string) error {
 		if s.data.Accounts[i].ID == id {
 			s.data.Accounts[i].RefreshToken = refreshToken
 			s.data.Accounts[i].UpdatedAt = time.Now()
-			return s.saveLocked()
+			return s.persistTokenFileLocked(s.data.Accounts[i])
 		}
 	}
 	return errors.New("account not found")
@@ -368,7 +669,7 @@ func (s *Store) SetBoundProxy(id, proxyURL string) error {
 		if s.data.Accounts[i].ID == id {
 			s.data.Accounts[i].BoundProxy = proxyURL
 			s.data.Accounts[i].UpdatedAt = time.Now()
-			return s.saveLocked()
+			return s.persistTokenFileLocked(s.data.Accounts[i])
 		}
 	}
 	return errors.New("account not found")
@@ -455,7 +756,7 @@ func (s *Store) EnsureValid(id string) (AccountToken, error) {
 		for i, a := range s.data.Accounts {
 			if a.ID == acc.ID {
 				s.data.Accounts[i].Status = "expired"
-				_ = s.saveLocked()
+				_ = s.persistTokenFileLocked(s.data.Accounts[i])
 				break
 			}
 		}
@@ -494,7 +795,7 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 		for i, a := range s.data.Accounts {
 			if a.ID == acc.ID {
 				s.data.Accounts[i].Status = "expired"
-				_ = s.saveLocked()
+				_ = s.persistTokenFileLocked(s.data.Accounts[i])
 				break
 			}
 		}

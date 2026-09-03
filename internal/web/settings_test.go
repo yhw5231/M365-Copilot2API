@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,7 @@ func TestLimitToolCalls(t *testing.T) {
 	}
 }
 func TestSettingsPersistAndValidate(t *testing.T) {
-	s := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
+	s := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), accountPath: filepath.Join(t.TempDir(), "account-settings.json"), v: defaultRuntimeSettings()}
 	v := s.v
 	v.MaxToolCallsPerTurn = 1
 	v.MaxToolRounds = 32
@@ -41,6 +42,78 @@ func TestSettingsPersistAndValidate(t *testing.T) {
 	v.MaxToolRounds = 0
 	if err := s.save(v); err != nil {
 		t.Fatalf("MaxToolRounds=0 should be accepted as unlimited: %v", err)
+	}
+}
+
+func TestAccountSettingsPersistedSeparately(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "settings.json")
+	accountPath := filepath.Join(dir, "account-settings.json")
+
+	// Seed a legacy main settings file that still carries the account keys
+	// (complete valid settings, as produced by older builds).
+	base, err := json.Marshal(defaultRuntimeSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyDoc map[string]any
+	if err := json.Unmarshal(base, &legacyDoc); err != nil {
+		t.Fatal(err)
+	}
+	legacyDoc["accountConcurrency"] = 3
+	legacyDoc["gatewayConcurrency"] = 7
+	legacyDoc["accountRoutingRule"] = "round-robin"
+	legacyDoc["accountWarmSessionSeconds"] = 120
+	legacyDoc["cacheOnAccountSwitch"] = true
+	legacyDoc["accountQueueTimeoutSeconds"] = 20
+	legacyDoc["accountRateLimitCooldownSeconds"] = 600
+	legacyRaw, err := json.MarshalIndent(legacyDoc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mainPath, legacyRaw, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newSettingsStore(mainPath, accountPath)
+	if s.v.AccountConcurrency != 3 || s.v.GatewayConcurrency != 7 || s.v.AccountRoutingRule != "round-robin" {
+		t.Fatalf("legacy account settings not loaded: %+v", s.v)
+	}
+
+	// Save must split: account keys go to the dedicated file and are stripped
+	// from the main file.
+	v := s.v
+	v.AccountConcurrency = 5
+	if err := s.save(v); err != nil {
+		t.Fatal(err)
+	}
+	mainRaw, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range accountSettingFileKeys {
+		if strings.Contains(string(mainRaw), `"`+key+`"`) {
+			t.Fatalf("main settings file still carries account key %q: %s", key, mainRaw)
+		}
+	}
+	if !strings.Contains(string(mainRaw), `"timeZone"`) {
+		t.Fatalf("main settings file lost unrelated keys: %s", mainRaw)
+	}
+	accountRaw, err := os.ReadFile(accountPath)
+	if err != nil {
+		t.Fatalf("account settings file missing: %v", err)
+	}
+	if !strings.Contains(string(accountRaw), `"accountConcurrency": 5`) {
+		t.Fatalf("account settings file wrong: %s", accountRaw)
+	}
+
+	// Reload: the dedicated file wins.
+	reloaded := newSettingsStore(mainPath, accountPath)
+	if reloaded.v.AccountConcurrency != 5 {
+		t.Fatalf("account settings not restored, got %d", reloaded.v.AccountConcurrency)
+	}
+	if reloaded.v.GatewayConcurrency != 7 {
+		t.Fatalf("gateway concurrency not restored, got %d", reloaded.v.GatewayConcurrency)
 	}
 }
 

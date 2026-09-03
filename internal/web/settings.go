@@ -258,19 +258,22 @@ type runtimeSettings struct {
 	// message that re-states the declared tool list and guards against the
 	// model concluding tools are unavailable or submitting identical old/new
 	// edit strings. Defaults to on; M365_INJECT_TOOL_REMINDER overrides.
-	InjectToolReminder  bool     `json:"injectToolReminder"`
-	ContextWindow       int      `json:"contextWindow"`
-	MaxOutputTokens     int      `json:"maxOutputTokens"`
-	ChatTimeoutSeconds  int      `json:"chatTimeoutSeconds"`
-	ImageTimeoutSeconds int      `json:"imageTimeoutSeconds"`
-	LogLevel            string   `json:"logLevel"`
-	DebugLogPath        string   `json:"debugLogPath"`
-	ListenAddress       string   `json:"listenAddress"`
-	ConfigPath          string   `json:"configPath"`
-	TokenCachePath      string   `json:"tokenCachePath"`
-	SessionCachePath    string   `json:"sessionCachePath"`
-	OutboundProxy       string   `json:"outboundProxy"`
-	ProxyPool           []string `json:"proxyPool,omitempty"`
+	InjectToolReminder  bool   `json:"injectToolReminder"`
+	ContextWindow       int    `json:"contextWindow"`
+	MaxOutputTokens     int    `json:"maxOutputTokens"`
+	ChatTimeoutSeconds  int    `json:"chatTimeoutSeconds"`
+	ImageTimeoutSeconds int    `json:"imageTimeoutSeconds"`
+	LogLevel            string `json:"logLevel"`
+	DebugLogPath        string `json:"debugLogPath"`
+	ListenAddress       string `json:"listenAddress"`
+	// AccountsDir is the directory holding one JSON file per authorized
+	// account (each with a separate <account>.settings.json). Changing it
+	// requires a restart; the old single-file accounts.json is only honored
+	// as a one-time migration source.
+	AccountsDir      string   `json:"accountsDir"`
+	SessionCachePath string   `json:"sessionCachePath"`
+	OutboundProxy    string   `json:"outboundProxy"`
+	ProxyPool        []string `json:"proxyPool,omitempty"`
 	// ProxyMode is the three-state proxy policy: "direct" (never use the
 	// pool), "loose" (prefer the pool, fall back to direct), "strict"
 	// (mandatory once a pool is configured; the default when absent).
@@ -331,7 +334,50 @@ type runtimeSettings struct {
 type settingsStore struct {
 	mu   sync.RWMutex
 	path string
-	v    runtimeSettings
+	// accountPath is the dedicated file for the shared account-scheduling
+	// settings (concurrency, cooldown, queue timeout, ...). Those keys are
+	// stripped from the main settings file so exactly one file owns them.
+	accountPath string
+	v           runtimeSettings
+}
+
+// accountSchedulingSettings is the on-disk shape of the shared account
+// settings file (data/account-settings.json).
+type accountSchedulingSettings struct {
+	AccountConcurrency              int    `json:"accountConcurrency"`
+	GatewayConcurrency              int    `json:"gatewayConcurrency"`
+	AccountRoutingRule              string `json:"accountRoutingRule"`
+	AccountWarmSessionSeconds       int    `json:"accountWarmSessionSeconds"`
+	CacheOnAccountSwitch            bool   `json:"cacheOnAccountSwitch"`
+	AccountQueueTimeoutSeconds      int    `json:"accountQueueTimeoutSeconds"`
+	AccountRateLimitCooldownSeconds int    `json:"accountRateLimitCooldownSeconds"`
+}
+
+// accountSettingFileKeys are the runtimeSettings JSON keys owned by the
+// separate account settings file; they are removed from settings.json.
+var accountSettingFileKeys = []string{
+	"accountConcurrency", "gatewayConcurrency", "accountRoutingRule",
+	"accountWarmSessionSeconds", "cacheOnAccountSwitch",
+	"accountQueueTimeoutSeconds", "accountRateLimitCooldownSeconds",
+}
+
+func accountSchedulingFrom(v runtimeSettings) accountSchedulingSettings {
+	return accountSchedulingSettings{
+		AccountConcurrency:              v.AccountConcurrency,
+		GatewayConcurrency:              v.GatewayConcurrency,
+		AccountRoutingRule:              v.AccountRoutingRule,
+		AccountWarmSessionSeconds:       v.AccountWarmSessionSeconds,
+		CacheOnAccountSwitch:            v.CacheOnAccountSwitch,
+		AccountQueueTimeoutSeconds:      v.AccountQueueTimeoutSeconds,
+		AccountRateLimitCooldownSeconds: v.AccountRateLimitCooldownSeconds,
+	}
+}
+
+func accountSettingsPath() string {
+	if p := envPath("M365_ACCOUNT_SETTINGS_FILE"); p != "" {
+		return p
+	}
+	return defaultDataPath("account-settings.json")
 }
 
 func envInt(name string, fallback int) int {
@@ -380,8 +426,8 @@ func defaultRuntimeSettings() runtimeSettings {
 		InjectToolReminder: envBoolDefault("M365_INJECT_TOOL_REMINDER", true),
 		ContextWindow:      envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
 		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 600), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "warn"),
-		DebugLogPath: envPath("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: envPath("M365_CONFIG"),
-		TokenCachePath: envPath("M365_TOKEN_CACHE"), SessionCachePath: envPath("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
+		DebugLogPath: envPath("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), AccountsDir: envPath("M365_ACCOUNTS_DIR"),
+		SessionCachePath: envPath("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
 		ModelMappings:                   append([]modelMapping(nil), defaultModelMappings...),
 		UpstreamMappings:                append([]upstreamMapping(nil), defaultUpstreamMappings...),
@@ -405,9 +451,33 @@ func settingsPath() string {
 }
 
 var openSettingsStore = sync.OnceValue(func() *settingsStore {
-	s := &settingsStore{path: settingsPath(), v: defaultRuntimeSettings()}
+	s := newSettingsStore(settingsPath(), accountSettingsPath())
+	return s
+})
+
+// newSettingsStore loads the main settings file, overlays the dedicated
+// account settings file when present, and ensures the account file exists so
+// the shared account-scheduling settings are persisted separately from the
+// first start on.
+func newSettingsStore(path, accountPath string) *settingsStore {
+	s := &settingsStore{path: path, accountPath: accountPath, v: defaultRuntimeSettings()}
 	if b, e := os.ReadFile(s.path); e == nil {
 		_ = json.Unmarshal(b, &s.v)
+	}
+	// The dedicated account settings file wins over same-named legacy keys in
+	// the main settings file; when it is missing (first start after the split)
+	// the values loaded from the main file seed it below.
+	if b, e := os.ReadFile(s.accountPath); e == nil {
+		var a accountSchedulingSettings
+		if json.Unmarshal(b, &a) == nil {
+			s.v.AccountConcurrency = a.AccountConcurrency
+			s.v.GatewayConcurrency = a.GatewayConcurrency
+			s.v.AccountRoutingRule = a.AccountRoutingRule
+			s.v.AccountWarmSessionSeconds = a.AccountWarmSessionSeconds
+			s.v.CacheOnAccountSwitch = a.CacheOnAccountSwitch
+			s.v.AccountQueueTimeoutSeconds = a.AccountQueueTimeoutSeconds
+			s.v.AccountRateLimitCooldownSeconds = a.AccountRateLimitCooldownSeconds
+		}
 	}
 	// Legacy files predating the upstream-mapping feature carry no
 	// upstreamMappings key; fall back to the defaults so every model keeps a
@@ -441,8 +511,25 @@ var openSettingsStore = sync.OnceValue(func() *settingsStore {
 	if e := validateSettings(s.v); e != nil {
 		log.Printf("[settings] invalid persisted settings: %v", e)
 	}
+	// First start after the split (or a missing/corrupt account file): persist
+	// the currently effective account settings into the dedicated file so the
+	// separate store exists from then on.
+	if _, e := os.Stat(s.accountPath); os.IsNotExist(e) {
+		if err := writeAccountSettingsFile(s.accountPath, accountSchedulingFrom(s.v)); err != nil {
+			log.Printf("[settings] could not write %s: %v", s.accountPath, err)
+		}
+	}
 	return s
-})
+}
+
+// writeAccountSettingsFile atomically persists the shared account settings.
+func writeAccountSettingsFile(path string, a accountSchedulingSettings) error {
+	b, err := json.MarshalIndent(a, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(path, b, 0600)
+}
 
 func firstNonEmptySetting(values ...string) string {
 	for _, v := range values {
@@ -582,7 +669,25 @@ func (s *settingsStore) save(v runtimeSettings) error {
 	if e := validateSettings(v); e != nil {
 		return e
 	}
-	b, e := json.MarshalIndent(v, "", "  ")
+	// The shared account-scheduling settings go to their dedicated file; the
+	// same keys are stripped from the main settings file so exactly one file
+	// owns them.
+	if err := writeAccountSettingsFile(s.accountPath, accountSchedulingFrom(v)); err != nil {
+		return err
+	}
+	b, e := json.Marshal(v)
+	if e != nil {
+		return e
+	}
+	var doc map[string]any
+	if json.Unmarshal(b, &doc) == nil {
+		for _, k := range accountSettingFileKeys {
+			delete(doc, k)
+		}
+		b, e = json.MarshalIndent(doc, "", "  ")
+	} else {
+		b, e = json.MarshalIndent(v, "", "  ")
+	}
 	if e != nil {
 		return e
 	}
@@ -603,7 +708,7 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 		for _, m := range upstream {
 			names = append(names, m.Name)
 		}
-		jsonOut(w, map[string]any{"settings": cur, "codexModels": configurableCodexModels, "upstreamTones": names, "upstreamMappings": upstream, "catalogModels": modelRouteTable(cur.ModelMappings, cur.UpstreamMappings, cur.HiddenModels), "reasoningLevels": advertisedReasoningEfforts, "restartRequiredFields": []string{"listenAddress", "configPath", "tokenCachePath", "sessionCachePath", "outboundProxy", "proxyPool", "clientId", "authority", "redirectUri", "scope", "debugLogPath"}})
+		jsonOut(w, map[string]any{"settings": cur, "codexModels": configurableCodexModels, "upstreamTones": names, "upstreamMappings": upstream, "catalogModels": modelRouteTable(cur.ModelMappings, cur.UpstreamMappings, cur.HiddenModels), "reasoningLevels": advertisedReasoningEfforts, "restartRequiredFields": []string{"listenAddress", "accountsDir", "sessionCachePath", "outboundProxy", "proxyPool", "clientId", "authority", "redirectUri", "scope", "debugLogPath"}})
 	case http.MethodPut:
 		// 前端可能只修改一个字段（如监听地址），其余字段以零值提交。
 		// 逐字段合并到当前设置再校验，避免"改一个字段弄丢其他配置"。
@@ -713,7 +818,7 @@ func currentSettings() runtimeSettings { return openSettingsStore().get() }
 // always win over values saved from the web console.
 func ApplyStartupSettingsEnv() {
 	s := openSettingsStore().get()
-	values := map[string]string{"M365_LISTEN": s.ListenAddress, "M365_CONFIG": s.ConfigPath, "M365_TOKEN_CACHE": s.TokenCachePath, "M365_SESSION_CACHE": s.SessionCachePath, outbound.EnvProxy: s.OutboundProxy, "M365_PROXY_POOL": strings.Join(s.ProxyPool, "\n"), "M365_CLIENT_ID": s.ClientID, "M365_AUTHORITY": s.Authority, "M365_REDIRECT_URI": s.RedirectURI, "M365_SCOPE": s.Scope, "M365_DEBUG_LOG": s.DebugLogPath, outbound.EnvProxyMode: s.proxyMode()}
+	values := map[string]string{"M365_LISTEN": s.ListenAddress, "M365_ACCOUNTS_DIR": s.AccountsDir, "M365_SESSION_CACHE": s.SessionCachePath, outbound.EnvProxy: s.OutboundProxy, "M365_PROXY_POOL": strings.Join(s.ProxyPool, "\n"), "M365_CLIENT_ID": s.ClientID, "M365_AUTHORITY": s.Authority, "M365_REDIRECT_URI": s.RedirectURI, "M365_SCOPE": s.Scope, "M365_DEBUG_LOG": s.DebugLogPath, outbound.EnvProxyMode: s.proxyMode()}
 	for k, v := range values {
 		if _, exists := os.LookupEnv(k); !exists && strings.TrimSpace(v) != "" {
 			_ = os.Setenv(k, v)

@@ -257,7 +257,7 @@ func TestAccountConcurrencyBlocksNewSessionButAllowsActiveSession(t *testing.T) 
 // every upgrade" regression: the runtime limiter must be seeded from the
 // persisted settings.json value at startup, not left at the built-in default.
 func TestApplyPersistedAccountConcurrency(t *testing.T) {
-	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
+	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), accountPath: filepath.Join(t.TempDir(), "account-settings.json"), v: defaultRuntimeSettings()}
 	st.v.AccountConcurrency = 7
 	limiter := newAccountConcurrency()
 	if got := limiter.Snapshot()["limit"].(int); got != defaultAccountConcurrency {

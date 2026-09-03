@@ -1,14 +1,13 @@
 package auth
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestUpsertAndList(t *testing.T) {
 	dir := t.TempDir()
-	store, err := OpenStore(filepath.Join(dir, "tokens.json"))
+	store, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,8 +32,8 @@ func TestUpsertAndList(t *testing.T) {
 }
 
 func TestScheduleEnabledPersists(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tokens.json")
-	store, err := OpenStore(path)
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +56,9 @@ func TestScheduleEnabledPersists(t *testing.T) {
 	if store.ScheduleEnabled("oid-1") {
 		t.Fatal("upsert reset scheduling state")
 	}
-	reopened, err := OpenStore(path)
+	// Settings live in their own file next to the token file; reopening the
+	// store must restore them from there.
+	reopened, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +68,8 @@ func TestScheduleEnabledPersists(t *testing.T) {
 }
 
 func TestImportedAtPersistsAcrossUpsertAndRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tokens.json")
-	store, err := OpenStore(path)
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestImportedAtPersistsAcrossUpsertAndRestart(t *testing.T) {
 		t.Fatalf("upsert changed importedAt: got %s want %s", updated.ImportedAt, first.ImportedAt)
 	}
 
-	reopened, err := OpenStore(path)
+	reopened, err := OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +112,7 @@ func TestImportedAtPersistsAcrossUpsertAndRestart(t *testing.T) {
 }
 
 func TestMoveToBackRotatesSchedulingQueue(t *testing.T) {
-	store, err := OpenStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store, err := OpenStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

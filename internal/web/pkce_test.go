@@ -119,7 +119,7 @@ func TestCallbackPKCEAcceptsPastedURLAndReturnsSafeCompletionPage(t *testing.T) 
 	}))
 	defer tokenServer.Close()
 	t.Setenv("M365_TOKEN_ENDPOINT", tokenServer.URL)
-	store, err := auth.OpenStore(t.TempDir() + "/accounts.json")
+	store, err := auth.OpenStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

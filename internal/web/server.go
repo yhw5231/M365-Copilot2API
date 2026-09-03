@@ -747,7 +747,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"chat":               "chathub",
 		"clientId":           auth.ClientID(),
 		"scope":              auth.Scope(),
-		"tokenCache":         s.tokens.Path(),
+		"accountsDir":        s.tokens.Dir(),
 		"accountCount":       len(list),
 		"accountConcurrency": s.accountConcurrency.Snapshot(),
 		"gatewayConcurrency": s.gatewayConcurrency.Snapshot(),

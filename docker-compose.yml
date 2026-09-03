@@ -19,8 +19,7 @@ services:
     environment:
       M365_LISTEN: 0.0.0.0:9090
       M365_DATA_DIR: /data
-      M365_CONFIG: /data/accounts.json
-      M365_TOKEN_CACHE: /data/token-cache.json
+      M365_ACCOUNTS_DIR: /data/accounts
       M365_SESSION_CACHE: /data/sessions.json
       M365_CONVERSATION_SESSION_CACHE: /data/conversation-sessions.json
       M365_API_KEYS: /data/api-keys.json

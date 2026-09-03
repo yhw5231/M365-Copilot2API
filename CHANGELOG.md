@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **账号存储改为分文件保存**：已授权账号从单一 `accounts.json` 迁移到
+  `accounts/` 目录（默认 `{数据目录}/accounts`，可用 `M365_ACCOUNTS_DIR`
+  覆盖）。每个账号保存为以账号名（邮箱）命名的 `<账号名>.json`，包含凭据与
+  该账号的调度开关、绑定代理。公用账号调度设置（账号并发、网关总并发、轮询
+  规则、会话保留时长、排队超时、限流冷却、切换缓存）从 `settings.json` 拆分
+  出来，单独保存在 `account-settings.json`（可用 `M365_ACCOUNT_SETTINGS_FILE`
+  覆盖），主设置文件不再承载这些键。首次启动自动导入旧版单文件
+  `accounts.json` 并封存为 `accounts.json.migrated`（不删除）；旧环境变量
+  `M365_CONFIG` / `M365_TOKEN_CACHE` / `M365_TOKEN_FILE` 仅作为迁移来源识别，
+  不再决定存储位置。启用了 `M365_TOKEN_ENC_KEY` 时账号文件同样密文落盘。
+
 ### 新增
 
 - **网关总并发限制（Gateway concurrency）**：新增独立于账号并发的网关级并发

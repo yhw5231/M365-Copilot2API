@@ -10,7 +10,7 @@ import (
 )
 
 func TestAdminSettingsPartialPutMerges(t *testing.T) {
-	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
+	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), accountPath: filepath.Join(t.TempDir(), "account-settings.json"), v: defaultRuntimeSettings()}
 	s := &Server{settings: st}
 
 	// 用户只改监听地址，其余字段（如工具调用上限）未提交。
@@ -35,7 +35,7 @@ func TestAdminSettingsPartialPutMerges(t *testing.T) {
 }
 
 func TestAdminSettingsPartialPutAcceptsStandardTimeZone(t *testing.T) {
-	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
+	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), accountPath: filepath.Join(t.TempDir(), "account-settings.json"), v: defaultRuntimeSettings()}
 	s := &Server{settings: st}
 
 	body := `{"timeZone":"Asia/Shanghai","chatTimeoutSeconds":600}`
@@ -57,7 +57,7 @@ func TestAdminSettingsPartialPutAcceptsStandardTimeZone(t *testing.T) {
 func TestAdminSettingsDuplicateKeysDoNotPanic(t *testing.T) {
 	// JSON 重复键是前端不该产生但可能出现的输入（如日志里错拼的字段）。
 	// 修复的 bug 是部分 PUT 零值覆盖，这里只验证这类脏输入不 panic。
-	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
+	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), accountPath: filepath.Join(t.TempDir(), "account-settings.json"), v: defaultRuntimeSettings()}
 	s := &Server{settings: st}
 	body := `{"listenAddress":"a:b","listenAddress":"c:d"}`
 	r := httptest.NewRequest(http.MethodPut, "/api/admin/settings", bytes.NewReader([]byte(body)))
@@ -69,7 +69,7 @@ func TestAdminSettingsDuplicateKeysDoNotPanic(t *testing.T) {
 }
 
 func TestAdminSettingsHTTP(t *testing.T) {
-	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
+	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), accountPath: filepath.Join(t.TempDir(), "account-settings.json"), v: defaultRuntimeSettings()}
 	s := &Server{settings: st}
 	r := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
 	w := httptest.NewRecorder()

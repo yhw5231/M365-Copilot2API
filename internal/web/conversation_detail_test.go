@@ -17,7 +17,7 @@ func TestConversationListAndDetailUseCompleteLocalHistory(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(dir, "sessions.json"))
 	t.Setenv("M365_CONVERSATION_CACHE", filepath.Join(dir, "conversations.json"))
-	store, err := auth.OpenStore(filepath.Join(dir, "accounts.json"))
+	store, err := auth.OpenStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

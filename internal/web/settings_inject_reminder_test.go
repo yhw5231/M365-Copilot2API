@@ -27,7 +27,7 @@ func TestOpenSettingsStoreLegacyKeepsInjectToolReminderDefault(t *testing.T) {
 	if !d.InjectToolReminder {
 		t.Fatalf("defaultRuntimeSettings().InjectToolReminder=%v want true", d.InjectToolReminder)
 	}
-	s := &settingsStore{path: p, v: d}
+	s := &settingsStore{path: p, accountPath: p + ".account-settings", v: d}
 	if b, e := os.ReadFile(s.path); e == nil {
 		if err := json.Unmarshal(b, &s.v); err != nil {
 			t.Fatal(err)
@@ -45,7 +45,7 @@ func TestOpenSettingsStoreLegacyKeepsInjectToolReminderDefault(t *testing.T) {
 // false persists and is returned by GET.
 func TestInjectToolReminderPUTRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	st := &settingsStore{path: filepath.Join(dir, "settings.json"), v: defaultRuntimeSettings()}
+	st := &settingsStore{path: filepath.Join(dir, "settings.json"), accountPath: filepath.Join(dir, "account-settings.json"), v: defaultRuntimeSettings()}
 	s := &Server{settings: st}
 
 	body := `{"injectToolReminder":false}`

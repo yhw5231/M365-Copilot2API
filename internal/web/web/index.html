@@ -1381,7 +1381,7 @@ function translatePage(){
   const nodes=[];let node;
   while(node=walker.nextNode()){if(!node.parentElement?.closest('script,style,pre,code,textarea'))nodes.push(node);}
   nodes.forEach(n=>{const translated=translateText(n.nodeValue);if(translated!==n.nodeValue)n.nodeValue=translated;});
-  document.querySelectorAll('[placeholder],[title],[aria-label]').forEach(el=>['placeholder','title','aria-label'].forEach(attr=>{if(el.hasAttribute(attr))el.setAttribute(attr,translateText(el.getAttribute(attr)));}));
+  document.querySelectorAll('[placeholder],[title],[aria-label]').forEach(el=>['placeholder','title','aria-label'].forEach(attr=>{if(el.hasAttribute(attr)){const raw=el.getAttribute(attr),localized=translateText(raw);if(localized!==raw)el.setAttribute(attr,localized);}}));
   const selector=$('languageSelect');if(selector)selector.value=currentLocale;
   renderTimeZoneOptions();
   document.documentElement.lang=currentLocale;
@@ -1397,16 +1397,28 @@ function renderTimeZoneOptions(){
     if(!names)return;
     const localizedName=names[currentLocale]||names.en||zone;
     const offset=zone==='Asia/Shanghai'||zone==='Asia/Singapore'?'UTC+08:00':zone==='Asia/Tokyo'?'UTC+09:00':zone==='UTC'?'UTC':'';
-    option.textContent=localizedName+' ('+zone+(offset?', '+offset:'')+')';
+    // textContent assignment always replaces the text node (childList mutation)
+    // even when the label is identical. translatePage() is a MutationObserver
+    // callback, so an unconditional write here would re-trigger translatePage
+    // forever and starve the main thread (frozen white console).
+    const label=localizedName+' ('+zone+(offset?', '+offset:'')+')';
+    if(option.textContent!==label)option.textContent=label;
   });
   selector.value=selectedValue;
+}
+function observeLocaleMutations(){
+  localeObserver.observe(document.body,{childList:true,subtree:true,characterData:true});
 }
 function applyLocale(locale){
   if(!SUPPORTED_LOCALES.includes(locale))locale='en';
   currentLocale=locale;
   try{localStorage.setItem(localeStorageKey,currentLocale);}catch(e){}
+  // translatePage mutates the DOM it just scanned; disconnect while running so
+  // its own writes can never re-schedule it, then re-arm for external changes.
+  if(localeObserver)localeObserver.disconnect();
   translatePage();
-  if(!localeObserver){localeObserver=new MutationObserver(()=>translatePage());localeObserver.observe(document.body,{childList:true,subtree:true,characterData:true});}
+  if(!localeObserver){localeObserver=new MutationObserver(()=>{localeObserver.disconnect();translatePage();observeLocaleMutations();});}
+  observeLocaleMutations();
 }
 applyLocale(currentLocale);
 document.addEventListener('change',e=>{

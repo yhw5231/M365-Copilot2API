@@ -264,9 +264,10 @@ server {
 |------|--------|------|
 | `M365_LISTEN` | `127.0.0.1:9090` | 监听地址（`manage.py` 与 Docker 内置为 `0.0.0.0:9090`） |
 | `M365_ADMIN_PASSWORD` | 无，必须配置 | 管理员密码。必须通过该环境变量或 `M365_ADMIN_PASSWORD_FILE` 指向的密码文件配置；首次登录仍会强制修改密码 |
-| `M365_TOKEN_ENC_KEY` | 空（不加密） | 账号 Token 加密密钥：64 位十六进制（32 字节），启用后 `accounts.json` 中的 accessToken / refreshToken 以 AES-256-GCM 密文落盘（`enc:v1:` 前缀），旧明文数据会自动迁移；不配置则保持明文以兼容旧部署，**请务必配置** |
+| `M365_TOKEN_ENC_KEY` | 空（不加密） | 账号 Token 加密密钥：64 位十六进制（32 字节），启用后每个账号文件（`accounts/<账号名>.json`）中的 accessToken / refreshToken 以 AES-256-GCM 密文落盘（`enc:v1:` 前缀），旧明文数据会自动迁移；不配置则保持明文以兼容旧部署，**请务必配置** |
 | `M365_DATA_DIR` | `~/.config/m365-copilot2api` | 数据目录（token、密钥、用量等集中存储；`manage.py` 内置为 `data/`）。**备份该目录等同于备份全部账号凭据，须按敏感数据对待** |
-| `M365_CONFIG` | `~/.config/m365-copilot2api/accounts.json` | 账号配置文件路径 |
+| `M365_ACCOUNTS_DIR` | `{M365_DATA_DIR}/accounts` | 已授权账号存储目录：每个账号一个以账号名（邮箱）命名的 `<账号名>.json` 文件（含凭据与该账号的调度开关、绑定代理）。旧版单文件 `accounts.json` 首次启动时自动导入并封存为 `accounts.json.migrated` |
+| `M365_ACCOUNT_SETTINGS_FILE` | `{M365_DATA_DIR}/account-settings.json` | 公用账号调度设置单独保存的文件（账号并发、网关总并发、轮询规则、会话保留时长、排队超时、限流冷却、切换缓存），不再混入 `settings.json` |
 | `M365_SESSION_TTL_MINUTES` | `120` | 会话绑定存活时间（分钟），过期从 `sessions.json` 清除 |
 | `M365_CONTEXT_TTL_MINUTES` | `120` | 上下文指纹复用窗口（分钟） |
 | `M365_CONTEXT_SIMILARITY` | `0.6` | 上下文相似度复用阈值（0~1，Jaccard 相似度） |
@@ -321,7 +322,7 @@ server {
 
 | 变量 | 说明 |
 |------|------|
-| `M365_TOKEN_CACHE` | Token 缓存文件（未设置时落到数据目录） |
+| `M365_ACCOUNTS_DIR` | 账号存储目录（默认 `{data_dir}/accounts/`，每账号一个 JSON 文件） |
 | `M365_SESSION_CACHE` | 会话绑定缓存文件（默认 `sessions.json`） |
 | `M365_CONVERSATION_CACHE` | 本地对话索引（默认 `conversations.json`） |
 | `M365_API_KEYS` | API Key 存储文件 |
@@ -592,7 +593,7 @@ M365-Copilot2API/
 
 - **默认仅监听内网**：直接运行二进制默认 `M365_LISTEN=127.0.0.1:9090`；对外提供服务务必通过 TLS 终止的反向代理（Nginx / Caddy，配置示例见上方「Nginx 反向代理」节），并为 SSE 与 WebSocket 开启长连接与 `proxy_buffering off`。
 - **强制改密**：必须通过 `M365_ADMIN_PASSWORD` 或 `M365_ADMIN_PASSWORD_FILE` 配置初始管理员密码；首次登录后仍必须立即修改。项目不再提供内置默认密码。
-- **Token 加密落盘**：设置 `M365_TOKEN_ENC_KEY`（64 位十六进制）后，`accounts.json` 中的 accessToken / refreshToken 以 AES-256-GCM 密文存储；加载时若密钥缺失或不匹配会直接拒绝启动，绝不静默回退明文。
+- **Token 加密落盘**：设置 `M365_TOKEN_ENC_KEY`（64 位十六进制）后，`accounts/<账号名>.json` 中的 accessToken / refreshToken 以 AES-256-GCM 密文存储；加载时若密钥缺失或不匹配会直接拒绝启动，绝不静默回退明文。
 - **密钥可回读**：API Key 明文与 SHA-256 哈希一并持久化到 `api-keys.json`（`0600`），控制台可随时重新显示并复制完整密钥；旧版明文只在缺少哈希时补写哈希、不再清零。请妥善保护控制台与数据目录权限。
 - **数据落盘权限**：账号凭据、Token 缓存、会话绑定、API Key 等数据文件以 `0600` 权限写入，数据目录建议 `0700`。**备份数据目录等同于备份全部账号凭据与 M365 会话**，请按敏感数据处理，并考虑用 `M365_TOKEN_ENC_KEY` 加密后再归档。
 - **WebSocket 凭据**：ChatHub WebSocket 的 access token 通过 `Authorization: Bearer` 头传递，绝不进入 URL query，避免进入代理日志、trace 与错误输出。

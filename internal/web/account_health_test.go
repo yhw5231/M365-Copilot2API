@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -139,7 +138,6 @@ func TestCooldownExpiryClearsCallCount(t *testing.T) {
 func testAccountFiles(t *testing.T) *auth.Store {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "accounts.json")
 	// Insert in a fixed order (u-1, u-2, u-3): the configured account order is
 	// the scheduling order, and tests assert that order deterministically.
 	tokens := []auth.TokenSet{
@@ -147,7 +145,7 @@ func testAccountFiles(t *testing.T) *auth.Store {
 		{HomeOID: "u-2", Email: "two@example.com", AccessToken: "tok2", RefreshToken: "r2", ExpiresAt: time.Now().Add(time.Hour)},
 		{HomeOID: "u-3", Email: "three@example.com", AccessToken: "tok3", RefreshToken: "r3", ExpiresAt: time.Now().Add(time.Hour)},
 	}
-	store, err := auth.OpenStore(path)
+	store, err := auth.OpenStore(dir)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

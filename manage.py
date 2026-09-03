@@ -71,8 +71,7 @@ def start():
     env.update({
         "M365_LISTEN": listen,
         "M365_DATA_DIR": os.path.join(DATA_DIR, ""),
-        "M365_CONFIG": env.get("M365_CONFIG", os.path.join(DATA_DIR, "accounts.json")),
-        "M365_TOKEN_CACHE": env.get("M365_TOKEN_CACHE", os.path.join(DATA_DIR, "token-cache.json")),
+        "M365_ACCOUNTS_DIR": env.get("M365_ACCOUNTS_DIR", os.path.join(DATA_DIR, "accounts")),
         "M365_SESSION_CACHE": env.get("M365_SESSION_CACHE", os.path.join(DATA_DIR, "sessions.json")),
         "M365_CONVERSATION_SESSION_CACHE": env.get("M365_CONVERSATION_SESSION_CACHE", os.path.join(DATA_DIR, "conversation-sessions.json")),
         "M365_API_KEYS": env.get("M365_API_KEYS", os.path.join(DATA_DIR, "api-keys.json")),

@@ -45,7 +45,7 @@ func TestNewRejectsMissingAdminPassword(t *testing.T) {
 	t.Setenv("M365_ADMIN_PASSWORD", "")
 	t.Setenv("M365_ADMIN_PASSWORD_FILE", filepath.Join(t.TempDir(), "admin-password"))
 	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
-	t.Setenv("M365_CONFIG", filepath.Join(t.TempDir(), "accounts.json"))
+	t.Setenv("M365_ACCOUNTS_DIR", t.TempDir())
 
 	if _, err := New(); err == nil || !strings.Contains(err.Error(), "administrator password is not configured") {
 		t.Fatalf("New() error=%v, want missing administrator password error", err)
