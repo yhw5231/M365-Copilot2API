@@ -288,6 +288,24 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	// 鐢辫皟鐢ㄦ柟涓诲姩鍐冲畾瑕佺户缁摢涓簯绔璇濄€?
 	if explicitID != "" {
 		resolveExplicit := func(sessID string, sess sessionBinding) ResolveResult {
+			// Bindings persisted by an older build predate the anchor chain
+			// (sessions.json carried only the text mirror). Derive the chain
+			// from the stored client history once, in place, so the first
+			// request after an upgrade still anchors instead of being judged a
+			// context reset (full 1.5MB replay onto a cold upstream
+			// conversation, cache 0, and behind Cloudflare a guaranteed 524).
+			// The mirror keeps CLIENT messages plus the synthesized assistant
+			// reply; dropping the assistant tail yields exactly the client-side
+			// history the chain is defined over.
+			if len(sess.AnchorChain) == 0 && len(sess.ContextHistory) > 0 {
+				mirror := sess.ContextHistory
+				if len(mirror) > 0 && mirror[len(mirror)-1].Role == "assistant" {
+					mirror = mirror[:len(mirror)-1]
+				}
+				sess.AnchorChain = buildAnchorChain(mirror)
+				sr.sessions[sessID] = sess
+				sr.persist.markDirty()
+			}
 			sess.LastUsedAt = time.Now().UTC()
 			sr.sessions[sessID] = sess
 			sr.persist.markDirty()

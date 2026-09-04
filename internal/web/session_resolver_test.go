@@ -945,3 +945,55 @@ func TestCappedMirrorStillResetsOnDivergence(t *testing.T) {
 		t.Fatalf("divergent longer context must reset, matched=%q", res.MatchedBy)
 	}
 }
+
+// TestLegacyBindingRecoversAnchorChain pins the upgrade path: bindings
+// persisted by an older build carry no AnchorChain. The first Resolve after
+// the upgrade must derive the chain from the stored mirror (minus the
+// synthesized assistant tail) and anchor the request instead of judging it a
+// context reset — the reset forced a full 1.5MB replay onto a cold upstream
+// conversation (cache 0) and, behind Cloudflare, a 524 to the client.
+func TestLegacyBindingRecoversAnchorChain(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(sessionHeaderName, "legacy-binding")
+
+	round1 := []oaiMsg{
+		{Role: "system", Content: "You are a coding agent."},
+		{Role: "user", Content: "阅读项目代码，查找功能缺陷"},
+		{Role: "assistant", Content: "已定位三处缺陷"},
+		{Role: "user", Content: "按照优先级开始修复"},
+	}
+	// Simulate the legacy bind: ClientMessages unset, Messages carries the
+	// client history plus the synthesized assistant reply, and the binding is
+	// written WITHOUT an anchor chain (pre-anchor build).
+	legacy := &sessionBinding{
+		SessionID:      "legacy-sess",
+		ConversationID: "conv-legacy",
+		ExplicitID:     "legacy-binding",
+		AccountID:      "acc-legacy",
+		APIKey:         "",
+		LastUsedAt:     time.Now().UTC(),
+		ContextHistory: append(cloneMessages(round1), oaiMsg{Role: "assistant", Content: "CALL_TOOL: pwsh(...)"}),
+	}
+	sr.mu.Lock()
+	sr.reindexLocked(*legacy)
+	sr.mu.Unlock()
+
+	// Next turn replays the full client history plus the new turn.
+	res := sr.Resolve(req, &oaiReq{Messages: append(append([]oaiMsg(nil), round1...), oaiMsg{Role: "user", Content: "继续修复下一个"})})
+	if res.IsNew || res.ResetUpstream {
+		t.Fatalf("legacy binding must anchor via the recovered chain: %+v", res)
+	}
+	if res.MatchedBy != "explicit_prefix_anchor_4" {
+		t.Fatalf("expected explicit_prefix_anchor_4, got %q", res.MatchedBy)
+	}
+	if res.ConversationID != "conv-legacy" {
+		t.Fatalf("expected conversation reuse, got %q", res.ConversationID)
+	}
+	// The recovered chain must be persisted for subsequent requests.
+	sess, ok := sr.GetConversation("conv-legacy")
+	if !ok || len(sess.AnchorChain) != 4 {
+		t.Fatalf("recovered chain not persisted: ok=%v len=%d", ok, len(sess.AnchorChain))
+	}
+}
