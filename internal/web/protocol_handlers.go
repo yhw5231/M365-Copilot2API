@@ -195,6 +195,15 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		if cached > inputTokens {
 			cached = inputTokens
 		}
+		// Trace/usage rows follow the UsageRecord contract: InputTokens is the
+		// NEWLY submitted share (full logical input minus the cached history),
+		// so the admin panels' 总输入 = 新增 + 缓存 stays a single count of the
+		// conversation. The downstream-facing usage object below keeps
+		// input_tokens = full (OpenAI: prompt_tokens includes cached tokens).
+		newInputTokens := inputTokens - cached
+		if newInputTokens < 0 {
+			newInputTokens = 0
+		}
 		var ttft int64
 		if !firstDeltaAt.IsZero() {
 			ttft = firstDeltaAt.Sub(startedAt).Milliseconds()
@@ -209,7 +218,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		if tr := traceFromRequest(r); tr != nil {
 			s.trace.update(tr.ID, func(rec *traceRecord) {
 				usageTTFT = applyResponsesStreamTraceUpdate(rec, model, effectiveEffort,
-					inputTokens, int64(est.Values["output_tokens"].(int)), cached,
+					newInputTokens, int64(est.Values["output_tokens"].(int)), cached,
 					ttft, time.Since(startedAt).Milliseconds(), status, errMsg)
 			})
 		}
@@ -220,7 +229,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			ReasoningLevel: effectiveEffort,
 			Endpoint:       "/v1/responses",
 			Stream:         true,
-			InputTokens:    inputTokens,
+			InputTokens:    newInputTokens,
 			OutputTokens:   int64(est.Values["output_tokens"].(int)),
 			CacheTokens:    cached,
 			TTFTMs:         usageTTFT,
@@ -808,6 +817,15 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	outputTokens := int64(estimate.Values["output_tokens"].(int))
 	estimate.Values["input_tokens"] = int(inputTokens)
 	estimate.Values["total_tokens"] = int(inputTokens + outputTokens)
+	// Trace/usage rows follow the UsageRecord contract: InputTokens is the
+	// NEWLY submitted share (full logical input minus the cached history) so
+	// the panels' 总输入 = 新增 + 缓存 counts the conversation once. The
+	// downstream-facing usage object keeps input_tokens = full (OpenAI:
+	// prompt_tokens includes cached tokens).
+	newInputTokens := inputTokens - cached
+	if newInputTokens < 0 {
+		newInputTokens = 0
+	}
 	// Always stamp both the Responses (input_tokens_details) and Chat Completions
 	// (prompt_tokens / prompt_tokens_details) spellings so downstream relays
 	// (sub2api / one-api / new-api) and billing panels read the cache breakdown
@@ -843,7 +861,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		Model:          firstNonEmpty(body.Model, "m365-copilot"),
 		ReasoningLevel: effectiveEffort,
 		Endpoint:       "/v1/responses",
-		InputTokens:    int64(estimate.Values["input_tokens"].(int)),
+		InputTokens:    newInputTokens,
 		OutputTokens:   int64(estimate.Values["output_tokens"].(int)),
 		CacheTokens:    cached,
 		DurationMs:     time.Since(startedAt).Milliseconds(),
@@ -858,7 +876,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 			if effectiveEffort != "" {
 				rec.ReasoningLevel = effectiveEffort
 			}
-			rec.InputTokens = int64(estimate.Values["input_tokens"].(int))
+			rec.InputTokens = newInputTokens
 			rec.OutputTokens = int64(estimate.Values["output_tokens"].(int))
 			rec.CachedTokens = cached
 			rec.DurationMs = time.Since(startedAt).Milliseconds()
@@ -987,21 +1005,31 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, "")
 	// 统一口径：优先采用内层 chat usage 的 prompt_tokens（会话差额法基准），
-	// 缓存从同一 usage 读取，input = cached + new 恒成立。
+	// 缓存从同一 usage 读取，input = cached + new 恒成立。Usage 行按契约记录
+	// 新增份额（完整输入 − 缓存），面板的 总输入 = 新增 + 缓存 不重复计数。
 	inputTokens := int64(estimate.Values["input_tokens"].(int))
+	anthropicCached := int64(0)
 	if u, ok := out["usage"].(map[string]any); ok {
 		if n := numberToInt64(u["prompt_tokens"]); n > 0 {
 			inputTokens = n
 		}
+		anthropicCached = cachedTokensFromUsage(u)
+	}
+	if anthropicCached > inputTokens {
+		anthropicCached = inputTokens
+	}
+	anthropicNewInput := inputTokens - anthropicCached
+	if anthropicNewInput < 0 {
+		anthropicNewInput = 0
 	}
 	s.usage.record(UsageRecord{
 		Time:         time.Now(),
 		APIKeyPrefix: extractAPIKey(r),
 		Model:        firstNonEmpty(body.Model, "m365-copilot"),
 		Endpoint:     "/v1/messages",
-		InputTokens:  inputTokens,
+		InputTokens:  anthropicNewInput,
 		OutputTokens: int64(estimate.Values["output_tokens"].(int)),
-		CacheTokens:  cachedTokensFromUsage(out["usage"]),
+		CacheTokens:  anthropicCached,
 		DurationMs:   time.Since(startedAt).Milliseconds(),
 		Status:       200,
 	})
