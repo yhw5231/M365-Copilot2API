@@ -2725,14 +2725,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// completed assistant turn with the actual call lost.
 		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
 		log.Printf("[req-trace] id=%s stage=router_start prompt_len=%d", requestID, len(routePrompt))
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+		// The router turn runs on the SAME session conversation as the answer
+		// turn (ConversationID/SessionID flow through), so the tool round's
+		// assistant reply becomes part of the session history and the next
+		// request can prefix-match it (cached_tokens > 0). The old throwaway
+		// conversation was deleted after routing, which meant tool rounds never
+		// updated the session history and every followed request was a full
+		// replay with cache 0.
+		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 		log.Printf("[req-trace] id=%s stage=router_return elapsed_ms=%d err=%t", requestID, time.Since(startedAt).Milliseconds(), routeErr != nil)
-		// Router turns run in a throwaway cloud conversation that is never
-		// reused by the answer turn; delete it so the conversation list does
-		// not accumulate one entry per routed request.
-		if routeErr == nil && routeRes.ConversationID != "" {
-			s.dropTransientConversation(routeRes.ConversationID)
-		}
 		if routeErr != nil {
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "tool router: "+routeErr.Error())
 			return
@@ -2741,10 +2742,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		calls = filterCompletedCalls(calls, ledger)
 		calls, _ = validateCalls("router", calls)
 		if !parsed {
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
-			if repairErr == nil && repairRes.ConversationID != "" {
-				s.dropTransientConversation(repairRes.ConversationID)
-			}
+			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 			if repairErr == nil {
 				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, ledger)
@@ -2761,7 +2759,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				calls = calls[:1]
 			}
 			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
-			s.recordToolUsage(r, acc, &body, routeRes, startedAt, cachedTokens())
+			// Tool rounds must update the session history exactly like native
+			// tool rounds do; otherwise the resolver never has the previous
+			// turn's messages and every next request is a context reset.
+			s.bindConversation(acc, &body, r, routeRes, answerPrompt, startedAt, task, cachedTokens(), false, true)
 			return
 		}
 		// Required tool choice: when the gateway forced tool_choice=required
@@ -2772,10 +2773,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// the agent loop cannot treat a status report as a completed turn.
 		if fmt.Sprint(body.ToolChoice) == "required" {
 			retryText := requiredToolRetryText(toolMaps, prompt, ledger)
-			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
-			if retryErr == nil && retryRes.ConversationID != "" {
-				s.dropTransientConversation(retryRes.ConversationID)
-			}
+			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 			if retryErr == nil {
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, ledger)
@@ -2790,7 +2788,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						calls = calls[:1]
 					}
 					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, retryRes)
-					s.recordToolUsage(r, acc, &body, retryRes, startedAt, cachedTokens())
+					// Bind the tool round's history so the next request can
+					// prefix-match it (cache > 0) instead of a full replay.
+					s.bindConversation(acc, &body, r, retryRes, answerPrompt, startedAt, task, cachedTokens(), false, true)
 					return
 				}
 			}
@@ -2810,7 +2810,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						calls = calls[:1]
 					}
 					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, recoveryRes)
-					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt, cachedTokens())
+					s.bindConversation(acc, &body, r, recoveryRes, answerPrompt, startedAt, task, cachedTokens(), false, true)
 					return
 				}
 			}
@@ -3335,7 +3335,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// preamble is written).
 	if !body.Stream && planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
 		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+		// Run the router turn on the session conversation (like the streaming
+		// router above) so tool rounds bind the session history and the next
+		// request can prefix-match instead of being a context reset.
+		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 		if routeErr != nil {
 			s.accountPool.MarkFailure(acc.ID, routeErr, rateLimitCooldown())
 			routeFailoverTried := false
@@ -3403,13 +3406,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
-			s.recordToolUsage(r, acc, &body, routeRes, startedAt, cachedTokens())
+_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
+			// Tool rounds bind the session history (like native tool rounds) so
+			// the resolver can prefix-match the next request.
+			s.bindConversation(acc, &body, r, routeRes, answerPrompt, startedAt, task, cachedTokens(), false, true)
 			return
 		}
 		if fmt.Sprint(body.ToolChoice) == "required" {
 			retryText := requiredToolRetryText(toolMaps, prompt, ledger)
-			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 			if retryErr == nil {
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, ledger)
@@ -3424,7 +3429,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						calls = calls[:1]
 					}
 					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, retryRes)
-					s.recordToolUsage(r, acc, &body, retryRes, startedAt, cachedTokens())
+					s.bindConversation(acc, &body, r, retryRes, answerPrompt, startedAt, task, cachedTokens(), false, true)
 					return
 				}
 			}
@@ -3444,7 +3449,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						calls = calls[:1]
 					}
 					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, recoveryRes)
-					s.recordToolUsage(r, acc, &body, recoveryRes, startedAt, cachedTokens())
+					s.bindConversation(acc, &body, r, recoveryRes, answerPrompt, startedAt, task, cachedTokens(), false, true)
 					return
 				}
 			}
@@ -4374,6 +4379,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				calls = calls[:1]
 			}
 			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, res)
+			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, cachedTokens(), false, true)
 			return
 		}
 	}
@@ -4386,6 +4392,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				calls = calls[:1]
 			}
 			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, res)
+			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt, task, cachedTokens(), false, true)
 			return
 		}
 	}
@@ -4411,6 +4418,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 				calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
 				_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
+				s.bindConversation(acc, &body, r, routeRes, answerPrompt, startedAt, task, cachedTokens(), false, true)
 				return
 			}
 		}
@@ -4682,7 +4690,7 @@ func sessionIDFromRequest(r *http.Request) string {
 // bindConversation 鍦ㄨ姹傚畬鎴愬悗鐧昏浼氳瘽瑙ｆ瀽鍣ㄧ储寮曚笌缂撳瓨缁熻锛屾祦寮忎笌闈炴祦寮?
 // 璺緞鍏辩敤銆俧inalRound 涓?false 鏃惰烦杩囨湇鍔＄鐘舵€佷慨姝ｏ紙宸ュ叿璋冪敤杞棤娉曞畨鍏?
 // 鍒ゆ柇瀹屾垚鎺緸鐨勭湡瀹炴剰鍥撅級銆?
-func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time, task *taskLedger, cached int64, finalRound bool) {
+func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time, task *taskLedger, cached int64, finalRound bool, toolRound ...bool) {
 	if res.ConversationID == "" {
 		return
 	}
@@ -4713,9 +4721,32 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	if len(history) == 0 {
 		history = withoutServiceInjected(body.Messages)
 	}
+	// The assistant reply is stored in the shape DSH / pi-ai clients replay it
+	// back: tool rounds have no final text (res.Text == ""), and the harness
+	// replays the reasoning transcript as an assistant output_text message
+	// wrapped in <thinking> tags. Storing only res.Text would make the stored
+	// history diverge from the replayed prefix at this very message, turning
+	// every tool-carrying reuse into a context reset (full replay, cache 0).
+	// Tool rounds (writeToolResponse paths) prefer res.Reasoning — the client
+	// replays the reasoning, not the router's decision text — and fall back to
+	// res.Text only when no transcript exists. Text rounds keep res.Text first
+	// (the client replays the final answer verbatim). messagesEqual strips the
+	// <thinking> wrapper on both sides so the stored reasoning matches the
+	// replayed thinking.
+	isToolRound := len(toolRound) > 0 && toolRound[0]
+	replyContent := strings.TrimSpace(res.Text)
+	if isToolRound {
+		replyContent = strings.TrimSpace(res.Reasoning)
+		if replyContent == "" {
+			replyContent = strings.TrimSpace(res.Text)
+		}
+	}
+	if replyContent == "" {
+		replyContent = strings.TrimSpace(res.Reasoning)
+	}
 	historyBody.Messages = append(cloneMessages(history), oaiMsg{
 		Role:             "assistant",
-		Content:          res.Text,
+		Content:          replyContent,
 		ReasoningContent: res.Reasoning,
 	})
 	// Persist the task ledger only for goal-protocol requests (the client

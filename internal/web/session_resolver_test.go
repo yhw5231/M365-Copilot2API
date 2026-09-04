@@ -652,3 +652,63 @@ func TestMessagesEqualToleratesRuntimeSnapshotDrift(t *testing.T) {
 		t.Fatal("role mismatch must still fail even when both sides look like snapshots")
 	}
 }
+
+// TestDSHToolRoundThinkingReplay reproduces the observed DSH tool-round replay
+// shape: the harness carries the previous turn's tool calls and wraps the
+// reasoning summary as an assistant output_text message with <thinking> tags.
+// bindConversation stores the assistant reply with Content=res.Reasoning when
+// the tool round produced no visible text (res.Text == ""), and messagesEqual
+// strips the <thinking> wrapper, so the stored history must still be a prefix
+// of the next request instead of a context reset.
+func TestDSHToolRoundThinkingReplay(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(sessionHeaderName, "dsh-tool-round")
+
+	systemMsg := oaiMsg{Role: "system", Content: "You are an AI agent powered by DeepSeek Harness."}
+	userMsg1 := oaiMsg{Role: "user", Content: "阅读项目代码并给出修改方案"}
+	thinking := "**Selecting next tool**\nIt seems like the next step is to use the \"create_goal\" tool."
+
+	// First turn (tool round): bind client messages plus an assistant reply
+	// whose Content is the reasoning (res.Text was empty for the tool round).
+	bindLikeServer(t, sr, "dsh-tool-round", "conv-tool", "account-a",
+		[]oaiMsg{systemMsg, userMsg1},
+		thinking)
+
+	// Second turn: the harness replays the thinking wrapped in <thinking> tags
+	// as an assistant output_text item, plus the function call and its result.
+	res := sr.Resolve(req, &oaiReq{Messages: []oaiMsg{
+		systemMsg,
+		userMsg1,
+		{Role: "assistant", Content: []any{map[string]any{"type": "output_text", "text": "<thinking>" + thinking + "</thinking>"}}},
+		{Role: "assistant", Content: "第一轮工具调用"},
+		{Role: "user", Content: "工具结果"},
+	}})
+	if res.IsNew {
+		t.Fatal("tool-round replay must reuse the session bound by session id")
+	}
+	if res.ResetUpstream {
+		t.Fatalf("thinking replay must not reset the upstream conversation; matched=%q HistoryLen=%d", res.MatchedBy, res.HistoryLen)
+	}
+	if res.HistoryLen != 3 {
+		t.Fatalf("expected HistoryLen=3 (system,user,thinking), got %d", res.HistoryLen)
+	}
+	if res.MatchedBy != "explicit_prefix_3" {
+		t.Fatalf("expected explicit_prefix_3, got %q", res.MatchedBy)
+	}
+}
+
+// TestMessagesEqualStripsThinkingWrapper verifies that DSH's <thinking> wrapper
+// on replayed reasoning is stripped before comparing assistant messages, while
+// genuinely different assistant content still fails.
+func TestMessagesEqualStripsThinkingWrapper(t *testing.T) {
+	plain := oaiMsg{Role: "assistant", Content: "**Selecting next tool**\nIt seems like the next step is to use the create_goal tool."}
+	wrapped := oaiMsg{Role: "assistant", Content: []any{map[string]any{"type": "output_text", "text": "<thinking>**Selecting next tool**\nIt seems like the next step is to use the create_goal tool.</thinking>"}}}
+	if !messagesEqual(plain, wrapped) {
+		t.Fatal("assistant reasoning with <thinking> wrapper must compare equal to the stored plain reasoning")
+	}
+	if messagesEqual(plain, oaiMsg{Role: "assistant", Content: "**Different answer**\nSomething else entirely."}) {
+		t.Fatal("different assistant content must still fail")
+	}
+}

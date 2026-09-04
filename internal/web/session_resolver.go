@@ -330,6 +330,24 @@ func contextPrefixLen(hist, msgs []oaiMsg) int {
 	return len(hist)
 }
 
+// stripThinkingWrapper removes the <thinking>...</thinking> wrapper that DSH
+// tool rounds wrap around the replayed reasoning summary. The gateway stores
+// the raw reasoning transcript (bindConversation falls back to res.Reasoning
+// when the tool round produced no visible text), so the wrapper must be
+// stripped on both sides before comparison. Only strips when the wrapper is
+// present; a plain text message is returned unchanged.
+func stripThinkingWrapper(text string) string {
+	t := strings.TrimSpace(text)
+	if strings.HasPrefix(t, "<thinking>") {
+		t = strings.TrimPrefix(t, "<thinking>")
+		if idx := strings.Index(t, "</thinking>"); idx >= 0 {
+			t = t[:idx]
+		}
+		return strings.TrimSpace(t)
+	}
+	return text
+}
+
 // messagesEqual 鍒ゅ畾涓ゆ潯娑堟伅鍦ㄤ細璇濋敭鎰忎箟涓婄瓑浠凤細role 涓庢枃鏈唴瀹逛竴鑷淬€?
 // 蹇界暐 tool_calls 鐨?ID 缁嗚妭锛堜細璇濋敭鍙叧蹇冨唴瀹瑰浣曡妯″瀷娑堝寲锛夈€?
 func messagesEqual(a, b oaiMsg) bool {
@@ -345,8 +363,15 @@ func messagesEqual(a, b oaiMsg) bool {
 		// 对两条同为快照的消息视为等价；否则快照一变化，整个历史前缀被
 		// 判定为上下文重置（explicit_context_reset），上游会话每次重建、
 		// 全量重发，cached_tokens 恒为 0。
+		// DSH 工具轮还会把上一轮的推理摘要回放为 assistant output_text
+		// 消息，并用 <thinking> 标签包装；网关 bindConversation 存储该轮
+		// assistant 回复时 res.Text 为空（模型只输出了推理和工具调用），
+		// 因此用 res.Reasoning 作为存储内容。这里剥离 <thinking> 包装后
+		// 比较，使存储的推理文本与回放的思考文本视为等价。
 		if !isRuntimeContextSnapshot(ta) || !isRuntimeContextSnapshot(tb) {
-			return false
+			if a.Role != "assistant" || stripThinkingWrapper(ta) != stripThinkingWrapper(tb) {
+				return false
+			}
 		}
 	}
 	if (a.ToolCalls == nil) != (b.ToolCalls == nil) {
