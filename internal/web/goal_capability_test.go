@@ -180,7 +180,7 @@ func TestGoalCompletesWithoutLoop(t *testing.T) {
 	// Round 3 arrives: must not re-open, must inject completion context.
 	round3 := []oaiMsg{{Role: "user", Content: "<goal_round>\nObjective: 实现X\nRound: 3/256"}}
 	if goalRoundRequest(round3, task, nil) && task.IsComplete() {
-		if strings.TrimSpace(task.goalRoundInjectedContext()) == "" {
+		if strings.TrimSpace(task.goalRoundInjectedContext(round3)) == "" {
 			t.Fatal("complete round must carry the completion context")
 		}
 	}

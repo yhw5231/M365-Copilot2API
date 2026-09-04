@@ -176,7 +176,7 @@ func TestTaskLedgerGoalToolEvidenceClosesGoal(t *testing.T) {
 		t.Fatalf("update_goal(complete) must close goal: %#v", task)
 	}
 	// A later round must not silently reopen a closed goal.
-	if suffix := task.goalRoundInjectedContext(); !strings.Contains(suffix, "GOAL_STATUS: complete") {
+	if suffix := task.goalRoundInjectedContext(nil); !strings.Contains(suffix, "GOAL_STATUS: complete") {
 		t.Fatalf("complete goal round context missing: %s", suffix)
 	}
 	if ctx := task.Context(); strings.Contains(strings.ToLower(ctx), "continue the original goal") {
@@ -274,7 +274,7 @@ func TestGoalRoundContextOnComplete(t *testing.T) {
 	if !goalRoundRequest(structured, &taskLedger{OriginalGoal: "x"}, nil) {
 		t.Fatal("Round: N/M counter must be detected as a goal round even without tool/GoalID")
 	}
-	suffix := task.goalRoundInjectedContext()
+	suffix := task.goalRoundInjectedContext(nil)
 	if suffix == "" || !strings.Contains(suffix, "no further update_goal call is required") {
 		t.Fatalf("completion context missing: %s", suffix)
 	}
@@ -283,7 +283,7 @@ func TestGoalRoundContextOnComplete(t *testing.T) {
 	// update_goal(complete) to close the client-side goal.
 	scTask := &taskLedger{OriginalGoal: "x", GoalID: "goal-sc-1"}
 	scTask.markComplete("server-side correction: final answer states completion with tool evidence")
-	scSuffix := scTask.goalRoundInjectedContext()
+	scSuffix := scTask.goalRoundInjectedContext(nil)
 	if !strings.Contains(scSuffix, "update_goal(action=complete)") {
 		t.Fatalf("server-side correction context must ask for update_goal call: %s", scSuffix)
 	}
@@ -291,8 +291,14 @@ func TestGoalRoundContextOnComplete(t *testing.T) {
 		t.Fatalf("server-side correction context must not say no call needed: %s", scSuffix)
 	}
 	incomplete := &taskLedger{OriginalGoal: "x"}
-	if incomplete.goalRoundInjectedContext() != "" {
+	if incomplete.goalRoundInjectedContext(nil) != "" {
 		t.Fatal("active goal must not inject completion context")
+	}
+	// A round with a DIFFERENT objective belongs to a new goal: the completion
+	// context must stay silent so it cannot suppress work on the new goal.
+	newGoal := []oaiMsg{{Role: "user", Content: "<goal_round>\nObjective: \"y\"\nRound: 1/256"}}
+	if scTask.goalRoundInjectedContext(newGoal) != "" {
+		t.Fatal("different-objective round must not receive the completion context")
 	}
 }
 
@@ -423,5 +429,147 @@ func TestResolveTaskLedgerByExplicitSession(t *testing.T) {
 	)}
 	if got := sr.ResolveTaskLedger(httptest.NewRequest("POST", "/v1/chat/completions", nil), noID); got != nil {
 		t.Fatalf("request without explicit session id must not match: %#v", got)
+	}
+}
+
+// ---------------------------------------------------------------
+// Goal rotation: a new goal chained onto a finished session
+// ---------------------------------------------------------------
+
+// TestGoalRotationOnNewObjective reproduces the DSH failure: the session
+// ledger is closed on the finished goal, the client chains a second goal and
+// the harness injects <goal_round> with the NEW objective. The ledger must
+// re-open for the new objective — otherwise the terminal
+// "GOAL_STATUS: complete / do not start new work" context suppresses every
+// forced goal-round tool call and the request 502s.
+func TestGoalRotationOnNewObjective(t *testing.T) {
+	task := &taskLedger{OriginalGoal: "阅读项目代码，查找功能缺陷，并给出修改方案", GoalID: "goal-ccc8ee7f"}
+	task.markComplete(`{"goal":{"id":"goal-ccc8ee7f","phase":"complete"}}`)
+	if !task.IsComplete() {
+		t.Fatal("precondition: ledger must be complete")
+	}
+	msgs := []oaiMsg{{Role: "user", Content: "<goal_round>\nObjective: \"按照项目功能缺陷汇总报告中的优先级别开始修复\"\nRound: 2/256\n\nContinue working toward the objective..."}}
+	if !task.maybeRotateGoal(msgs) {
+		t.Fatal("rotation must fire on a different objective")
+	}
+	if task.IsComplete() {
+		t.Fatal("rotated ledger must be active")
+	}
+	if task.OriginalGoal != "按照项目功能缺陷汇总报告中的优先级别开始修复" {
+		t.Fatalf("rotated original goal=%q", task.OriginalGoal)
+	}
+	if task.GoalID != "" {
+		t.Fatalf("rotated ledger must await new create_goal evidence, got %q", task.GoalID)
+	}
+	if !task.RetiredGoalIDs["goal-ccc8ee7f"] {
+		t.Fatal("finished goal id must be retired")
+	}
+	if ctx := task.Context(); strings.Contains(ctx, "TASK_COMPLETE_RULE") {
+		t.Fatalf("terminal rule must be gone after rotation: %s", ctx)
+	}
+}
+
+// TestGoalRotationKeepsSameObjectiveClosed pins the load-bearing counterpart:
+// a late round for the SAME objective (the server-side-correction flow whose
+// client-side goal is still armed) must keep the ledger closed.
+func TestGoalRotationKeepsSameObjectiveClosed(t *testing.T) {
+	task := &taskLedger{OriginalGoal: "fix mypy", GoalID: "goal-a"}
+	task.markComplete("server-side correction: final answer states completion with tool evidence")
+	msgs := []oaiMsg{{Role: "user", Content: "<goal_round>\nObjective: \"fix mypy\"\nRound: 2/256"}}
+	if task.maybeRotateGoal(msgs) {
+		t.Fatal("same objective must not rotate")
+	}
+	if !task.IsComplete() {
+		t.Fatal("same-objective round must keep the ledger closed")
+	}
+}
+
+// TestGoalRotationSkipsActiveLedger: an active ledger is aligned through
+// goal-tool evidence adoption, not round-objective rotation.
+func TestGoalRotationSkipsActiveLedger(t *testing.T) {
+	task := &taskLedger{OriginalGoal: "old goal", GoalID: "goal-a"}
+	msgs := []oaiMsg{{Role: "user", Content: "<goal_round>\nObjective: \"new goal\"\nRound: 3/256"}}
+	if task.maybeRotateGoal(msgs) {
+		t.Fatal("active ledger must not rotate via round objective")
+	}
+	if task.OriginalGoal != "old goal" || task.GoalID != "goal-a" {
+		t.Fatalf("active ledger mutated: %#v", task)
+	}
+}
+
+// TestRetiredGoalEvidenceCannotResurrectClosedLedger: the request history
+// replays the finished goal's create_goal/get_goal/update_goal evidence on
+// every bind; re-processing it after a rotation would immediately re-close the
+// rotated ledger.
+func TestRetiredGoalEvidenceCannotResurrectClosedLedger(t *testing.T) {
+	task := &taskLedger{OriginalGoal: "阅读项目代码，查找功能缺陷，并给出修改方案", GoalID: "goal-ccc8ee7f"}
+	task.markComplete(`{"goal":{"id":"goal-ccc8ee7f","phase":"complete"}}`)
+	msgs := []oaiMsg{{Role: "user", Content: "<goal_round>\nObjective: \"按照汇总报告开始修复\"\nRound: 2/256"}}
+	if !task.maybeRotateGoal(msgs) {
+		t.Fatal("rotation must fire")
+	}
+	replayed := agentLedger{Completed: []toolEvidence{
+		{ID: "fc_1", Name: "create_goal", Arguments: `{"objective":"系统阅读项目代码"}`, Result: `{"goal":{"id":"goal-ccc8ee7f","phase":"active"}}`},
+		{ID: "fc_2", Name: "get_goal", Arguments: `{}`, Result: `{"goal":{"id":"goal-ccc8ee7f","phase":"complete"}}`},
+		{ID: "fc_3", Name: "update_goal", Arguments: `{"action":"complete","goal_id":"goal-ccc8ee7f","revision":1}`, Result: `{}`},
+	}}
+	task.mergeEvidence(replayed)
+	if task.IsComplete() {
+		t.Fatal("retired evidence resurrected the closed ledger")
+	}
+	if task.GoalID != "" {
+		t.Fatalf("retired evidence re-registered the goal: %q", task.GoalID)
+	}
+	// The new goal's evidence still registers normally.
+	task.mergeEvidence(agentLedger{Completed: []toolEvidence{
+		{ID: "fc_4", Name: "create_goal", Arguments: `{"objective":"按照汇总报告开始修复"}`, Result: `{"goal":{"id":"goal-new","phase":"active"}}`},
+	}})
+	if task.GoalID != "goal-new" {
+		t.Fatalf("new goal not adopted: %q", task.GoalID)
+	}
+	if task.OriginalGoal != "按照汇总报告开始修复" {
+		t.Fatalf("adopted objective=%q", task.OriginalGoal)
+	}
+	if task.IsComplete() {
+		t.Fatal("new goal adoption must re-open the ledger")
+	}
+}
+
+// TestCreateGoalEvidenceSupersedesActiveGoal: a create_goal for a different id
+// is adopted even while a previous goal is still tracked (previously ignored
+// because GoalID was already set), retiring the old id.
+func TestCreateGoalEvidenceSupersedesActiveGoal(t *testing.T) {
+	task := &taskLedger{OriginalGoal: "old objective", GoalID: "goal-a"}
+	task.mergeEvidence(agentLedger{Completed: []toolEvidence{
+		{ID: "fc_1", Name: "create_goal", Arguments: `{"objective":"new objective"}`, Result: `{"goal":{"id":"goal-b","phase":"active"}}`},
+	}})
+	if task.GoalID != "goal-b" {
+		t.Fatalf("new goal id not adopted: %q", task.GoalID)
+	}
+	if !task.RetiredGoalIDs["goal-a"] {
+		t.Fatal("superseded goal id must be retired")
+	}
+	if task.OriginalGoal != "new objective" {
+		t.Fatalf("create_goal objective not adopted: %q", task.OriginalGoal)
+	}
+	if task.IsComplete() {
+		t.Fatal("superseding a goal must not inherit completion")
+	}
+}
+
+// TestLatestGoalRoundObjectivePrefersNewest: history replays old rounds; the
+// newest <goal_round> message states the client's current objective.
+func TestLatestGoalRoundObjectivePrefersNewest(t *testing.T) {
+	msgs := []oaiMsg{
+		{Role: "user", Content: "<goal_round>\nObjective: \"first\"\nRound: 3/256"},
+		{Role: "assistant", Content: "working"},
+		{Role: "user", Content: "<goal_round>\nObjective: \"second\"\nRound: 1/256"},
+	}
+	if got := latestGoalRoundObjective(msgs); got != "second" {
+		t.Fatalf("latest objective=%q", got)
+	}
+	// A message mentioning the tag without the Round: N/M counter is ignored.
+	if got := latestGoalRoundObjective([]oaiMsg{{Role: "user", Content: "what is <goal_round>?"}}); got != "" {
+		t.Fatalf("non-round mention must be ignored, got %q", got)
 	}
 }

@@ -2636,13 +2636,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if task == nil {
 		task = buildTaskLedger(&body)
 	}
+	// Goal rotation: a closed ledger (complete/blocked/paused) whose newest
+	// goal round carries a DIFFERENT objective means a second goal was chained
+	// onto the same session. Re-open the ledger for the new objective before
+	// any injection; the finished goal id is retired so its replayed evidence
+	// cannot resurrect the closed state.
+	task.maybeRotateGoal(body.Messages)
 	answerPrompt = withTaskLedger(answerPrompt, task)
 	prompt = withTaskLedger(prompt, task)
 	// When the goal is already complete and the client sends a continuation
 	// round, inject the server-side completion context so the model reports
 	// the recorded outcome instead of claiming it cannot close the goal.
 	if task != nil && task.IsComplete() && goalRoundRequest(body.Messages, task, body.Tools) {
-		suffix := task.goalRoundInjectedContext()
+		suffix := task.goalRoundInjectedContext(body.Messages)
 		answerPrompt += suffix
 		prompt += suffix
 	}
@@ -3406,7 +3412,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
+			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), cachedTokens(), calls, routeRes)
 			// Tool rounds bind the session history (like native tool rounds) so
 			// the resolver can prefix-match the next request.
 			s.bindConversation(acc, &body, r, routeRes, answerPrompt, startedAt, task, cachedTokens(), false, true)
@@ -4706,7 +4712,7 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 		// case the agent reports as the last remaining step. Only final-round
 		// answers are eligible 鈥?a tool-call round must never close the goal
 		// (the model may still be mid-implementation).
-		if finalRound && !task.IsComplete() && goalRoundRequest(body.Messages, task, body.Tools) && goalCompletionSignal(res.Text, buildAgentLedger(body.Messages)) {
+		if finalRound && !task.IsComplete() && goalRoundRequest(body.Messages, task, body.Tools) && goalCompletionSignal(res.Text, buildAgentLedger(body.Messages).withoutRetiredGoalEvidence(task)) {
 			task.markComplete("server-side correction: final answer states completion with tool evidence")
 		}
 	}

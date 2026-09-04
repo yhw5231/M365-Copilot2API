@@ -26,23 +26,25 @@ import (
 //	conversation_id / session_id — the upstream conversation the task runs on
 //	failures / switches — recorded so a long task does not restart silently
 //	goal_id          — goal identity when the client runs a goal protocol
+//	retired_goal_ids — finished goal ids whose replayed evidence must be ignored
 //	status           — lifecycle state (empty = active, complete/blocked/paused)
 type taskLedger struct {
-	OriginalGoal    string         `json:"original_goal,omitempty"`
-	Constraints     []string       `json:"constraints,omitempty"`
-	Executed        []string       `json:"executed,omitempty"`
-	ToolResults     []toolEvidence `json:"tool_results,omitempty"`
-	Remaining       []string       `json:"remaining,omitempty"`
-	AccountID       string         `json:"account_id,omitempty"`
-	ConversationID  string         `json:"conversation_id,omitempty"`
-	SessionID       string         `json:"session_id,omitempty"`
-	Failures        []string       `json:"failures,omitempty"`
-	Switches        []string       `json:"switches,omitempty"`
-	GoalID          string         `json:"goal_id,omitempty"`
-	Status          string         `json:"status,omitempty"`
-	CompletedAt     *time.Time     `json:"completed_at,omitempty"`
-	CompletedReason string         `json:"completed_reason,omitempty"`
-	UpdatedAt       time.Time      `json:"updated_at,omitempty"`
+	OriginalGoal    string          `json:"original_goal,omitempty"`
+	Constraints     []string        `json:"constraints,omitempty"`
+	Executed        []string        `json:"executed,omitempty"`
+	ToolResults     []toolEvidence  `json:"tool_results,omitempty"`
+	Remaining       []string        `json:"remaining,omitempty"`
+	AccountID       string          `json:"account_id,omitempty"`
+	ConversationID  string          `json:"conversation_id,omitempty"`
+	SessionID       string          `json:"session_id,omitempty"`
+	Failures        []string        `json:"failures,omitempty"`
+	Switches        []string        `json:"switches,omitempty"`
+	GoalID          string          `json:"goal_id,omitempty"`
+	RetiredGoalIDs  map[string]bool `json:"retired_goal_ids,omitempty"`
+	Status          string          `json:"status,omitempty"`
+	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
+	CompletedReason string          `json:"completed_reason,omitempty"`
+	UpdatedAt       time.Time       `json:"updated_at,omitempty"`
 }
 
 // Goal lifecycle states. The empty status means "active" (an open goal); the
@@ -111,6 +113,16 @@ func buildTaskLedger(body *oaiReq) *taskLedger {
 			}
 		case "user":
 			if t.OriginalGoal == "" {
+				// A goal-round message is protocol scaffolding, not the goal
+				// itself: record the round's Objective instead of the raw
+				// <goal_round> block, so later objective comparisons (goal
+				// rotation) are apples-to-apples.
+				if strings.Contains(text, "<goal_round>") && roundCounterPattern.MatchString(text) {
+					if objective := latestGoalRoundObjective([]oaiMsg{{Role: "user", Content: m.Content}}); objective != "" {
+						t.OriginalGoal = objective
+						continue
+					}
+				}
 				t.OriginalGoal = compactTaskText(text, taskGoalMax)
 			}
 		}
@@ -223,14 +235,25 @@ func (t *taskLedger) mergeEvidence(l agentLedger) {
 // applyGoalToolEvidence mirrors goal-protocol tool results into the ledger
 // state. It must not error-retry after completion: once the client confirms the
 // goal with update_goal(action=complete), the ledger is closed and stays closed.
+// Evidence for a retired goal id is skipped: after a goal rotation the finished
+// goal's create_goal/get_goal/update_goal calls keep replaying in the request
+// history, and re-processing them would resurrect the closed ledger the
+// rotation just replaced.
 func (t *taskLedger) applyGoalToolEvidence(e toolEvidence) {
 	if t == nil || e.Name == "" {
 		return
 	}
+	if id := extractGoalID(e.Arguments, e.Result); id != "" && t.RetiredGoalIDs[id] {
+		return
+	}
 	switch e.Name {
 	case "create_goal":
-		if t.GoalID == "" {
-			t.GoalID = extractGoalID(e.Arguments, e.Result)
+		// A create_goal whose id differs from the tracked one is a second goal
+		// chained into the same session (or the first registration). Adopt it
+		// either way — ignoring it left the ledger closed on the finished goal
+		// and suppressed all work for the new one.
+		if tid := extractGoalID(e.Arguments, e.Result); tid != "" && tid != t.GoalID {
+			t.adoptNewGoal(tid, goalArgString(e.Arguments, "objective"))
 		}
 	case "update_goal":
 		action := strings.ToLower(goalArgString(e.Arguments, "action"))
@@ -286,6 +309,133 @@ func (t *taskLedger) markComplete(reason string) {
 // lands, no further goal round may re-open the task.
 func (t *taskLedger) IsComplete() bool {
 	return t != nil && t.Status == taskStatusComplete
+}
+
+// adoptNewGoal registers a goal id that differs from the tracked one — either
+// the first registration of this session's goal or a second goal chained into
+// the session. The ledger is re-opened and the create_goal objective (when the
+// caller supplied one) becomes the recorded original goal, so later
+// goal-round objective comparisons are apples-to-apples.
+func (t *taskLedger) adoptNewGoal(goalID, objective string) {
+	if t == nil || goalID == "" {
+		return
+	}
+	if t.GoalID != "" && t.GoalID != goalID {
+		if t.RetiredGoalIDs == nil {
+			t.RetiredGoalIDs = make(map[string]bool)
+		}
+		t.RetiredGoalIDs[t.GoalID] = true
+	}
+	t.GoalID = goalID
+	if objective != "" {
+		t.OriginalGoal = compactTaskText(objective, taskGoalMax)
+	}
+	t.Status = ""
+	t.CompletedAt = nil
+	t.CompletedReason = ""
+	t.Remaining = nil
+	t.UpdatedAt = time.Now().UTC()
+}
+
+// goalRoundObjectiveRe extracts the Objective line from a goal-protocol round
+// message. DSH injects `<goal_round>\nObjective: "..."\nRound: N/M\n...`, with
+// the objective wrapped in straight quotes.
+var goalRoundObjectiveRe = regexp.MustCompile(`(?m)^\s*Objective:\s*(.+)$`)
+
+// latestGoalRoundObjective returns the objective of the most recent
+// <goal_round> message carrying the Round: N/M counter. Empty when the history
+// has no structurally valid goal round or none of them states an objective.
+func latestGoalRoundObjective(messages []oaiMsg) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		c := contentToString(messages[i].Content)
+		if !strings.Contains(c, "<goal_round>") || !roundCounterPattern.MatchString(c) {
+			continue
+		}
+		if m := goalRoundObjectiveRe.FindStringSubmatch(c); m != nil {
+			return trimGoalObjectiveText(m[1])
+		}
+	}
+	return ""
+}
+
+// trimGoalObjectiveText strips the harness quoting and padding from an
+// Objective line value.
+func trimGoalObjectiveText(s string) string {
+	return strings.TrimSpace(strings.Trim(strings.TrimSpace(s), "\"'“”‘’`"))
+}
+
+// sameGoalObjective compares two goal texts after whitespace normalization and
+// the ledger's 1200-char compaction.
+func sameGoalObjective(a, b string) bool {
+	return compactTaskText(a, taskGoalMax) == compactTaskText(b, taskGoalMax)
+}
+
+// maybeRotateGoal supersedes a closed ledger (complete/blocked/paused) when
+// the newest goal round carries a DIFFERENT objective — the signature of a
+// second goal chained onto the same session. The ledger is deliberately sticky
+// for the SAME objective: a completed goal must never be re-opened by a later
+// round of that goal, including the server-side-correction flow whose
+// client-side goal is still armed and must be closed via get_goal +
+// update_goal. Without rotation, a new objective inherits the closed ledger's
+// terminal "GOAL_STATUS: complete / do not start new work" injection; the
+// model obeys it, answers text-only and never registers the new goal, and the
+// forced goal-round tool choice then 502s with "model did not select a
+// required tool after constrained retry". An active ledger is left alone:
+// goal-tool evidence adoption (applyGoalToolEvidence) keeps it aligned.
+func (t *taskLedger) maybeRotateGoal(messages []oaiMsg) bool {
+	if t == nil || t.Status == "" {
+		return false
+	}
+	objective := latestGoalRoundObjective(messages)
+	if objective == "" || sameGoalObjective(objective, t.OriginalGoal) {
+		return false
+	}
+	t.rotateToGoal(objective)
+	return true
+}
+
+// rotateToGoal re-opens the ledger for the newly chained goal: the round
+// objective becomes the recorded original goal, the completion state is
+// cleared and the finished goal id is retired so its replayed evidence cannot
+// resurrect the closed state on the next bind (tool evidence is re-merged from
+// the full request history on every request).
+func (t *taskLedger) rotateToGoal(objective string) {
+	if t == nil {
+		return
+	}
+	if t.GoalID != "" {
+		if t.RetiredGoalIDs == nil {
+			t.RetiredGoalIDs = make(map[string]bool)
+		}
+		t.RetiredGoalIDs[t.GoalID] = true
+	}
+	t.GoalID = ""
+	t.OriginalGoal = compactTaskText(objective, taskGoalMax)
+	t.Status = ""
+	t.CompletedAt = nil
+	t.CompletedReason = ""
+	t.Remaining = nil
+	t.UpdatedAt = time.Now().UTC()
+}
+
+// withoutRetiredGoalEvidence drops goal-tool evidence whose goal id the ledger
+// has retired, so the server-side completion correction cannot close a freshly
+// rotated ledger based on the finished goal's replayed evidence.
+func (l agentLedger) withoutRetiredGoalEvidence(t *taskLedger) agentLedger {
+	if t == nil || len(t.RetiredGoalIDs) == 0 || len(l.Completed) == 0 {
+		return l
+	}
+	out := l
+	out.Completed = make([]toolEvidence, 0, len(l.Completed))
+	for _, e := range l.Completed {
+		if goalProtocolTools[e.Name] {
+			if id := extractGoalID(e.Arguments, e.Result); id != "" && t.RetiredGoalIDs[id] {
+				continue
+			}
+		}
+		out.Completed = append(out.Completed, e)
+	}
+	return out
 }
 
 // goalReason builds a human-readable completion reason from tool evidence, or
@@ -409,7 +559,8 @@ func (s *Server) sessionTaskLedger(r *http.Request, body *oaiReq) *taskLedger {
 // extractGoalID pulls a goal-* identifier out of either the tool arguments
 // (the client addresses its own goal) or the tool result JSON (a create_goal
 // response returns the newly minted id). It tolerates nested maps and the
-// "goal_id" / "id" spellings used by goal-protocol clients.
+// "goal_id" / "id" / "goal" spellings used by goal-protocol clients — the
+// "goal" key covers the DSH result shape {"goal":{"id":"goal-...",...}}.
 func extractGoalID(argsJSON, resultJSON string) string {
 	extract := func(raw string) string {
 		if raw == "" {
@@ -433,7 +584,7 @@ func extractGoalID(argsJSON, resultJSON string) string {
 					}
 				}
 			case map[string]any:
-				for _, key := range []string{"goal_id", "id", "goalId"} {
+				for _, key := range []string{"goal_id", "id", "goalId", "goal"} {
 					if id := walk(n[key]); id != "" {
 						return id
 					}
@@ -580,10 +731,17 @@ func goalRoundCounter(messages []oaiMsg) (int, int, bool) {
 
 // goalRoundInjectedContext returns a short prompt suffix for an already-complete
 // goal round: the task is closed, further work must not begin. It is attached
-// only when the ledger is complete so the model stops claiming it "cannot mark
-// the goal complete" and instead reports the recorded outcome.
-func (t *taskLedger) goalRoundInjectedContext() string {
+// only when the ledger is complete AND the round still targets the completed
+// objective, so the model stops claiming it "cannot mark the goal complete"
+// and instead reports the recorded outcome. A round with a different objective
+// is a new goal chained onto the session — the caller rotates the ledger
+// (maybeRotateGoal) before injection, so the completion context never
+// suppresses work on the new goal.
+func (t *taskLedger) goalRoundInjectedContext(messages []oaiMsg) string {
 	if t == nil || !t.IsComplete() {
+		return ""
+	}
+	if objective := latestGoalRoundObjective(messages); objective != "" && !sameGoalObjective(objective, t.OriginalGoal) {
 		return ""
 	}
 	var b strings.Builder
