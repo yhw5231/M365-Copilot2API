@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+// fullInputOf sums the diff-method full logical input for a request the way
+// openaiChat computes it: the flattened prompt token estimate.
+func fullInputOf(body *oaiReq) int64 {
+	total := int64(0)
+	for _, msg := range body.Messages {
+		total += EstimateTokens(contentToString(msg.Content))
+	}
+	return total
+}
+
 func TestRecordToolUsageRecordsInputAndCachedTokens(t *testing.T) {
 	s := &Server{usage: &usageLog{persist: &persistStore{flush: func() error { return nil }}}}
 	body := &oaiReq{
@@ -22,20 +32,22 @@ func TestRecordToolUsageRecordsInputAndCachedTokens(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer sk-tool-usage-test")
 	res := chathub.Result{Text: "tool routing result"}
-	// The call site passes the same cached count it reported to the client
-	// (history restored from a reused upstream conversation).
+	// Diff method: the reused upstream conversation held everything except the
+	// current turn, so the call site passes that share as cached and the full
+	// logical input alongside it. InputTokens = full - cached.
+	full := fullInputOf(body)
 	var wantCache int64
 	for _, msg := range body.Messages[:len(body.Messages)-1] {
 		wantCache += EstimateTokens(contentToString(msg.Content))
 	}
 
-	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second), wantCache)
+	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second), wantCache, full)
 
 	if len(s.usage.records) != 1 {
 		t.Fatalf("usage record count=%d want 1", len(s.usage.records))
 	}
 	rec := s.usage.records[0]
-	wantInput := EstimateTokens(contentToString(body.Messages[len(body.Messages)-1].Content))
+	wantInput := full - wantCache
 	if rec.InputTokens != wantInput {
 		t.Fatalf("input tokens=%d want %d", rec.InputTokens, wantInput)
 	}
@@ -48,6 +60,10 @@ func TestRecordToolUsageRecordsInputAndCachedTokens(t *testing.T) {
 	if rec.OutputTokens != EstimateTokens(res.Text) {
 		t.Fatalf("output tokens=%d want %d", rec.OutputTokens, EstimateTokens(res.Text))
 	}
+	// Diff-method invariant: input + cache always equals the full logical input.
+	if rec.InputTokens+rec.CacheTokens != full {
+		t.Fatalf("input+cache=%d want full=%d", rec.InputTokens+rec.CacheTokens, full)
+	}
 }
 
 func TestRecordToolUsageSingleMessageHasNoCachedTokens(t *testing.T) {
@@ -55,7 +71,7 @@ func TestRecordToolUsageSingleMessageHasNoCachedTokens(t *testing.T) {
 	body := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "current request only"}}}
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 
-	s.recordToolUsage(req, auth.AccountToken{}, body, chathub.Result{Text: "result"}, time.Now(), 0)
+	s.recordToolUsage(req, auth.AccountToken{}, body, chathub.Result{Text: "result"}, time.Now(), 0, fullInputOf(body))
 
 	rec := s.usage.records[0]
 	if rec.InputTokens == 0 {
@@ -66,11 +82,10 @@ func TestRecordToolUsageSingleMessageHasNoCachedTokens(t *testing.T) {
 	}
 }
 
-// TestRecordToolUsageReportsPassedCachedValue guards the accounting contract:
+// TestRecordToolUsageWithoutSessionIDHasNoCachedTokens guards the accounting contract:
 // recordToolUsage records exactly the cached count the call site computed for
-// the client, never re-estimates it from headers. A caller that knows the
-// upstream conversation was reused passes its cached total and input tokens are
-// the residual; a caller with no reuse passes 0 and all messages count as input.
+// the client, never re-estimates it from headers. A caller with no reuse passes
+// 0 and the full logical input lands in InputTokens.
 func TestRecordToolUsageWithoutSessionIDHasNoCachedTokens(t *testing.T) {
 	s := &Server{usage: &usageLog{persist: &persistStore{flush: func() error { return nil }}}}
 	body := &oaiReq{
@@ -86,7 +101,7 @@ func TestRecordToolUsageWithoutSessionIDHasNoCachedTokens(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer sk-tool-usage-test")
 	res := chathub.Result{Text: "tool routing result"}
 
-	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second), 0)
+	s.recordToolUsage(req, auth.AccountToken{Email: "test@example.com"}, body, res, time.Now().Add(-time.Second), 0, fullInputOf(body))
 
 	rec := s.usage.records[0]
 	if rec.CacheTokens != 0 {
@@ -94,5 +109,8 @@ func TestRecordToolUsageWithoutSessionIDHasNoCachedTokens(t *testing.T) {
 	}
 	if rec.InputTokens == 0 {
 		t.Fatalf("no reuse: input tokens must include all messages, got 0")
+	}
+	if rec.InputTokens != fullInputOf(body) {
+		t.Fatalf("no reuse: input tokens=%d want full=%d", rec.InputTokens, fullInputOf(body))
 	}
 }

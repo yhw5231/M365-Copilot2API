@@ -158,10 +158,12 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	// content, which currently produces a misleading empty_upstream_response.
 	var innerErr *innerStreamError
 	// innerCachedTokens captures the upstream conversation-reuse cache from the
-	// inner stream's usage chunk (session resolver / conv-cache hit). It is the
-	// authoritative cache signal for the downstream Responses usage: it works
-	// even when the client never sends previous_response_id.
+	// inner stream's usage chunk (session resolver / conv-cache hit). The inner
+	// /v1/chat/completions handler computes it with the session diff method and
+	// reports it on the same prompt_tokens basis as its usage chunk, so the
+	// inner input/cached pair is authoritative for every downstream record.
 	var innerCachedTokens int64
+	var innerInputTokens int64
 
 	// Usage accounting for the streaming Responses path: the inner chat records
 	// its own /v1/chat/completions row, but the protocol entry (/v1/responses)
@@ -182,9 +184,16 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			usageOut += call.Name + call.Args
 		}
 		est := estimateResponsesUsage(model, o.Messages, o.Tools, o.ToolChoice, usageOut)
-		cached := responsesHistoryCacheTokens(model, o.Messages, newMessages, o.Tools, o.ToolChoice, usageOut)
-		if innerCachedTokens > cached {
-			cached = innerCachedTokens
+		// 统一口径：内层 chat usage chunk 的 prompt_tokens / cached_tokens 出自
+		// 同一个会话差额法基准（input = cached + new 恒成立），优先采用；内层
+		// 未产出 usage（早期失败）时才回退到本地估算、缓存记 0。
+		inputTokens := int64(est.Values["input_tokens"].(int))
+		if innerInputTokens > 0 {
+			inputTokens = innerInputTokens
+		}
+		cached := innerCachedTokens
+		if cached > inputTokens {
+			cached = inputTokens
 		}
 		var ttft int64
 		if !firstDeltaAt.IsZero() {
@@ -200,7 +209,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		if tr := traceFromRequest(r); tr != nil {
 			s.trace.update(tr.ID, func(rec *traceRecord) {
 				usageTTFT = applyResponsesStreamTraceUpdate(rec, model, effectiveEffort,
-					int64(est.Values["input_tokens"].(int)), int64(est.Values["output_tokens"].(int)), cached,
+					inputTokens, int64(est.Values["output_tokens"].(int)), cached,
 					ttft, time.Since(startedAt).Milliseconds(), status, errMsg)
 			})
 		}
@@ -211,7 +220,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			ReasoningLevel: effectiveEffort,
 			Endpoint:       "/v1/responses",
 			Stream:         true,
-			InputTokens:    int64(est.Values["input_tokens"].(int)),
+			InputTokens:    inputTokens,
 			OutputTokens:   int64(est.Values["output_tokens"].(int)),
 			CacheTokens:    cached,
 			TTFTMs:         usageTTFT,
@@ -252,10 +261,18 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		// with an empty choices array (choices:[{index:0,delta:{},finish_reason:
 		// nil}]), so capture usage BEFORE branching on choices — otherwise the
 		// cache signal is silently lost and the downstream Responses usage
-		// always reports cached_tokens=0 on the streaming path.
-		if u, ok := chunk["usage"]; ok {
+		// always reports cached_tokens=0 on the streaming path. The inner
+		// prompt_tokens is captured with it: both come from the same session
+		// diff-method basis, so input = cached + new stays consistent.
+		if u, ok := chunk["usage"].(map[string]any); ok {
 			if c := cachedTokensFromUsage(u); c > 0 {
 				innerCachedTokens = c
+			}
+			for _, k := range []string{"prompt_tokens", "input_tokens"} {
+				if n := numberToInt64(u[k]); n > 0 {
+					innerInputTokens = n
+					break
+				}
 			}
 		}
 		choices, _ := chunk["choices"].([]any)
@@ -516,18 +533,21 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		usageOutput += call.Name + call.Args
 	}
 	estimate := estimateResponsesUsage(model, o.Messages, o.Tools, o.ToolChoice, usageOutput)
-	// Cache breakdown for the downstream: everything except the current
-	// request's own messages (newMessages, captured before the history prepend)
-	// is cached history restored through previous_response_id. The inner
-	// session-reuse signal (innerCachedTokens) is a different token basis and
-	// produced values inconsistent with the estimate's input_tokens, so the
-	// difference-based calc is authoritative — unless the inner reuse cache is
-	// the only signal available (client without previous_response_id), in which
-	// case it is reported as-is.
-	cached := responsesHistoryCacheTokens(model, o.Messages, newMessages, o.Tools, o.ToolChoice, usageOutput)
-	if innerCachedTokens > cached {
-		cached = innerCachedTokens
+	// 统一口径：下游 usage 的输入侧直接采用内层 chat usage chunk 的
+	// prompt_tokens / cached_tokens（同一会话差额法基准，input = cached + new
+	// 恒成立）。内层未产出 usage 时回退到本地估算、缓存记 0——不再与
+	// previous_response_id 历史差额混算两种基准。
+	inputTokens := int64(estimate.Values["input_tokens"].(int))
+	if innerInputTokens > 0 {
+		inputTokens = innerInputTokens
 	}
+	cached := innerCachedTokens
+	if cached > inputTokens {
+		cached = inputTokens
+	}
+	outputTokens := int64(estimate.Values["output_tokens"].(int))
+	estimate.Values["input_tokens"] = int(inputTokens)
+	estimate.Values["total_tokens"] = int(inputTokens + outputTokens)
 	// Always stamp both spellings (see the non-streaming responses() path).
 	withInputCacheDetails(estimate.Values, cached)
 	// Reasoning-token breakdown: the reasoning transcript streamed above is
@@ -770,17 +790,24 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, outputForUsage)
-	// Cache breakdown for the downstream: everything except the current
-	// request's own messages (currentMessages, captured before the history
-	// prepend) is cached history restored through previous_response_id. The
-	// inner M365 conversation-reuse signal (usage.prompt_tokens_details.
-	// cached_tokens) reflects what the upstream actually held (session resolver
-	// / conv-cache hit) and is the only cache signal when the client never sent
-	// previous_response_id, so it is preferred whenever it is larger.
-	cached := responsesHistoryCacheTokens(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, currentMessages, o.Tools, o.ToolChoice, outputForUsage)
-	if inner := cachedTokensFromUsage(out["usage"]); inner > cached {
-		cached = inner
+	// 统一口径：内层 /v1/chat/completions 的 usage（prompt_tokens /
+	// cached_tokens）出自同一个会话差额法基准，input = cached + new 恒成立，
+	// 优先采用；内层未产出 usage 时回退到本地估算、缓存记 0。
+	inputTokens := int64(estimate.Values["input_tokens"].(int))
+	innerCached := int64(0)
+	if u, ok := out["usage"].(map[string]any); ok {
+		if n := numberToInt64(u["prompt_tokens"]); n > 0 {
+			inputTokens = n
+		}
+		innerCached = cachedTokensFromUsage(u)
 	}
+	cached := innerCached
+	if cached > inputTokens {
+		cached = inputTokens
+	}
+	outputTokens := int64(estimate.Values["output_tokens"].(int))
+	estimate.Values["input_tokens"] = int(inputTokens)
+	estimate.Values["total_tokens"] = int(inputTokens + outputTokens)
 	// Always stamp both the Responses (input_tokens_details) and Chat Completions
 	// (prompt_tokens / prompt_tokens_details) spellings so downstream relays
 	// (sub2api / one-api / new-api) and billing panels read the cache breakdown
@@ -959,12 +986,20 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, "")
+	// 统一口径：优先采用内层 chat usage 的 prompt_tokens（会话差额法基准），
+	// 缓存从同一 usage 读取，input = cached + new 恒成立。
+	inputTokens := int64(estimate.Values["input_tokens"].(int))
+	if u, ok := out["usage"].(map[string]any); ok {
+		if n := numberToInt64(u["prompt_tokens"]); n > 0 {
+			inputTokens = n
+		}
+	}
 	s.usage.record(UsageRecord{
 		Time:         time.Now(),
 		APIKeyPrefix: extractAPIKey(r),
 		Model:        firstNonEmpty(body.Model, "m365-copilot"),
 		Endpoint:     "/v1/messages",
-		InputTokens:  int64(estimate.Values["input_tokens"].(int)),
+		InputTokens:  inputTokens,
 		OutputTokens: int64(estimate.Values["output_tokens"].(int)),
 		CacheTokens:  cachedTokensFromUsage(out["usage"]),
 		DurationMs:   time.Since(startedAt).Milliseconds(),

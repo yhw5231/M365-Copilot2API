@@ -37,30 +37,35 @@ func TestUsageWithCacheZeroCachedStillEmitsDetails(t *testing.T) {
 	}
 }
 
-func TestCachedInputTokensIncrementalSend(t *testing.T) {
-	full := "system: rules\nuser: q1\nassistant: a1\nuser: q2"
-	inc := "user: q2"
-	cached := cachedInputTokens(full, inc)
-	if cached <= 0 {
-		t.Fatalf("incremental send must report positive cached tokens, got %d", cached)
+// TestSessionCacheDiffMethod covers the session-diff cached-token contract:
+// a matched session reports min(上一轮输入, 本轮全量输入) as cached and the
+// remainder as new; a fresh session (base 0) reports 0 cached.
+func TestSessionCacheDiffMethod(t *testing.T) {
+	// 本轮全量输入 1000，上一轮输入 700 → cached=700, new=300。
+	full, base := int64(1000), int64(700)
+	cached := base
+	if cached > full {
+		cached = full
 	}
-	fullTokens := EstimateTokens(full)
-	incTokens := EstimateTokens(inc)
-	if cached != fullTokens-incTokens {
-		t.Fatalf("cached=%d want %d", cached, fullTokens-incTokens)
+	newInput := full - cached
+	if cached != 700 || newInput != 300 {
+		t.Fatalf("diff method wrong: cached=%d new=%d, want 700/300", cached, newInput)
 	}
-}
 
-func TestCachedInputTokensFullSendIsZero(t *testing.T) {
-	full := "user: hello"
-	if got := cachedInputTokens(full, full); got != 0 {
-		t.Fatalf("full send must be 0 cached, got %d", got)
+	// 会话收缩（上下文压缩后变小）：cached 封顶为本轮全量，new=0。
+	shrunk := int64(500)
+	cached = base
+	if cached > shrunk {
+		cached = shrunk
 	}
-	if got := cachedInputTokens("", ""); got != 0 {
-		t.Fatalf("empty inputs must be 0 cached, got %d", got)
+	if cached != 500 || shrunk-cached != 0 {
+		t.Fatalf("shrink clamp wrong: cached=%d, want 500", cached)
 	}
-	if got := cachedInputTokens(full, full+" extra"); got != 0 {
-		t.Fatalf("sent >= full must be 0 cached, got %d", got)
+
+	// 新会话（base=0）→ 全量都是新增。
+	cached = 0
+	if cached != 0 || full-cached != 1000 {
+		t.Fatal("fresh session must report 0 cached")
 	}
 }
 

@@ -116,25 +116,3 @@ func splitResponsesInputTokens(totalInputTokens, cachedInputTokens int) (newInpu
 	}
 	return totalInputTokens - cachedInputTokens, cachedInputTokens
 }
-
-// responsesHistoryCacheTokens computes how much of the estimated input is
-// cached history restored through previous_response_id. The current request's
-// own messages (newMessages, captured before the history prepend) are the new
-// input; everything else in the estimated input — the restored history — is
-// cache. Because both estimates share the same framing/tools/toolChoice
-// constants, the difference cleanly isolates the history tokens. Returns 0
-// when no history was restored or the estimates are degenerate, so callers can
-// fall back to the inner session-reuse cache signal.
-func responsesHistoryCacheTokens(model string, allMessages, newMessages []oaiMsg, tools []chathub.Tool, toolChoice any, output string) int64 {
-	if len(newMessages) == 0 || len(newMessages) >= len(allMessages) {
-		return 0
-	}
-	total := estimateResponsesUsage(model, allMessages, tools, toolChoice, output)
-	fresh := estimateResponsesUsage(model, newMessages, tools, toolChoice, output)
-	totalIn, _ := total.Values["input_tokens"].(int)
-	freshIn, _ := fresh.Values["input_tokens"].(int)
-	if freshIn <= 0 || freshIn >= totalIn {
-		return 0
-	}
-	return int64(totalIn - freshIn)
-}

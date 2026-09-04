@@ -30,10 +30,15 @@ type debugRecord struct {
 	TokenSource  string    `json:"tokenSource"`
 	CacheHit     *bool     `json:"cacheHit"`
 	CacheSource  string    `json:"cacheSource"`
-	AccountEmail string    `json:"accountEmail,omitempty"`
-	Client       any       `json:"client"`
-	Upstream     any       `json:"upstream"`
-	Gateway      any       `json:"gateway"`
+	// SessionMatched / ConversationID 透传 trace 的会话命中信息：
+	// SessionMatched 为 resolver 命中方式（空=未命中，新会话），
+	// ConversationID 为服务本请求的上游对话 ID。
+	SessionMatched string `json:"sessionMatched,omitempty"`
+	ConversationID string `json:"conversationId,omitempty"`
+	AccountEmail   string `json:"accountEmail,omitempty"`
+	Client         any    `json:"client"`
+	Upstream       any    `json:"upstream"`
+	Gateway        any    `json:"gateway"`
 }
 type debugStore struct {
 	mu      sync.RWMutex
@@ -307,6 +312,8 @@ func (s *Server) debugMiddleware(next http.Handler) http.Handler {
 		}
 		if hasTrace {
 			rec.AccountEmail = tr.AccountEmail
+			rec.SessionMatched = tr.SessionMatched
+			rec.ConversationID = tr.ConversationID
 			if tr.TTFTMs > 0 {
 				ttft := tr.TTFTMs
 				rec.TTFTMS = &ttft

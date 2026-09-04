@@ -2610,6 +2610,9 @@ function traceRowHTML(x){
     output_tokens:x.outputTokens,
     total_tokens:x.totalTokens
   });
+  const matched=esc(x.sessionMatched||'');
+  const conv=esc(x.conversationId||'');
+  const sessionCell=`<div><b>会话</b><span>${matched?('<span class="usage-status">命中:'+matched+'</span>'):'<span style="color:var(--muted)">新会话</span>'}</span></div>`+(conv?`<div><b>对话ID</b><span style="font-size:11px">${conv}</span></div>`:'');
   return `<tr id="tr-${x.id}" data-trace-status="${esc(x.status||'')}">
     <td style="font-size:12px;color:var(--muted)">${new Date(x.at).toLocaleTimeString()}</td>
     <td style="font-size:12px">${esc(x.model||x.endpoint||'-')}</td>
@@ -2620,6 +2623,7 @@ function traceRowHTML(x){
       <div><b>总输入 / 输出</b><span>${fmtTok(tokens.inputTotal)} / ${fmtTok(tokens.output)}</span></div>
       <div><b>新增</b><span>${fmtTok(tokens.newInput)}</span></div>
       <div><b>缓存</b><span>${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span></div>
+      ${sessionCell}
     </td>
     <td class="trace-latency-cell" title="绿色：小于 5 秒；黄色：5–15 秒；红色：15 秒以上">
       <div><b>耗时</b><span class="${traceLatencyClass(x.durationMs)}">${fmtDuration(x.durationMs)}</span></div>
@@ -2775,6 +2779,7 @@ async function toggleTraceDetail(id,mode='current'){
 function fullTraceCopyText(rec){
   const sec=(label,desc,value)=>`\n\n【${label}】${desc}\n${JSON.stringify(value,null,2)||'—'}`;
   let out=`端点：${rec.endpoint||'-'} · 方法：${rec.method||'-'} · 状态：${rec.statusCode||'-'} · 账户：${rec.accountEmail||'-'} · 密钥：${rec.apiKeyPrefix||'-'}`;
+  out+=`\n会话：${rec.sessionMatched?('命中 '+rec.sessionMatched):'未命中（新会话）'}${rec.conversationId?(' · 对话ID：'+rec.conversationId):''}`;
   if(rec.error)out+=`\n错误：${rec.error}`;
   if(rec.upstreamError)out+=`\n上游错误：${rec.upstreamError}`;
   out+=sec('下游请求','客户端发往本网关的请求：',rec.downstreamReq)
@@ -2798,7 +2803,7 @@ async function insertTraceDetailRow(id){
   const open=(rec._open&&rec._open.length)?rec._open:[];
   const o=(i)=>open[i]!==false;
   tr.innerHTML=`<td colspan="8" class="trace-detail-cell"><div class="trace-detail">
-      <div class="trace-detail-meta"><b>端点：</b> ${esc(rec.endpoint||'-')} · <b>方法：</b> ${esc(rec.method||'-')} · <b>状态：</b> ${rec.statusCode||'-'} · <b>账户：</b> ${esc(rec.accountEmail||'-')} · <b>密钥：</b> ${esc(rec.apiKeyPrefix||'-')}</div>
+      <div class="trace-detail-meta"><b>端点：</b> ${esc(rec.endpoint||'-')} · <b>方法：</b> ${esc(rec.method||'-')} · <b>状态：</b> ${rec.statusCode||'-'} · <b>账户：</b> ${esc(rec.accountEmail||'-')} · <b>密钥：</b> ${esc(rec.apiKeyPrefix||'-')}<br><b>会话：</b> ${rec.sessionMatched?('<span class="usage-status">命中 '+esc(rec.sessionMatched)+'</span>'):'<span style="color:var(--muted)">未命中（新会话）</span>'}${rec.conversationId?(' · <b>对话ID：</b> '+esc(rec.conversationId)):''}</div>
       ${rec.error?`<div style="color:var(--red)"><b>错误：</b> ${esc(rec.error)}</div>`:''}
       ${rec.upstreamError?`<div style="color:var(--orange)"><b>上游错误：</b> ${esc(rec.upstreamError)}</div>`:''}
       <div class="trace-detail-modes" style="display:flex;gap:8px;margin:10px 0">

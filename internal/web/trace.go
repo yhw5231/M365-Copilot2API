@@ -42,14 +42,22 @@ type traceRecord struct {
 	OutputTokens   int64     `json:"outputTokens,omitempty"`
 	CachedTokens   int64     `json:"cachedTokens,omitempty"`
 	SpeedTPs       float64   `json:"speedTps,omitempty"`
-	AccountEmail   string    `json:"accountEmail,omitempty"`
-	APIKeyPrefix   string    `json:"apiKeyPrefix,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	DownstreamReq  any       `json:"downstreamReq,omitempty"`
-	DownstreamResp any       `json:"downstreamResp,omitempty"`
-	UpstreamReq    any       `json:"upstreamReq,omitempty"`
-	UpstreamResp   any       `json:"upstreamResp,omitempty"`
-	UpstreamError  string    `json:"upstreamError,omitempty"`
+	// SessionMatched is the session-resolver hit kind (e.g. explicit_prefix_3,
+	// explicit_incremental). Empty means the request started a fresh upstream
+	// conversation — the debug console uses it to answer "did the session
+	// match?" without digging through logs.
+	SessionMatched string `json:"sessionMatched,omitempty"`
+	// ConversationID is the upstream conversation that served (or was matched
+	// for) this request.
+	ConversationID string `json:"conversationId,omitempty"`
+	AccountEmail   string `json:"accountEmail,omitempty"`
+	APIKeyPrefix   string `json:"apiKeyPrefix,omitempty"`
+	Error          string `json:"error,omitempty"`
+	DownstreamReq  any    `json:"downstreamReq,omitempty"`
+	DownstreamResp any    `json:"downstreamResp,omitempty"`
+	UpstreamReq    any    `json:"upstreamReq,omitempty"`
+	UpstreamResp   any    `json:"upstreamResp,omitempty"`
+	UpstreamError  string `json:"upstreamError,omitempty"`
 }
 
 // traceStore keeps a bounded ring of traceRecord entries. The bound is read
@@ -263,6 +271,8 @@ func cloneTraceSummary(rec *traceRecord) traceRecord {
 		OutputTokens:   rec.OutputTokens,
 		CachedTokens:   rec.CachedTokens,
 		SpeedTPs:       rec.SpeedTPs,
+		SessionMatched: rec.SessionMatched,
+		ConversationID: rec.ConversationID,
 		AccountEmail:   rec.AccountEmail,
 		APIKeyPrefix:   rec.APIKeyPrefix,
 		Error:          rec.Error,

@@ -36,6 +36,11 @@ type sessionBinding struct {
 	// session. It survives context compaction and account switches, so a long
 	// task never restarts from scratch.
 	Task *taskLedger `json:"task,omitempty"`
+	// LastInputTokens 记录该会话最近一次成功对话轮的完整逻辑输入 token 数
+	// （与下游 usage 的 prompt_tokens 同一口径）。下一轮请求命中本会话时，
+	// 缓存差额法直接以它为基数：cached = min(上次值, 本次值)，
+	// 新增 = 本次值 − 上次值。
+	LastInputTokens int64 `json:"lastInputTokens,omitempty"`
 }
 
 type sessionResolver struct {
@@ -200,6 +205,11 @@ type ResolveResult struct {
 	// submitted context no longer extends the stored history. The caller must
 	// start a fresh upstream conversation and send the complete current context.
 	ResetUpstream bool
+	// LastInputTokens is the full logical input token count of the previous
+	// completed turn on this session (0 when unknown). The cached-tokens diff
+	// method uses it as the base: cached = min(LastInputTokens, current),
+	// new = current - cached.
+	LastInputTokens int64
 }
 
 func clientIPFingerprint(r *http.Request) string {
@@ -286,6 +296,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 			}
 			if n := contextPrefixLen(sess.ContextHistory, msgs); n > 0 {
 				result.HistoryLen = n
+				result.LastInputTokens = sess.LastInputTokens
 				if n <= len(msgs) && !messagesEqual(sess.ContextHistory[n-1], msgs[n-1]) {
 					result.MatchedBy = fmt.Sprintf("explicit_prefix_soft_%d", n)
 				} else {
@@ -298,6 +309,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 			if len(msgs) <= 1 {
 				result.MatchedBy = "explicit_incremental"
 				result.StoredContext = cloneMessages(sess.ContextHistory)
+				result.LastInputTokens = sess.LastInputTokens
 				return result
 			}
 			// A multi-message request that no longer extends the stored history is
@@ -326,37 +338,69 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	return ResolveResult{IsNew: true}
 }
 
+// contextPrefixLen returns the index into msgs where the increment starts:
+// every message before it is already held by the upstream conversation
+// (matched, or a runtime-context snapshot treated as digested metadata).
+// Matching walks both sides with a two-pointer sweep and tolerates client-side
+// metadata drift:
+//
+//   - DSH regenerates its runtime-context snapshot every turn, so snapshot
+//     content drifts (messagesEqual already equates snapshot-vs-snapshot), and
+//     snapshots may also appear, disappear, or shift position between turns —
+//     e.g. re-injected after a client-side compaction. When a pair mismatches
+//     and either side is a snapshot, the sweep skips it instead of declaring
+//     divergence: a client metadata change must never reset the upstream
+//     conversation. Only a genuine conversation divergence (or a compacted /
+//     shrunk context) does.
+//   - The LAST stored assistant turn is gateway-synthesized and may be replayed
+//     by the client in a different encoding (soft tail): an assistant/assistant
+//     mismatch at the final stored position still counts as held.
+//
+// Returns 0 when the histories genuinely diverge before the stored history is
+// consumed; the caller then treats a multi-message request as a context reset
+// (new upstream conversation, cache 0) and a single-message one as incremental
+// reuse.
 func contextPrefixLen(hist, msgs []oaiMsg) int {
-	if len(hist) == 0 || len(msgs) < len(hist) {
+	if len(hist) == 0 {
 		return 0
 	}
-	for i := range hist {
-		if !messagesEqual(hist[i], msgs[i]) {
+	i, j := 0, 0
+	for i < len(hist) && j < len(msgs) {
+		if messagesEqual(hist[i], msgs[j]) {
+			i++
+			j++
+			continue
+		}
+		if isRuntimeContextSnapshot(contentToString(hist[i].Content)) {
+			// 存储侧的快照早已被上游持有，客户端这轮没带它也无需重发。
+			i++
+			continue
+		}
+		if isRuntimeContextSnapshot(contentToString(msgs[j].Content)) {
+			// 客户端新生成的快照是会话元数据而非对话内容，视为已消化，
+			// 不计入历史分叉。
+			j++
+			continue
+		}
+		if i == len(hist)-1 && hist[i].Role == "assistant" && msgs[j].Role == "assistant" {
 			// Soft tail match: the LAST stored message is the gateway-synthesized
 			// assistant turn, and the gateway's stored encoding of that turn is not
-			// guaranteed to match the encoding the client replays. Example chain:
-			//   - the router/tool round stores res.Text ("CALL_TOOL: pwsh{...}") or
-			//     the reasoning transcript, while the client replays a
-			//     <thinking>-wrapped output_text and a function_call item;
-			//   - an unfulfilled-claim repair stores the repair JSON envelope while
-			//     the client replays the final answer text plus a function_call item.
-			// Any single mismatch at that tail forced explicit_context_reset, which
-			// rebuilt the upstream conversation every tool round (isStartOfSession:
-			// true, full replay) and drove cached_tokens to 0 for the whole session.
-			// The tail turn is semantically present in the upstream conversation in
-			// the gateway's own encoding, so when everything before it matches
-			// strictly and both sides hold an assistant message at the tail
-			// position, treat the turn as matched and keep the upstream
-			// conversation. Genuine compaction or a divergent conversation still
-			// mismatches earlier in the prefix and resets correctly.
-			if i == len(hist)-1 && i < len(msgs) &&
-				hist[i].Role == "assistant" && msgs[i].Role == "assistant" {
-				return len(hist)
-			}
-			return 0
+			// guaranteed to match the encoding the client replays (reasoning
+			// transcript wrapped in <thinking>, router decision text, repair JSON
+			// envelope...). The turn is semantically present in the upstream
+			// conversation, so treat it as matched and keep the conversation.
+			i++
+			j++
+			break
 		}
+		return 0
 	}
-	return len(hist)
+	if i < len(hist) {
+		// msgs ran out before the whole stored history was consumed: the client
+		// submitted less than the upstream holds (compaction / shrink).
+		return 0
+	}
+	return j
 }
 
 // stripThinkingWrapper removes the <thinking>...</thinking> wrapper that DSH
@@ -560,6 +604,28 @@ func (sr *sessionResolver) ResolveTaskLedger(r *http.Request, body *oaiReq) *tas
 		return sess.Task
 	}
 	return nil
+}
+
+// RecordSessionInputTokens stamps the full logical input token count of a
+// completed turn onto every session bound to the given cloud conversation.
+// The next turn that resolves this session uses it as the cache base of the
+// diff method (cached = min(base, current), new = current - base). It is a
+// no-op when the input count is not positive: an unknown size must never
+// fabricate cache credit.
+func (sr *sessionResolver) RecordSessionInputTokens(conversationID string, inputTokens int64) {
+	if sr == nil || conversationID == "" || inputTokens <= 0 {
+		return
+	}
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	for sid, sess := range sr.sessions {
+		if sess.ConversationID != conversationID {
+			continue
+		}
+		sess.LastInputTokens = inputTokens
+		sr.sessions[sid] = sess
+		sr.persist.markDirty()
+	}
 }
 
 // SetTask attaches a task ledger to an existing session binding. It is a no-op
