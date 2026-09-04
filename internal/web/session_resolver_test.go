@@ -712,3 +712,132 @@ func TestMessagesEqualStripsThinkingWrapper(t *testing.T) {
 		t.Fatal("different assistant content must still fail")
 	}
 }
+
+// TestSoftTailMatchKeepsUpstreamConversationAcrossToolRounds reproduces the
+// DSH /v1/responses tool-loop failure captured in the admin trace: the gateway
+// synthesizes the final assistant turn of each bound round from its own
+// encoding (the router decision text "CALL_TOOL: ..." or the unfulfilled-claim
+// repair JSON envelope), while the client replays that same turn in its own
+// encoding (a final-answer output_text message and separate function_call
+// items). The strict tail compare treated every such request as
+// explicit_context_reset — a brand-new upstream conversation with the FULL
+// history re-sent — which drove cached_tokens to 0 for every request after the
+// first one of the task. The tail position must match leniently: everything
+// before it already proves the request extends this conversation, and the
+// upstream conversation holds its own version of that final turn.
+func TestSoftTailMatchKeepsUpstreamConversationAcrossToolRounds(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set(sessionHeaderName, "downstream-dsh-toolloop")
+
+	snapshot := "Current runtime context. This snapshot supersedes earlier runtime-context snapshots."
+
+	// Round 1: DSH sends system + question + runtime snapshot; the router turn
+	// picks pwsh and binds the decision text as the assistant tail.
+	round1 := &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "You are a coding agent."},
+		{Role: "user", Content: "生成html，内容是svg绘制鹈鹕骑自行车3D动画"},
+		{Role: "user", Content: snapshot},
+	}}
+	sr.Bind("upstream-r1", "conversation-dsh", "account-a", round1,
+		`CALL_TOOL: pwsh({"command":"Get-Location"})`, req)
+
+	pwshCall := func(id string) []map[string]any {
+		return []map[string]any{{
+			"id": id, "type": "function",
+			"function": map[string]any{"name": "pwsh", "arguments": `{"command":"Get-Location"}`},
+		}}
+	}
+	writeCall := func(id string) []map[string]any {
+		return []map[string]any{{
+			"id": id, "type": "function",
+			"function": map[string]any{"name": "write", "arguments": `{"file_path":"D:\NET\ai\test\p.html"}`},
+		}}
+	}
+
+	// Round 2: the client replays the tool round in its own encoding — a
+	// function_call item (assistant ToolCalls message) plus the tool result. The
+	// stored tail ("CALL_TOOL: ...") can never byte-match this shape, but the
+	// upstream conversation already holds that turn, so the conversation must be
+	// reused and only the tool result sent as the increment.
+	round2 := &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "You are a coding agent."},
+		{Role: "user", Content: "生成html，内容是svg绘制鹈鹕骑自行车3D动画"},
+		{Role: "user", Content: snapshot},
+		{Role: "assistant", ToolCalls: pwshCall("fc_aaa")},
+		{Role: "tool", ToolCallID: "fc_aaa", Content: "Path D:\\NET\\ai\\test"},
+	}}
+	res2 := sr.Resolve(req, round2)
+	if res2.IsNew || res2.ResetUpstream {
+		t.Fatalf("tool-round replay must keep the upstream conversation: %+v", res2)
+	}
+	if res2.HistoryLen != 4 {
+		t.Fatalf("expected HistoryLen=4 (system,user,snapshot,stored tail), got %d", res2.HistoryLen)
+	}
+	if res2.MatchedBy != "explicit_prefix_soft_4" {
+		t.Fatalf("expected explicit_prefix_soft_4, got %q", res2.MatchedBy)
+	}
+	if res2.ConversationID != "conversation-dsh" {
+		t.Fatalf("tool-round replay must keep conversation-dsh, got %q", res2.ConversationID)
+	}
+
+	// Round 2 bind: the unfulfilled-claim repair path stores the repair JSON
+	// envelope as the assistant tail (exactly what bindConversation sees on the
+	// reasoning-stream repair path).
+	round2Bind := *round2
+	sr.Bind("upstream-r2", "conversation-dsh", "account-a", &round2Bind,
+		`{"calls":[{"name":"write","arguments":{"file_path":"D:\NET\ai\test\p.html"}}]}`, req)
+
+	// Round 3: the client replays the repaired turn as a final-answer
+	// output_text message plus the write function_call and its result. The
+	// stored tail (repair JSON) mismatches strictly at the tail again — the
+	// conversation must still be reused, with the write result as the increment.
+	round3 := &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "You are a coding agent."},
+		{Role: "user", Content: "生成html，内容是svg绘制鹈鹕骑自行车3D动画"},
+		{Role: "user", Content: snapshot},
+		{Role: "assistant", ToolCalls: pwshCall("fc_bbb")},
+		{Role: "tool", ToolCallID: "fc_bbb", Content: "Path D:\\NET\\ai\\test"},
+		{Role: "assistant", Content: []any{map[string]any{"type": "output_text", "text": "已生成 HTML 文件：D:\\NET\\ai\\test\\p.html"}}},
+		{Role: "assistant", ToolCalls: writeCall("fc_ccc")},
+		{Role: "tool", ToolCallID: "fc_ccc", Content: "Created file"},
+	}}
+	res3 := sr.Resolve(req, round3)
+	if res3.IsNew || res3.ResetUpstream {
+		t.Fatalf("repaired-round replay must keep the upstream conversation: %+v", res3)
+	}
+	if res3.HistoryLen != 6 {
+		t.Fatalf("expected HistoryLen=6, got %d", res3.HistoryLen)
+	}
+	if res3.MatchedBy != "explicit_prefix_soft_6" {
+		t.Fatalf("expected explicit_prefix_soft_6, got %q", res3.MatchedBy)
+	}
+
+	// A genuinely compacted/replaced context still resets: the divergence sits
+	// BEFORE the stored tail (the question itself changed).
+	compacted := &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "Summary of the earlier conversation"},
+		{Role: "user", Content: "continue from the summary"},
+	}}
+	res4 := sr.Resolve(req, compacted)
+	if !res4.ResetUpstream {
+		t.Fatalf("compacted context must still reset the upstream conversation, matched=%q", res4.MatchedBy)
+	}
+
+	// A mid-prefix divergence (a different user turn) also still resets — the
+	// soft tail never overrides a hard mismatch earlier in the prefix.
+	diverged := &oaiReq{Messages: []oaiMsg{
+		{Role: "system", Content: "You are a coding agent."},
+		{Role: "user", Content: "完全不同的另一个问题"},
+		{Role: "user", Content: snapshot},
+		{Role: "assistant", ToolCalls: pwshCall("fc_ddd")},
+		{Role: "tool", ToolCallID: "fc_ddd", Content: "Path D:\\NET\\ai\\test"},
+		{Role: "assistant", ToolCalls: writeCall("fc_eee")},
+		{Role: "tool", ToolCallID: "fc_eee", Content: "Created file"},
+	}}
+	res5 := sr.Resolve(req, diverged)
+	if !res5.ResetUpstream {
+		t.Fatalf("mid-prefix divergence must reset the upstream conversation, matched=%q", res5.MatchedBy)
+	}
+}

@@ -184,7 +184,11 @@ type ResolveResult struct {
 	IsNew          bool
 	// HistoryLen is the number of leading messages in the current request that
 	// are already present in the upstream conversation. It is safe to use only
-	// as the start index of body.Messages[HistoryLen:].
+	// as the start index of body.Messages[HistoryLen:]. With a soft tail match
+	// (MatchedBy explicit_prefix_soft_N) the final stored assistant turn is
+	// present in the upstream conversation in the gateway's own encoding while
+	// the client echoes its own encoding of the same turn; the upstream already
+	// holds the turn, so the increment starts after it either way.
 	HistoryLen int
 	// StoredContext is the persisted upstream message history when a session is
 	// reused without a full-history echo (explicit_incremental, HistoryLen == 0).
@@ -282,7 +286,11 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 			}
 			if n := contextPrefixLen(sess.ContextHistory, msgs); n > 0 {
 				result.HistoryLen = n
-				result.MatchedBy = fmt.Sprintf("explicit_prefix_%d", n)
+				if n <= len(msgs) && !messagesEqual(sess.ContextHistory[n-1], msgs[n-1]) {
+					result.MatchedBy = fmt.Sprintf("explicit_prefix_soft_%d", n)
+				} else {
+					result.MatchedBy = fmt.Sprintf("explicit_prefix_%d", n)
+				}
 				return result
 			}
 			// A request containing only the current turn is a normal incremental
@@ -324,6 +332,27 @@ func contextPrefixLen(hist, msgs []oaiMsg) int {
 	}
 	for i := range hist {
 		if !messagesEqual(hist[i], msgs[i]) {
+			// Soft tail match: the LAST stored message is the gateway-synthesized
+			// assistant turn, and the gateway's stored encoding of that turn is not
+			// guaranteed to match the encoding the client replays. Example chain:
+			//   - the router/tool round stores res.Text ("CALL_TOOL: pwsh{...}") or
+			//     the reasoning transcript, while the client replays a
+			//     <thinking>-wrapped output_text and a function_call item;
+			//   - an unfulfilled-claim repair stores the repair JSON envelope while
+			//     the client replays the final answer text plus a function_call item.
+			// Any single mismatch at that tail forced explicit_context_reset, which
+			// rebuilt the upstream conversation every tool round (isStartOfSession:
+			// true, full replay) and drove cached_tokens to 0 for the whole session.
+			// The tail turn is semantically present in the upstream conversation in
+			// the gateway's own encoding, so when everything before it matches
+			// strictly and both sides hold an assistant message at the tail
+			// position, treat the turn as matched and keep the upstream
+			// conversation. Genuine compaction or a divergent conversation still
+			// mismatches earlier in the prefix and resets correctly.
+			if i == len(hist)-1 && i < len(msgs) &&
+				hist[i].Role == "assistant" && msgs[i].Role == "assistant" {
+				return len(hist)
+			}
 			return 0
 		}
 	}
