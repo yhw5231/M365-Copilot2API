@@ -139,22 +139,29 @@ func TestCachedTokensCompactedContextResetsCache(t *testing.T) {
 	}
 }
 
-// TestContextPrefixSnapshotDriftStillMatches covers the snapshot-drift
-// compatibility: DSH regenerates its runtime-context snapshot every turn and
-// may inject extra copies or drop old ones. None of that may reset the
-// upstream conversation — only a real content divergence does.
-func TestContextPrefixSnapshotDriftStillMatches(t *testing.T) {
+// TestAnchorChainSnapshotDriftStillMatches covers the snapshot-drift
+// compatibility under anchor-chain matching: DSH regenerates its
+// runtime-context snapshot every turn and may inject extra copies or drop old
+// ones. Snapshots are excluded from the anchor chain, so none of that may
+// reset the upstream conversation — only a real content divergence does.
+func TestAnchorChainSnapshotDriftStillMatches(t *testing.T) {
 	snap := func(policy string) oaiMsg {
 		return oaiMsg{Role: "user", Content: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n" + policy}
 	}
-	hist := []oaiMsg{
+	// Turn 1 as the client sent it: system, snapshot, question, (client-side
+	// echo of the answer). The chain records the non-snapshot messages.
+	turn1 := []oaiMsg{
 		{Role: "system", Content: "system prompt"},
 		snap("old policy text that drifted away"),
 		{Role: "user", Content: "question one"},
-		{Role: "assistant", Content: "answer one"},
+	}
+	chain := buildAnchorChain(turn1)
+	if len(chain) != 2 {
+		t.Fatalf("snapshots must be excluded from the chain: %d anchors", len(chain))
 	}
 
-	// 同位置内容漂移：快照文本变了但位置不变 → 命中。
+	// 同位置内容漂移：快照文本变了 → 锚点不受影响，仍命中。增量从最后一条
+	// 匹配锚点（question one）之后开始，即回放答案 + 新问题。
 	sameSpot := []oaiMsg{
 		{Role: "system", Content: "system prompt"},
 		snap("brand new policy text for this turn"),
@@ -162,12 +169,11 @@ func TestContextPrefixSnapshotDriftStillMatches(t *testing.T) {
 		{Role: "assistant", Content: "answer one"},
 		{Role: "user", Content: "question two"},
 	}
-	if n := contextPrefixLen(hist, sameSpot); n != 4 {
-		t.Fatalf("drifted snapshot at same position: history=%d want 4", n)
+	if n := anchorChainIncrement(chain, sameSpot); n != 3 {
+		t.Fatalf("drifted snapshot: history=%d want 3", n)
 	}
 
-	// 快照数量变化：客户端多注入一份快照（压缩后常见）→ 仍命中。返回值是
-	// 增量起始下标：前 5 条（含多出的快照）都已消化，增量只剩最后一条用户消息。
+	// 快照数量变化：客户端多注入一份快照（压缩后常见）→ 仍命中。
 	extraSnap := []oaiMsg{
 		{Role: "system", Content: "system prompt"},
 		snap("policy A"),
@@ -176,30 +182,30 @@ func TestContextPrefixSnapshotDriftStillMatches(t *testing.T) {
 		{Role: "assistant", Content: "answer one"},
 		{Role: "user", Content: "question two"},
 	}
-	if n := contextPrefixLen(hist, extraSnap); n != 5 {
-		t.Fatalf("extra injected snapshot: history=%d want 5", n)
+	if n := anchorChainIncrement(chain, extraSnap); n != 4 {
+		t.Fatalf("extra injected snapshot: history=%d want 4", n)
 	}
 
-	// 快照消失：存储侧有快照、客户端不再发送 → 仍命中。
+	// 快照消失：客户端不再发送快照 → 仍命中。
 	noSnap := []oaiMsg{
 		{Role: "system", Content: "system prompt"},
 		{Role: "user", Content: "question one"},
 		{Role: "assistant", Content: "answer one"},
 		{Role: "user", Content: "question two"},
 	}
-	if n := contextPrefixLen(hist, noSnap); n != 3 {
-		t.Fatalf("dropped snapshot: history=%d want 3", n)
+	if n := anchorChainIncrement(chain, noSnap); n != 2 {
+		t.Fatalf("dropped snapshot: history=%d want 2", n)
 	}
 
-	// 真实内容分叉（非快照消息被替换）→ 必须判 0。
+	// 真实内容分叉（链尾锚点在请求中找不到）→ 必须判 0（上下文重置）。
 	diverged := []oaiMsg{
 		{Role: "system", Content: "system prompt"},
 		snap("policy"),
 		{Role: "user", Content: "TOTALLY DIFFERENT REPLACED HISTORY"},
-		{Role: "assistant", Content: "answer one"},
+		{Role: "assistant", Content: "other answer"},
 		{Role: "user", Content: "question two"},
 	}
-	if n := contextPrefixLen(hist, diverged); n != 0 {
+	if n := anchorChainIncrement(chain, diverged); n != 0 {
 		t.Fatalf("genuine divergence: history=%d want 0", n)
 	}
 }

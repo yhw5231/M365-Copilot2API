@@ -4754,9 +4754,9 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	// Tool rounds (writeToolResponse paths) prefer res.Reasoning — the client
 	// replays the reasoning, not the router's decision text — and fall back to
 	// res.Text only when no transcript exists. Text rounds keep res.Text first
-	// (the client replays the final answer verbatim). messagesEqual strips the
-	// <thinking> wrapper on both sides so the stored reasoning matches the
-	// replayed thinking.
+	// (the client replays the final answer verbatim). The session resolver's
+	// anchor chain is built from ClientMessages only, so the synthesized reply
+	// never enters the chain and its replay encoding is irrelevant.
 	isToolRound := len(toolRound) > 0 && toolRound[0]
 	replyContent := strings.TrimSpace(res.Text)
 	if isToolRound {
@@ -4768,6 +4768,10 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	if replyContent == "" {
 		replyContent = strings.TrimSpace(res.Reasoning)
 	}
+	// The anchor chain must cover the CLIENT's messages only: the synthesized
+	// reply below is stored in Messages for history replay, but the client
+	// re-encodes that turn in its own shape, so it must never enter the chain.
+	historyBody.ClientMessages = history
 	historyBody.Messages = append(cloneMessages(history), oaiMsg{
 		Role:             "assistant",
 		Content:          replyContent,

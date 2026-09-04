@@ -8,24 +8,28 @@ import (
 )
 
 // bindLikeServer mimics server.go bindConversation: it appends the assistant
-// reply into historyBody.Messages (assistantText param stays empty) and calls
-// BindWithTask exactly like the production path does.
+// reply into historyBody.Messages (assistantText param stays empty), carries
+// the pristine client messages in ClientMessages exactly like the production
+// path, and calls BindWithTask — so the anchor chain covers the client's
+// messages only.
 func bindLikeServer(t *testing.T, sr *sessionResolver, sid, convID, accID string, reqMessages []oaiMsg, assistantText string) {
 	t.Helper()
 	historyBody := oaiReq{Messages: append(cloneMessages(reqMessages), oaiMsg{
 		Role:    "assistant",
 		Content: assistantText,
 	})}
+	historyBody.ClientMessages = cloneMessages(reqMessages)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	req.Header.Set(sessionHeaderName, sid)
 	sr.BindWithTask("upstream-session", convID, accID, &historyBody, "", req, nil)
 }
 
 // TestDSHPureTextContinuation reproduces the exact production bind shape for a
-// pure-text conversation: first turn stores [system, user1, assistant(text)];
-// second turn replays [system, user1, assistant(output_text item), user2].
-// This MUST match (HistoryLen=3) if the session resolver is to reuse the
-// upstream conversation and report cached tokens.
+// pure-text conversation: first turn binds [system, user1] as the client
+// history plus the synthesized assistant reply; second turn replays
+// [system, user1, assistant(output_text item), user2]. This MUST match
+// (chain tail = user1) so the resolver reuses the upstream conversation and
+// reports cached tokens; the echoed answer belongs to the increment.
 func TestDSHPureTextContinuation(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	t.Setenv("M365_CONVERSATION_CACHE", filepath.Join(t.TempDir(), "conversations.json"))
@@ -57,8 +61,8 @@ func TestDSHPureTextContinuation(t *testing.T) {
 	if resolved.ResetUpstream {
 		t.Fatalf("pure-text DSH continuation should reuse upstream; got ResetUpstream=%t matched=%q HistoryLen=%d", resolved.ResetUpstream, resolved.MatchedBy, resolved.HistoryLen)
 	}
-	if resolved.HistoryLen != 3 {
-		t.Fatalf("expected HistoryLen=3 (system+user1+assistant), got %d", resolved.HistoryLen)
+	if resolved.HistoryLen != 2 {
+		t.Fatalf("expected HistoryLen=2 (chain=system+user1; echoed answer is increment), got %d", resolved.HistoryLen)
 	}
 	t.Logf("OK: HistoryLen=%d matched=%s", resolved.HistoryLen, resolved.MatchedBy)
 }

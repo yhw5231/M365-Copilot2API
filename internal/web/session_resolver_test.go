@@ -383,7 +383,7 @@ func TestExplicitSessionUsesStrictPrefixForIncrementalSlice(t *testing.T) {
 	if resolved.HistoryLen != 2 {
 		t.Fatalf("expected two already-sent prefix messages, got %d", resolved.HistoryLen)
 	}
-	if resolved.MatchedBy != "explicit_prefix_2" {
+	if resolved.MatchedBy != "explicit_prefix_anchor_2" {
 		t.Fatalf("unexpected match mode %q", resolved.MatchedBy)
 	}
 }
@@ -575,8 +575,8 @@ func TestExplicitIncrementalCarriesStoredContext(t *testing.T) {
 		{Role: "assistant", Content: "第一轮回答"},
 		{Role: "user", Content: "第三轮问题"},
 	}})
-	if res3.MatchedBy != "explicit_prefix_3" {
-		t.Fatalf("expected explicit_prefix_3, got %q", res3.MatchedBy)
+	if res3.MatchedBy != "explicit_prefix_anchor_3" {
+		t.Fatalf("expected explicit_prefix_anchor_3, got %q", res3.MatchedBy)
 	}
 	if len(res3.StoredContext) != 0 {
 		t.Fatalf("prefix echo must not populate StoredContext, got %d", len(res3.StoredContext))
@@ -606,10 +606,10 @@ func TestDSHRuntimeContextSnapshotDrift(t *testing.T) {
 		[]oaiMsg{systemMsg, userMsg1, snapshotV1},
 		"第一轮回答")
 
-	// Second turn: the harness re-drifts the snapshot, so the stored history
-	// now diverges at the snapshot position. The prefix must still match the
-	// stored history (HistoryLen=4) and only the new user message is the
-	// increment; without the snapshot tolerance this is explicit_context_reset.
+	// Second turn: the harness re-drifts the snapshot. Snapshots are excluded
+	// from the anchor chain, so the drift is invisible to the matcher: the
+	// chain tail (system, user1) still aligns and the increment starts right
+	// after the last matched anchor — the echoed answer plus the new turn.
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	req2.Header.Set(sessionHeaderName, "dsh-snapshot-session")
 	res := sr.Resolve(req2, &oaiReq{Messages: []oaiMsg{
@@ -625,42 +625,24 @@ func TestDSHRuntimeContextSnapshotDrift(t *testing.T) {
 	if res.ResetUpstream {
 		t.Fatalf("snapshot drift must not reset the upstream conversation; matched=%q HistoryLen=%d", res.MatchedBy, res.HistoryLen)
 	}
-	if res.HistoryLen != 4 {
-		t.Fatalf("expected HistoryLen=4 (history plus drifted snapshot), got %d", res.HistoryLen)
+	if res.HistoryLen != 2 {
+		t.Fatalf("expected HistoryLen=2 (system+user1; snapshot and echo are increment), got %d", res.HistoryLen)
 	}
-	if res.MatchedBy != "explicit_prefix_4" {
-		t.Fatalf("expected explicit_prefix_4, got %q", res.MatchedBy)
+	if res.MatchedBy != "explicit_prefix_anchor_2" {
+		t.Fatalf("expected explicit_prefix_anchor_2, got %q", res.MatchedBy)
 	}
 	if res.ConversationID != "conv-snap" {
 		t.Fatalf("expected conversation reuse, got %q", res.ConversationID)
 	}
 }
 
-// TestMessagesEqualToleratesRuntimeSnapshotDrift verifies the message-level
-// equality rule: two messages whose role matches but whose text differs only by
-// the drifting runtime-context snapshot are session-equivalent.
-func TestMessagesEqualToleratesRuntimeSnapshotDrift(t *testing.T) {
-	snapshotA := oaiMsg{Role: "user", Content: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nPolicy A."}
-	snapshotB := oaiMsg{Role: "user", Content: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nPolicy B: approvals disabled."}
-	if !messagesEqual(snapshotA, snapshotB) {
-		t.Fatal("two runtime-context snapshots with drifting content must compare equal")
-	}
-	// A real conversation message must still differ from a snapshot.
-	if messagesEqual(snapshotA, oaiMsg{Role: "user", Content: "Current runtime context rocks"}) {
-		t.Fatal("a plain user message must not compare equal to a snapshot")
-	}
-	if messagesEqual(snapshotA, oaiMsg{Role: "assistant", Content: snapshotB.Content}) {
-		t.Fatal("role mismatch must still fail even when both sides look like snapshots")
-	}
-}
-
 // TestDSHToolRoundThinkingReplay reproduces the observed DSH tool-round replay
 // shape: the harness carries the previous turn's tool calls and wraps the
 // reasoning summary as an assistant output_text message with <thinking> tags.
-// bindConversation stores the assistant reply with Content=res.Reasoning when
-// the tool round produced no visible text (res.Text == ""), and messagesEqual
-// strips the <thinking> wrapper, so the stored history must still be a prefix
-// of the next request instead of a context reset.
+// The gateway stores that reply with Content=res.Reasoning, but the anchor
+// chain is built from CLIENT messages only — the replayed encoding of the
+// synthesized reply never participates in matching, so the chain tail
+// (system, user) still aligns instead of a context reset.
 func TestDSHToolRoundThinkingReplay(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()
@@ -692,41 +674,25 @@ func TestDSHToolRoundThinkingReplay(t *testing.T) {
 	if res.ResetUpstream {
 		t.Fatalf("thinking replay must not reset the upstream conversation; matched=%q HistoryLen=%d", res.MatchedBy, res.HistoryLen)
 	}
-	if res.HistoryLen != 3 {
-		t.Fatalf("expected HistoryLen=3 (system,user,thinking), got %d", res.HistoryLen)
+	if res.HistoryLen != 2 {
+		t.Fatalf("expected HistoryLen=2 (system,user; echo and new turn are increment), got %d", res.HistoryLen)
 	}
-	if res.MatchedBy != "explicit_prefix_3" {
-		t.Fatalf("expected explicit_prefix_3, got %q", res.MatchedBy)
-	}
-}
-
-// TestMessagesEqualStripsThinkingWrapper verifies that DSH's <thinking> wrapper
-// on replayed reasoning is stripped before comparing assistant messages, while
-// genuinely different assistant content still fails.
-func TestMessagesEqualStripsThinkingWrapper(t *testing.T) {
-	plain := oaiMsg{Role: "assistant", Content: "**Selecting next tool**\nIt seems like the next step is to use the create_goal tool."}
-	wrapped := oaiMsg{Role: "assistant", Content: []any{map[string]any{"type": "output_text", "text": "<thinking>**Selecting next tool**\nIt seems like the next step is to use the create_goal tool.</thinking>"}}}
-	if !messagesEqual(plain, wrapped) {
-		t.Fatal("assistant reasoning with <thinking> wrapper must compare equal to the stored plain reasoning")
-	}
-	if messagesEqual(plain, oaiMsg{Role: "assistant", Content: "**Different answer**\nSomething else entirely."}) {
-		t.Fatal("different assistant content must still fail")
+	if res.MatchedBy != "explicit_prefix_anchor_2" {
+		t.Fatalf("expected explicit_prefix_anchor_2, got %q", res.MatchedBy)
 	}
 }
 
-// TestSoftTailMatchKeepsUpstreamConversationAcrossToolRounds reproduces the
-// DSH /v1/responses tool-loop failure captured in the admin trace: the gateway
+// TestAnchorChainKeepsUpstreamConversationAcrossToolRounds reproduces the DSH
+// /v1/responses tool-loop failure captured in the admin trace: the gateway
 // synthesizes the final assistant turn of each bound round from its own
 // encoding (the router decision text "CALL_TOOL: ..." or the unfulfilled-claim
 // repair JSON envelope), while the client replays that same turn in its own
 // encoding (a final-answer output_text message and separate function_call
-// items). The strict tail compare treated every such request as
-// explicit_context_reset — a brand-new upstream conversation with the FULL
-// history re-sent — which drove cached_tokens to 0 for every request after the
-// first one of the task. The tail position must match leniently: everything
-// before it already proves the request extends this conversation, and the
-// upstream conversation holds its own version of that final turn.
-func TestSoftTailMatchKeepsUpstreamConversationAcrossToolRounds(t *testing.T) {
+// items). The anchor chain covers CLIENT messages only, so the synthesized
+// turn never participates in matching and the conversation continues with the
+// new tool results as the increment — instead of explicit_context_reset
+// (fresh upstream conversation, full replay, cached_tokens 0).
+func TestAnchorChainKeepsUpstreamConversationAcrossToolRounds(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -753,31 +719,30 @@ func TestSoftTailMatchKeepsUpstreamConversationAcrossToolRounds(t *testing.T) {
 	writeCall := func(id string) []map[string]any {
 		return []map[string]any{{
 			"id": id, "type": "function",
-			"function": map[string]any{"name": "write", "arguments": `{"file_path":"D:\NET\ai\test\p.html"}`},
+			"function": map[string]any{"name": "write", "arguments": `{"file_path":"D:/NET/ai/test/p.html"}`},
 		}}
 	}
 
 	// Round 2: the client replays the tool round in its own encoding — a
-	// function_call item (assistant ToolCalls message) plus the tool result. The
-	// stored tail ("CALL_TOOL: ...") can never byte-match this shape, but the
-	// upstream conversation already holds that turn, so the conversation must be
-	// reused and only the tool result sent as the increment.
+	// function_call item (assistant ToolCalls message) plus the tool result.
+	// The stored tail ("CALL_TOOL: ...") is not in the chain, so the echo is
+	// part of the increment and the upstream conversation is reused.
 	round2 := &oaiReq{Messages: []oaiMsg{
 		{Role: "system", Content: "You are a coding agent."},
 		{Role: "user", Content: "生成html，内容是svg绘制鹈鹕骑自行车3D动画"},
 		{Role: "user", Content: snapshot},
 		{Role: "assistant", ToolCalls: pwshCall("fc_aaa")},
-		{Role: "tool", ToolCallID: "fc_aaa", Content: "Path D:\\NET\\ai\\test"},
+		{Role: "tool", ToolCallID: "fc_aaa", Content: "Path D:/NET/ai/test"},
 	}}
 	res2 := sr.Resolve(req, round2)
 	if res2.IsNew || res2.ResetUpstream {
 		t.Fatalf("tool-round replay must keep the upstream conversation: %+v", res2)
 	}
-	if res2.HistoryLen != 4 {
-		t.Fatalf("expected HistoryLen=4 (system,user,snapshot,stored tail), got %d", res2.HistoryLen)
+	if res2.HistoryLen != 2 {
+		t.Fatalf("expected HistoryLen=2 (chain=system+question; echo and tool result are increment), got %d", res2.HistoryLen)
 	}
-	if res2.MatchedBy != "explicit_prefix_soft_4" {
-		t.Fatalf("expected explicit_prefix_soft_4, got %q", res2.MatchedBy)
+	if res2.MatchedBy != "explicit_prefix_anchor_2" {
+		t.Fatalf("expected explicit_prefix_anchor_2, got %q", res2.MatchedBy)
 	}
 	if res2.ConversationID != "conversation-dsh" {
 		t.Fatalf("tool-round replay must keep conversation-dsh, got %q", res2.ConversationID)
@@ -788,19 +753,20 @@ func TestSoftTailMatchKeepsUpstreamConversationAcrossToolRounds(t *testing.T) {
 	// reasoning-stream repair path).
 	round2Bind := *round2
 	sr.Bind("upstream-r2", "conversation-dsh", "account-a", &round2Bind,
-		`{"calls":[{"name":"write","arguments":{"file_path":"D:\NET\ai\test\p.html"}}]}`, req)
+		`{"calls":[{"name":"write","arguments":{"file_path":"D:/NET/ai/test/p.html"}}]}`, req)
 
 	// Round 3: the client replays the repaired turn as a final-answer
 	// output_text message plus the write function_call and its result. The
-	// stored tail (repair JSON) mismatches strictly at the tail again — the
-	// conversation must still be reused, with the write result as the increment.
+	// chain now covers round 2's client messages (including the pwsh call and
+	// its result), so the alignment reaches the tool result and the increment
+	// is the write call and its result.
 	round3 := &oaiReq{Messages: []oaiMsg{
 		{Role: "system", Content: "You are a coding agent."},
 		{Role: "user", Content: "生成html，内容是svg绘制鹈鹕骑自行车3D动画"},
 		{Role: "user", Content: snapshot},
 		{Role: "assistant", ToolCalls: pwshCall("fc_bbb")},
-		{Role: "tool", ToolCallID: "fc_bbb", Content: "Path D:\\NET\\ai\\test"},
-		{Role: "assistant", Content: []any{map[string]any{"type": "output_text", "text": "已生成 HTML 文件：D:\\NET\\ai\\test\\p.html"}}},
+		{Role: "tool", ToolCallID: "fc_bbb", Content: "Path D:/NET/ai/test"},
+		{Role: "assistant", Content: []any{map[string]any{"type": "output_text", "text": "已生成 HTML 文件：D:/NET/ai/test/p.html"}}},
 		{Role: "assistant", ToolCalls: writeCall("fc_ccc")},
 		{Role: "tool", ToolCallID: "fc_ccc", Content: "Created file"},
 	}}
@@ -808,15 +774,15 @@ func TestSoftTailMatchKeepsUpstreamConversationAcrossToolRounds(t *testing.T) {
 	if res3.IsNew || res3.ResetUpstream {
 		t.Fatalf("repaired-round replay must keep the upstream conversation: %+v", res3)
 	}
-	if res3.HistoryLen != 6 {
-		t.Fatalf("expected HistoryLen=6, got %d", res3.HistoryLen)
+	if res3.HistoryLen != 5 {
+		t.Fatalf("expected HistoryLen=5 (through the pwsh tool result), got %d", res3.HistoryLen)
 	}
-	if res3.MatchedBy != "explicit_prefix_soft_6" {
-		t.Fatalf("expected explicit_prefix_soft_6, got %q", res3.MatchedBy)
+	if res3.MatchedBy != "explicit_prefix_anchor_5" {
+		t.Fatalf("expected explicit_prefix_anchor_5, got %q", res3.MatchedBy)
 	}
 
-	// A genuinely compacted/replaced context still resets: the divergence sits
-	// BEFORE the stored tail (the question itself changed).
+	// A genuinely compacted/replaced context still resets: the chain's last
+	// anchor (the pwsh tool result) is nowhere in the request.
 	compacted := &oaiReq{Messages: []oaiMsg{
 		{Role: "system", Content: "Summary of the earlier conversation"},
 		{Role: "user", Content: "continue from the summary"},
@@ -826,32 +792,30 @@ func TestSoftTailMatchKeepsUpstreamConversationAcrossToolRounds(t *testing.T) {
 		t.Fatalf("compacted context must still reset the upstream conversation, matched=%q", res4.MatchedBy)
 	}
 
-	// A mid-prefix divergence (a different user turn) also still resets — the
-	// soft tail never overrides a hard mismatch earlier in the prefix.
+	// A different conversation also resets — its messages never carry the
+	// chain's tail anchor (different question, different tools and results).
 	diverged := &oaiReq{Messages: []oaiMsg{
 		{Role: "system", Content: "You are a coding agent."},
 		{Role: "user", Content: "完全不同的另一个问题"},
 		{Role: "user", Content: snapshot},
-		{Role: "assistant", ToolCalls: pwshCall("fc_ddd")},
-		{Role: "tool", ToolCallID: "fc_ddd", Content: "Path D:\\NET\\ai\\test"},
-		{Role: "assistant", ToolCalls: writeCall("fc_eee")},
-		{Role: "tool", ToolCallID: "fc_eee", Content: "Created file"},
+		{Role: "assistant", ToolCalls: []map[string]any{{
+			"id": "fc_ddd", "type": "function",
+			"function": map[string]any{"name": "glob", "arguments": `{"pattern":"*.md"}`},
+		}}},
+		{Role: "tool", ToolCallID: "fc_ddd", Content: "README.md"},
 	}}
 	res5 := sr.Resolve(req, diverged)
 	if !res5.ResetUpstream {
-		t.Fatalf("mid-prefix divergence must reset the upstream conversation, matched=%q", res5.MatchedBy)
+		t.Fatalf("a different conversation must reset the upstream conversation, matched=%q", res5.MatchedBy)
 	}
 }
 
-// TestCappedMirrorStillMatchesFullReplay reproduces the DSH long-agent-task
-// failure: bindConversation caps the mirrored history at
-// M365_SESSION_HISTORY_MAX messages, so once a session outgrows the cap the
-// stored mirror is the conversation TAIL while the client replays the FULL
-// history every turn. The strict prefix can never match (mirror[0] is a
-// mid-conversation message, request[0] is the system prompt), which judged
-// every request explicit_context_reset — a fresh upstream conversation, full
-// replay, cached_tokens 0. The resolver must align the capped tail against the
-// end of the submitted context and keep the upstream conversation.
+// TestCappedMirrorStillMatchesFullReplay pins the long-agent-task contract:
+// the mirrored text history is capped at M365_SESSION_HISTORY_MAX messages,
+// but matching runs on the anchor chain, which is independent of that cap. A
+// client replaying the full history of a capped session must still continue
+// the upstream conversation instead of being judged explicit_context_reset
+// (full replay, cached_tokens 0).
 func TestCappedMirrorStillMatchesFullReplay(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	t.Setenv("M365_SESSION_HISTORY_MAX", "8")
@@ -895,11 +859,11 @@ func TestCappedMirrorStillMatchesFullReplay(t *testing.T) {
 	if res.IsNew || res.ResetUpstream {
 		t.Fatalf("capped mirror must keep the upstream conversation: %+v", res)
 	}
-	if res.MatchedBy != "explicit_prefix_capped_11" {
-		t.Fatalf("expected explicit_prefix_capped_11, got %q", res.MatchedBy)
+	if res.MatchedBy != "explicit_prefix_anchor_10" {
+		t.Fatalf("expected explicit_prefix_anchor_10, got %q", res.MatchedBy)
 	}
-	if res.HistoryLen != 11 {
-		t.Fatalf("expected HistoryLen=11 (increment = the new turn), got %d", res.HistoryLen)
+	if res.HistoryLen != 10 {
+		t.Fatalf("expected HistoryLen=10 (increment = echoed answer + the new turn), got %d", res.HistoryLen)
 	}
 	if res.LastInputTokens != 1234 {
 		t.Fatalf("capped match must carry the cache base, got %d", res.LastInputTokens)
@@ -942,15 +906,14 @@ func TestCappedMirrorToolRoundEncoding(t *testing.T) {
 	if res.IsNew || res.ResetUpstream {
 		t.Fatalf("capped tool round must keep the upstream conversation: %+v", res)
 	}
-	// Mirror = last 8 of [system, u1..u9, CALL_TOOL-tail] = [u6,a6,u7,a7,u8,a8,u9,CALL_TOOL].
-	// In round2 the anchor u6 sits at index 12; consuming the 8 mirror entries
-	// (CALL_TOOL soft-matches the client's <thinking> assistant at index 19)
-	// lands at j=20, so the increment is the tool call + result + user turn.
-	if res.MatchedBy != "explicit_prefix_capped_20" {
-		t.Fatalf("expected explicit_prefix_capped_20, got %q", res.MatchedBy)
+	// The chain covers round 1's 19 client messages (snapshot-free here), so
+	// the tail anchor (a9) aligns at index 18 and the increment starts right
+	// after it: the echoed thinking + tool call + tool result + the new turn.
+	if res.MatchedBy != "explicit_prefix_anchor_19" {
+		t.Fatalf("expected explicit_prefix_anchor_19, got %q", res.MatchedBy)
 	}
-	if res.HistoryLen != 20 {
-		t.Fatalf("expected HistoryLen=20 (increment = tool call + result + user), got %d", res.HistoryLen)
+	if res.HistoryLen != 19 {
+		t.Fatalf("expected HistoryLen=19 (increment = echo + tool call + result + user), got %d", res.HistoryLen)
 	}
 }
 

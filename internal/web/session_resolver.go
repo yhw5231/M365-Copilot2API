@@ -36,6 +36,11 @@ type sessionBinding struct {
 	// session. It survives context compaction and account switches, so a long
 	// task never restarts from scratch.
 	Task *taskLedger `json:"task,omitempty"`
+	// AnchorChain is the ordered list of per-message anchor hashes for the
+	// stored history (one anchor per message, aligned with ContextHistory).
+	// Session continuation is judged by matching the chain's TAIL against the
+	// client's request — never by re-comparing full message text.
+	AnchorChain []string `json:"anchorChain,omitempty"`
 	// LastInputTokens 记录该会话最近一次成功对话轮的完整逻辑输入 token 数
 	// （与下游 usage 的 prompt_tokens 同一口径）。下一轮请求命中本会话时，
 	// 缓存差额法直接以它为基数：cached = min(上次值, 本次值)，
@@ -294,30 +299,15 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 				MatchedBy:      "explicit",
 				IsNew:          false,
 			}
-			if n := contextPrefixLen(sess.ContextHistory, msgs); n > 0 {
+			// Anchor-chain tail matching: the stored chain records the anchor
+			// hash of every client message the upstream conversation digested.
+			// The request extends this conversation when the chain's tail
+			// anchors appear — in order — inside the client's context, just
+			// before the new turn. No full-text comparison is involved.
+			if n := anchorChainIncrement(sess.AnchorChain, msgs); n > 0 {
 				result.HistoryLen = n
 				result.LastInputTokens = sess.LastInputTokens
-				if n <= len(msgs) && !messagesEqual(sess.ContextHistory[n-1], msgs[n-1]) {
-					result.MatchedBy = fmt.Sprintf("explicit_prefix_soft_%d", n)
-				} else {
-					result.MatchedBy = fmt.Sprintf("explicit_prefix_%d", n)
-				}
-				return result
-			}
-			// The mirrored history is capped (cloneMessages keeps only the last
-			// M365_SESSION_HISTORY_MAX messages). A long agent session outgrows
-			// the cap: the stored mirror is the conversation TAIL while the
-			// client replays the FULL history every turn, so the strict prefix
-			// can never match and every request degenerates into
-			// explicit_context_reset — a fresh upstream conversation, full
-			// replay, cache 0. Align the stored tail against the end of the
-			// submitted context instead: when everything the mirror holds
-			// re-appears verbatim just before the new turn, the request extends
-			// this conversation.
-			if n := contextSuffixAlignLen(sess.ContextHistory, msgs); n > 0 {
-				result.HistoryLen = n
-				result.LastInputTokens = sess.LastInputTokens
-				result.MatchedBy = fmt.Sprintf("explicit_prefix_capped_%d", n)
+				result.MatchedBy = fmt.Sprintf("explicit_prefix_anchor_%d", n)
 				return result
 			}
 			// A request containing only the current turn is a normal incremental
@@ -354,206 +344,123 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	return ResolveResult{IsNew: true}
 }
 
-// contextPrefixLen returns the index into msgs where the increment starts:
-// every message before it is already held by the upstream conversation
-// (matched, or a runtime-context snapshot treated as digested metadata).
-// Matching walks both sides with a two-pointer sweep and tolerates client-side
-// metadata drift:
+// msgAnchor computes the stable content identity of one session message: a
+// hash over role, normalized text content and tool-call fingerprints. Two
+// encodings of the same conversation message (stored mirror vs client replay)
+// produce the same anchor, while any content change produces a different one.
+// Tool-call IDs are excluded: clients regenerate them on every replay.
+func msgAnchor(m oaiMsg) string {
+	h := sha256.Sum256([]byte(m.Role + "\x1f" + contentToString(m.Content) + "\x1f" + toolCallsAnchorFingerprint(m.ToolCalls)))
+	return hex.EncodeToString(h[:12])
+}
+
+func toolCallsAnchorFingerprint(calls []map[string]any) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(calls))
+	for _, tc := range calls {
+		fn, _ := tc["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		args, _ := fn["arguments"].(string)
+		parts = append(parts, name+"\x1e"+args)
+	}
+	return strings.Join(parts, "\x1d")
+}
+
+// anchorTracked reports whether a message participates in anchor-chain
+// matching. Runtime-context snapshots are excluded: DSH regenerates that
+// message every turn (the content drifts and the position shifts), so it is
+// session metadata rather than conversation content — a snapshot change must
+// never look like a context reset.
+func anchorTracked(m oaiMsg) bool {
+	return !isRuntimeContextSnapshot(contentToString(m.Content))
+}
+
+// maxAnchorChain bounds the stored anchor sequence. Anchors are fixed-size
+// hashes, so this bound is far above the message-count cap of the text mirror
+// and costs only a few kilobytes per session.
+const maxAnchorChain = 2048
+
+// buildAnchorChain extracts the anchor sequence of a client message list. The
+// chain records what the upstream conversation digested from the CLIENT side;
+// the gateway-synthesized assistant reply is never part of it (the client
+// replays that turn in its own encoding, so its anchor would never match).
+func buildAnchorChain(msgs []oaiMsg) []string {
+	chain := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		if !anchorTracked(m) {
+			continue
+		}
+		chain = append(chain, msgAnchor(m))
+	}
+	if len(chain) > maxAnchorChain {
+		chain = append([]string(nil), chain[len(chain)-maxAnchorChain:]...)
+	}
+	return chain
+}
+
+// anchorChainIncrement returns the index into msgs where the increment starts
+// when the session's anchor chain tail-aligns with the request, and 0 when it
+// does not (the caller then treats a multi-message request as a compacted /
+// replaced context and a single-message one as incremental reuse).
 //
-//   - DSH regenerates its runtime-context snapshot every turn, so snapshot
-//     content drifts (messagesEqual already equates snapshot-vs-snapshot), and
-//     snapshots may also appear, disappear, or shift position between turns —
-//     e.g. re-injected after a client-side compaction. When a pair mismatches
-//     and either side is a snapshot, the sweep skips it instead of declaring
-//     divergence: a client metadata change must never reset the upstream
-//     conversation. Only a genuine conversation divergence (or a compacted /
-//     shrunk context) does.
-//   - The LAST stored assistant turn is gateway-synthesized and may be replayed
-//     by the client in a different encoding (soft tail): an assistant/assistant
-//     mismatch at the final stored position still counts as held.
+// Alignment semantics — no full-text comparison anywhere:
 //
-// Returns 0 when the histories genuinely diverge before the stored history is
-// consumed; the caller then treats a multi-message request as a context reset
-// (new upstream conversation, cache 0) and a single-message one as incremental
-// reuse.
-func contextPrefixLen(hist, msgs []oaiMsg) int {
-	if len(hist) == 0 {
+//   - The chain's LAST anchor is the last client message of the previous
+//     round ("最后一条消息"). The request extends this conversation when that
+//     anchor appears in the request's own anchor sequence.
+//   - From each occurrence the match extends backwards through both sequences
+//     while the anchors agree; the occurrence with the longest agreement wins
+//     (scanning from the end prefers the most recent placement). A shorter
+//     agreement means the client compacted older history away while keeping
+//     the recent tail — still a continuation of the same upstream
+//     conversation ("是否压缩过" is answered by the chain, not by a reset).
+//   - The increment ("增量有哪些") is everything after the matched anchor's
+//     request position: the client's echo of the last answer plus the new
+//     turn. The upstream conversation already holds its own encoding of the
+//     answer, so re-including the echo is harmless and keeps the tool results
+//     adjacent to the tool call they answer.
+func anchorChainIncrement(chain []string, msgs []oaiMsg) int {
+	if len(chain) == 0 {
 		return 0
 	}
-	i, j := 0, 0
-	for i < len(hist) && j < len(msgs) {
-		if messagesEqual(hist[i], msgs[j]) {
-			i++
-			j++
+	type raEntry struct {
+		anchor string
+		index  int
+	}
+	ra := make([]raEntry, 0, len(msgs))
+	for i, m := range msgs {
+		if !anchorTracked(m) {
 			continue
 		}
-		if isRuntimeContextSnapshot(contentToString(hist[i].Content)) {
-			// 存储侧的快照早已被上游持有，客户端这轮没带它也无需重发。
-			i++
-			continue
-		}
-		if isRuntimeContextSnapshot(contentToString(msgs[j].Content)) {
-			// 客户端新生成的快照是会话元数据而非对话内容，视为已消化，
-			// 不计入历史分叉。
-			j++
-			continue
-		}
-		if i == len(hist)-1 && hist[i].Role == "assistant" && msgs[j].Role == "assistant" {
-			// Soft tail match: the LAST stored message is the gateway-synthesized
-			// assistant turn, and the gateway's stored encoding of that turn is not
-			// guaranteed to match the encoding the client replays (reasoning
-			// transcript wrapped in <thinking>, router decision text, repair JSON
-			// envelope...). The turn is semantically present in the upstream
-			// conversation, so treat it as matched and keep the conversation.
-			i++
-			j++
-			break
-		}
+		ra = append(ra, raEntry{anchor: msgAnchor(m), index: i})
+	}
+	if len(ra) == 0 {
 		return 0
 	}
-	if i < len(hist) {
-		// msgs ran out before the whole stored history was consumed: the client
-		// submitted less than the upstream holds (compaction / shrink).
-		return 0
+	last := chain[len(chain)-1]
+	bestStart, bestK := 0, 0
+	// Require at least two consecutive chain anchors to agree (or the whole
+	// chain when it holds a single message): a lone matching anchor is not
+	// enough evidence that the request continues this conversation.
+	minK := 2
+	if len(chain) < minK {
+		minK = len(chain)
 	}
-	return j
-}
-
-// contextSuffixAlignLen matches a TRUNCATED stored mirror against the tail of
-// the submitted context. bindConversation keeps only the last
-// M365_SESSION_HISTORY_MAX messages (cloneMessages cap); when a session grows
-// past that cap the mirror no longer contains the conversation head, so
-// contextPrefixLen can never match a full-history client and every turn looks
-// like a context reset (fresh upstream conversation, cache 0).
-//
-// The mirror is the conversation tail and the upstream conversation holds
-// exactly what the mirror holds (both were persisted by the same completed
-// round), so the mirror must appear VERBATIM at the END of the submitted
-// context, immediately before the new turn. The alignment starts at the first
-// mirror message: when it surfaces in the client context, every mirror
-// position must match one-to-one through the end of both sides. Snapshot
-// drift and the soft assistant tail follow the same tolerance rules as the
-// prefix sweep. A compacted client (mirror message never re-appears, or the
-// alignment breaks mid-way) returns 0 and the caller resets correctly.
-func contextSuffixAlignLen(hist, msgs []oaiMsg) int {
-	if len(hist) == 0 || len(msgs) <= len(hist) {
-		// The mirror fully fits in the request: either the prefix sweep
-		// already handled it, or the client truncated harder than the mirror
-		// (a reset is the honest answer).
-		return 0
-	}
-	anchor := hist[0]
-	for start := 0; start+len(hist) <= len(msgs); start++ {
-		if !messagesEqual(anchor, msgs[start]) {
+	for j := len(ra) - 1; j >= 0; j-- {
+		if ra[j].anchor != last {
 			continue
 		}
-		i, j := 1, start+1
-		for i < len(hist) && j < len(msgs) {
-			if messagesEqual(hist[i], msgs[j]) {
-				i++
-				j++
-				continue
-			}
-			if isRuntimeContextSnapshot(contentToString(hist[i].Content)) {
-				i++
-				continue
-			}
-			if isRuntimeContextSnapshot(contentToString(msgs[j].Content)) {
-				j++
-				continue
-			}
-			// Soft assistant tail: the gateway-synthesized final assistant turn
-			// may be replayed by the client in a different encoding.
-			if i == len(hist)-1 && hist[i].Role == "assistant" && msgs[j].Role == "assistant" {
-				i++
-				j++
-				break
-			}
-			// Mid-alignment divergence: this anchor is not the real mirror
-			// position (or the context genuinely diverged) — try the next one.
-			break
+		k := 0
+		for k < len(chain) && j-k >= 0 && chain[len(chain)-1-k] == ra[j-k].anchor {
+			k++
 		}
-		if i >= len(hist) {
-			// The whole mirror was consumed inside the request; the increment
-			// starts at j (the new turn's messages).
-			return j
+		if k >= minK && k > bestK {
+			bestK, bestStart = k, ra[j].index+1
 		}
 	}
-	return 0
-}
-
-// stripThinkingWrapper removes the <thinking>...</thinking> wrapper that DSH
-// tool rounds wrap around the replayed reasoning summary. The gateway stores
-// the raw reasoning transcript (bindConversation falls back to res.Reasoning
-// when the tool round produced no visible text), so the wrapper must be
-// stripped on both sides before comparison. Only strips when the wrapper is
-// present; a plain text message is returned unchanged.
-func stripThinkingWrapper(text string) string {
-	t := strings.TrimSpace(text)
-	if strings.HasPrefix(t, "<thinking>") {
-		t = strings.TrimPrefix(t, "<thinking>")
-		if idx := strings.Index(t, "</thinking>"); idx >= 0 {
-			t = t[:idx]
-		}
-		return strings.TrimSpace(t)
-	}
-	return text
-}
-
-// messagesEqual 鍒ゅ畾涓ゆ潯娑堟伅鍦ㄤ細璇濋敭鎰忎箟涓婄瓑浠凤細role 涓庢枃鏈唴瀹逛竴鑷淬€?
-// 蹇界暐 tool_calls 鐨?ID 缁嗚妭锛堜細璇濋敭鍙叧蹇冨唴瀹瑰浣曡妯″瀷娑堝寲锛夈€?
-func messagesEqual(a, b oaiMsg) bool {
-	if a.Role != b.Role {
-		return false
-	}
-	ta := contentToString(a.Content)
-	tb := contentToString(b.Content)
-	if ta != tb {
-		// DSH 在每次请求中都会重新生成"运行时上下文快照"消息（Current
-		// runtime context ... supersedes earlier runtime-context snapshots），
-		// 其内容随会话推进漂移。快照是会话元数据而非对话内容，前缀匹配时
-		// 对两条同为快照的消息视为等价；否则快照一变化，整个历史前缀被
-		// 判定为上下文重置（explicit_context_reset），上游会话每次重建、
-		// 全量重发，cached_tokens 恒为 0。
-		// DSH 工具轮还会把上一轮的推理摘要回放为 assistant output_text
-		// 消息，并用 <thinking> 标签包装；网关 bindConversation 存储该轮
-		// assistant 回复时 res.Text 为空（模型只输出了推理和工具调用），
-		// 因此用 res.Reasoning 作为存储内容。这里剥离 <thinking> 包装后
-		// 比较，使存储的推理文本与回放的思考文本视为等价。
-		if !isRuntimeContextSnapshot(ta) || !isRuntimeContextSnapshot(tb) {
-			if a.Role != "assistant" || stripThinkingWrapper(ta) != stripThinkingWrapper(tb) {
-				return false
-			}
-		}
-	}
-	if (a.ToolCalls == nil) != (b.ToolCalls == nil) {
-		return false
-	}
-	for i := range a.ToolCalls {
-		if i >= len(b.ToolCalls) {
-			return false
-		}
-		if toolCallEqual(a.ToolCalls[i], b.ToolCalls[i]) {
-			continue
-		}
-		return false
-	}
-	return len(a.ToolCalls) == len(b.ToolCalls)
-}
-
-// toolCallEqual 比较 name 与 arguments，忽略 ID：同一段工具调用重放时
-// ID 由客户端重新生成，不应影响会话键。
-func toolCallEqual(x, y map[string]any) bool {
-	xFunc, _ := x["function"].(map[string]any)
-	yFunc, _ := y["function"].(map[string]any)
-	xn, _ := xFunc["name"].(string)
-	yn, _ := yFunc["name"].(string)
-	if xn != yn {
-		return false
-	}
-	xa, _ := xFunc["arguments"].(string)
-	ya, _ := yFunc["arguments"].(string)
-	return xa == ya
+	return bestStart
 }
 
 func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, body *oaiReq, assistantText string, r *http.Request) {
@@ -570,6 +477,16 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 	sr.evictLocked()
 
 	now := time.Now().UTC()
+	// The anchor chain is built from the CLIENT's own message list: these are
+	// exactly the messages the client will replay (byte-identically) on the
+	// next turn. The gateway-synthesized assistant reply must never enter the
+	// chain — the client replays that turn in its own encoding, so its anchor
+	// could never match.
+	chainSrc := body.ClientMessages
+	if len(chainSrc) == 0 {
+		chainSrc = withoutServiceInjected(body.Messages)
+	}
+	chain := buildAnchorChain(chainSrc)
 	// Remove only known-bad assistant workspace/tool-availability claims before
 	// calculating fingerprints or persisting history. User, system, developer,
 	// and tool messages are preserved even when they discuss /mnt/data,
@@ -609,6 +526,7 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 			sess.IPFingerprint = clientIPFingerprint(r)
 			sess.ContextFinger = contextFingerprint(history)
 			sess.ContextHistory = history
+			sess.AnchorChain = chain
 			sr.sessions[sessionID] = sess
 			sr.reindexLocked(sess)
 			sr.persist.markDirty()
@@ -628,6 +546,7 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 				sess.IPFingerprint = clientIPFingerprint(r)
 				sess.ContextFinger = contextFingerprint(history)
 				sess.ContextHistory = history
+				sess.AnchorChain = chain
 				sr.sessions[sid] = sess
 				sr.reindexLocked(sess)
 				sr.persist.markDirty()
@@ -649,6 +568,7 @@ func (sr *sessionResolver) BindWithTask(sessionID, conversationID, accountID str
 		UserField:      body.User,
 		ContextFinger:  contextFingerprint(history),
 		ContextHistory: history,
+		AnchorChain:    chain,
 		Task:           task,
 	}
 
