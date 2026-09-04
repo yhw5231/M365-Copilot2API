@@ -2772,6 +2772,17 @@ async function toggleTraceDetail(id,mode='current'){
     }
   }catch(e){showNotice(e.message,'error');}
 }
+function fullTraceCopyText(rec){
+  const sec=(label,desc,value)=>`\n\n【${label}】${desc}\n${JSON.stringify(value,null,2)||'—'}`;
+  let out=`端点：${rec.endpoint||'-'} · 方法：${rec.method||'-'} · 状态：${rec.statusCode||'-'} · 账户：${rec.accountEmail||'-'} · 密钥：${rec.apiKeyPrefix||'-'}`;
+  if(rec.error)out+=`\n错误：${rec.error}`;
+  if(rec.upstreamError)out+=`\n上游错误：${rec.upstreamError}`;
+  out+=sec('下游请求','客户端发往本网关的请求：',rec.downstreamReq)
+      +sec('上游请求','网关转发给上游服务的请求：',rec.upstreamReq)
+      +sec('上游响应','上游服务返回的原始响应：',rec.upstreamResp)
+      +sec('下游响应','网关最终返回给客户端的响应：',rec.downstreamResp);
+  return out;
+}
 async function insertTraceDetailRow(id){
   const anchor=document.getElementById('tr-'+id);
   if(!anchor)return false;
@@ -2799,6 +2810,7 @@ async function insertTraceDetailRow(id){
         <details${o(1)?' open':''}><summary><span>下游响应</span><button type="button" class="btn btn-sm" data-copy-trace="downstreamResp">复制</button></summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
       </div>
       <div data-trace-panel="full" hidden>
+        <div style="display:flex;justify-content:flex-end;margin:0 0 8px"><button type="button" class="btn btn-sm" data-copy-trace-all title="复制完整请求全部内容。四个 JSON 段落分别为：下游请求=客户端发往本网关的请求；上游请求=网关转发给上游服务的请求；上游响应=上游服务返回的原始响应；下游响应=网关最终返回给客户端的响应">全部复制</button></div>
         <details${o(2)?' open':''}><summary><span>下游请求</span><button type="button" class="btn btn-sm" data-copy-trace="downstreamReq">复制</button></summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
         <details${o(3)?' open':''}><summary><span>上游请求</span><button type="button" class="btn btn-sm" data-copy-trace="upstreamReq">复制</button></summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
         <details${o(4)?' open':''}><summary><span>上游响应</span><button type="button" class="btn btn-sm" data-copy-trace="upstreamResp">复制</button></summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
@@ -2824,6 +2836,19 @@ async function insertTraceDetailRow(id){
       event.stopPropagation();
       const value=rec[button.dataset.copyTrace];
       const text=JSON.stringify(value,null,2)||'—';
+      try{
+        await navigator.clipboard.writeText(text);
+        showNotice('已复制','success');
+      }catch(e){
+        showNotice('复制失败','error');
+      }
+    });
+  });
+  tr.querySelectorAll('[data-copy-trace-all]').forEach(button=>{
+    button.addEventListener('click',async event=>{
+      event.preventDefault();
+      event.stopPropagation();
+      const text=fullTraceCopyText(rec);
       try{
         await navigator.clipboard.writeText(text);
         showNotice('已复制','success');
