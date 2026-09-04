@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -839,5 +840,145 @@ func TestSoftTailMatchKeepsUpstreamConversationAcrossToolRounds(t *testing.T) {
 	res5 := sr.Resolve(req, diverged)
 	if !res5.ResetUpstream {
 		t.Fatalf("mid-prefix divergence must reset the upstream conversation, matched=%q", res5.MatchedBy)
+	}
+}
+
+// TestCappedMirrorStillMatchesFullReplay reproduces the DSH long-agent-task
+// failure: bindConversation caps the mirrored history at
+// M365_SESSION_HISTORY_MAX messages, so once a session outgrows the cap the
+// stored mirror is the conversation TAIL while the client replays the FULL
+// history every turn. The strict prefix can never match (mirror[0] is a
+// mid-conversation message, request[0] is the system prompt), which judged
+// every request explicit_context_reset — a fresh upstream conversation, full
+// replay, cached_tokens 0. The resolver must align the capped tail against the
+// end of the submitted context and keep the upstream conversation.
+func TestCappedMirrorStillMatchesFullReplay(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	t.Setenv("M365_SESSION_HISTORY_MAX", "8")
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(sessionHeaderName, "capped-mirror-session")
+
+	mk := func(i int) oaiMsg {
+		if i%2 == 0 {
+			return oaiMsg{Role: "user", Content: fmt.Sprintf("user turn %d with unique payload %d", i, i*i)}
+		}
+		return oaiMsg{Role: "assistant", Content: fmt.Sprintf("assistant turn %d outcome %d", i, i*3)}
+	}
+	// Round 1: 10 client messages; the bind appends the synthesized assistant
+	// turn (11 total) and the cap keeps only the last 8.
+	round1 := make([]oaiMsg, 0, 11)
+	round1 = append(round1, oaiMsg{Role: "system", Content: "You are a coding agent."})
+	for i := 1; i < 10; i++ {
+		round1 = append(round1, mk(i))
+	}
+	bindBody := &oaiReq{Messages: round1}
+	sr.Bind("upstream-cap", "conv-cap", "acc-cap", bindBody, "FINAL ANSWER TEXT", req)
+	sr.RecordSessionInputTokens("conv-cap", 1234)
+
+	sess, ok := sr.GetConversation("conv-cap")
+	if !ok {
+		t.Fatal("session binding missing")
+	}
+	if len(sess.ContextHistory) != 8 {
+		t.Fatalf("precondition: mirror must be capped to 8, got %d", len(sess.ContextHistory))
+	}
+
+	// Round 2: full replay + the client's echo of the final answer + the new
+	// turn. The prefix fails (mirror starts mid-conversation); the capped
+	// alignment must match and report the increment start.
+	round2 := append(append([]oaiMsg(nil), round1...),
+		oaiMsg{Role: "assistant", Content: "FINAL ANSWER TEXT"},
+		oaiMsg{Role: "user", Content: "next question"},
+	)
+	res := sr.Resolve(req, &oaiReq{Messages: round2})
+	if res.IsNew || res.ResetUpstream {
+		t.Fatalf("capped mirror must keep the upstream conversation: %+v", res)
+	}
+	if res.MatchedBy != "explicit_prefix_capped_11" {
+		t.Fatalf("expected explicit_prefix_capped_11, got %q", res.MatchedBy)
+	}
+	if res.HistoryLen != 11 {
+		t.Fatalf("expected HistoryLen=11 (increment = the new turn), got %d", res.HistoryLen)
+	}
+	if res.LastInputTokens != 1234 {
+		t.Fatalf("capped match must carry the cache base, got %d", res.LastInputTokens)
+	}
+	if res.ConversationID != "conv-cap" {
+		t.Fatalf("expected conversation reuse, got %q", res.ConversationID)
+	}
+}
+
+// TestCappedMirrorToolRoundEncoding verifies the capped alignment on a tool
+// round: the stored tail is the gateway-synthesized "CALL_TOOL: ..." turn
+// while the client replays a <thinking>-wrapped summary plus a separate
+// function_call item — the increment starts at the tool call.
+func TestCappedMirrorToolRoundEncoding(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	t.Setenv("M365_SESSION_HISTORY_MAX", "8")
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(sessionHeaderName, "capped-mirror-tool")
+
+	round1 := make([]oaiMsg, 0, 11)
+	round1 = append(round1, oaiMsg{Role: "system", Content: "You are a coding agent."})
+	for i := 1; i < 10; i++ {
+		round1 = append(round1, oaiMsg{Role: "user", Content: fmt.Sprintf("u%d payload-%d", i, i)}, oaiMsg{Role: "assistant", Content: fmt.Sprintf("a%d reply-%d", i, i)})
+	}
+	bindBody := &oaiReq{Messages: round1}
+	sr.Bind("upstream-cap-tool", "conv-cap-tool", "acc-cap", bindBody,
+		`CALL_TOOL: pwsh({"command":"Get-Location"})`, req)
+
+	round2 := append(append([]oaiMsg(nil), round1...),
+		oaiMsg{Role: "assistant", Content: "<thinking>check cwd</thinking>"},
+		oaiMsg{Role: "assistant", ToolCalls: []map[string]any{{
+			"id": "fc_x1", "type": "function",
+			"function": map[string]any{"name": "pwsh", "arguments": `{"command":"Get-Location"}`},
+		}}},
+		oaiMsg{Role: "tool", ToolCallID: "fc_x1", Content: "Path D:\\proj"},
+		oaiMsg{Role: "user", Content: "continue"},
+	)
+	res := sr.Resolve(req, &oaiReq{Messages: round2})
+	if res.IsNew || res.ResetUpstream {
+		t.Fatalf("capped tool round must keep the upstream conversation: %+v", res)
+	}
+	// Mirror = last 8 of [system, u1..u9, CALL_TOOL-tail] = [u6,a6,u7,a7,u8,a8,u9,CALL_TOOL].
+	// In round2 the anchor u6 sits at index 12; consuming the 8 mirror entries
+	// (CALL_TOOL soft-matches the client's <thinking> assistant at index 19)
+	// lands at j=20, so the increment is the tool call + result + user turn.
+	if res.MatchedBy != "explicit_prefix_capped_20" {
+		t.Fatalf("expected explicit_prefix_capped_20, got %q", res.MatchedBy)
+	}
+	if res.HistoryLen != 20 {
+		t.Fatalf("expected HistoryLen=20 (increment = tool call + result + user), got %d", res.HistoryLen)
+	}
+}
+
+// TestCappedMirrorStillResetsOnDivergence pins the load-bearing counterpart:
+// a longer request whose context genuinely diverges must still reset even
+// though the cap-alignment scan runs.
+func TestCappedMirrorStillResetsOnDivergence(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	t.Setenv("M365_SESSION_HISTORY_MAX", "8")
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(sessionHeaderName, "capped-mirror-div")
+
+	round1 := make([]oaiMsg, 0, 11)
+	round1 = append(round1, oaiMsg{Role: "system", Content: "You are a coding agent."})
+	for i := 1; i < 10; i++ {
+		round1 = append(round1, oaiMsg{Role: "user", Content: fmt.Sprintf("u%d payload-%d", i, i)}, oaiMsg{Role: "assistant", Content: fmt.Sprintf("a%d reply-%d", i, i)})
+	}
+	sr.Bind("upstream-cap-div", "conv-cap-div", "acc-cap", &oaiReq{Messages: round1}, "FINAL ANSWER", req)
+
+	// A different conversation sharing only the system prompt: longer than the
+	// mirror, but the tail alignment must not match.
+	other := []oaiMsg{round1[0]}
+	for i := 0; i < 12; i++ {
+		other = append(other, oaiMsg{Role: "user", Content: fmt.Sprintf("different task message %d", i)})
+	}
+	res := sr.Resolve(req, &oaiReq{Messages: other})
+	if !res.ResetUpstream {
+		t.Fatalf("divergent longer context must reset, matched=%q", res.MatchedBy)
 	}
 }

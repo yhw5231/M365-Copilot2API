@@ -304,6 +304,22 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 				}
 				return result
 			}
+			// The mirrored history is capped (cloneMessages keeps only the last
+			// M365_SESSION_HISTORY_MAX messages). A long agent session outgrows
+			// the cap: the stored mirror is the conversation TAIL while the
+			// client replays the FULL history every turn, so the strict prefix
+			// can never match and every request degenerates into
+			// explicit_context_reset — a fresh upstream conversation, full
+			// replay, cache 0. Align the stored tail against the end of the
+			// submitted context instead: when everything the mirror holds
+			// re-appears verbatim just before the new turn, the request extends
+			// this conversation.
+			if n := contextSuffixAlignLen(sess.ContextHistory, msgs); n > 0 {
+				result.HistoryLen = n
+				result.LastInputTokens = sess.LastInputTokens
+				result.MatchedBy = fmt.Sprintf("explicit_prefix_capped_%d", n)
+				return result
+			}
 			// A request containing only the current turn is a normal incremental
 			// client mode, not evidence that the client compacted its context.
 			if len(msgs) <= 1 {
@@ -401,6 +417,69 @@ func contextPrefixLen(hist, msgs []oaiMsg) int {
 		return 0
 	}
 	return j
+}
+
+// contextSuffixAlignLen matches a TRUNCATED stored mirror against the tail of
+// the submitted context. bindConversation keeps only the last
+// M365_SESSION_HISTORY_MAX messages (cloneMessages cap); when a session grows
+// past that cap the mirror no longer contains the conversation head, so
+// contextPrefixLen can never match a full-history client and every turn looks
+// like a context reset (fresh upstream conversation, cache 0).
+//
+// The mirror is the conversation tail and the upstream conversation holds
+// exactly what the mirror holds (both were persisted by the same completed
+// round), so the mirror must appear VERBATIM at the END of the submitted
+// context, immediately before the new turn. The alignment starts at the first
+// mirror message: when it surfaces in the client context, every mirror
+// position must match one-to-one through the end of both sides. Snapshot
+// drift and the soft assistant tail follow the same tolerance rules as the
+// prefix sweep. A compacted client (mirror message never re-appears, or the
+// alignment breaks mid-way) returns 0 and the caller resets correctly.
+func contextSuffixAlignLen(hist, msgs []oaiMsg) int {
+	if len(hist) == 0 || len(msgs) <= len(hist) {
+		// The mirror fully fits in the request: either the prefix sweep
+		// already handled it, or the client truncated harder than the mirror
+		// (a reset is the honest answer).
+		return 0
+	}
+	anchor := hist[0]
+	for start := 0; start+len(hist) <= len(msgs); start++ {
+		if !messagesEqual(anchor, msgs[start]) {
+			continue
+		}
+		i, j := 1, start+1
+		for i < len(hist) && j < len(msgs) {
+			if messagesEqual(hist[i], msgs[j]) {
+				i++
+				j++
+				continue
+			}
+			if isRuntimeContextSnapshot(contentToString(hist[i].Content)) {
+				i++
+				continue
+			}
+			if isRuntimeContextSnapshot(contentToString(msgs[j].Content)) {
+				j++
+				continue
+			}
+			// Soft assistant tail: the gateway-synthesized final assistant turn
+			// may be replayed by the client in a different encoding.
+			if i == len(hist)-1 && hist[i].Role == "assistant" && msgs[j].Role == "assistant" {
+				i++
+				j++
+				break
+			}
+			// Mid-alignment divergence: this anchor is not the real mirror
+			// position (or the context genuinely diverged) — try the next one.
+			break
+		}
+		if i >= len(hist) {
+			// The whole mirror was consumed inside the request; the increment
+			// starts at j (the new turn's messages).
+			return j
+		}
+	}
+	return 0
 }
 
 // stripThinkingWrapper removes the <thinking>...</thinking> wrapper that DSH
