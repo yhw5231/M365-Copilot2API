@@ -581,3 +581,74 @@ func TestExplicitIncrementalCarriesStoredContext(t *testing.T) {
 		t.Fatalf("prefix echo must not populate StoredContext, got %d", len(res3.StoredContext))
 	}
 }
+
+// TestDSHRuntimeContextSnapshotDrift reproduces the DSH harness's per-request
+// runtime-context snapshot: the client re-injects a "Current runtime context."
+// user message on every turn whose content drifts ("This snapshot supersedes
+// earlier runtime-context snapshots"). The snapshot is session metadata, not
+// conversation content, so its drift must not break the prefix match —
+// otherwise every request is judged a context reset (full replay, cache 0).
+func TestDSHRuntimeContextSnapshotDrift(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(sessionHeaderName, "dsh-snapshot-session")
+
+	systemMsg := oaiMsg{Role: "system", Content: "You are an AI agent powered by DeepSeek Harness."}
+	userMsg1 := oaiMsg{Role: "user", Content: "实现站点自定义协议头功能"}
+	snapshotV1 := oaiMsg{Role: "user", Content: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications."}
+	snapshotV2 := oaiMsg{Role: "user", Content: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent DSH file policy: danger-full-access. Approval prompts are disabled in this session."}
+
+	// First turn: bind [system, user1, snapshotV1] as client history, then the
+	// server appends the assistant reply (exactly like bindConversation does).
+	bindLikeServer(t, sr, "dsh-snapshot-session", "conv-snap", "account-a",
+		[]oaiMsg{systemMsg, userMsg1, snapshotV1},
+		"第一轮回答")
+
+	// Second turn: the harness re-drifts the snapshot, so the stored history
+	// now diverges at the snapshot position. The prefix must still match the
+	// stored history (HistoryLen=4) and only the new user message is the
+	// increment; without the snapshot tolerance this is explicit_context_reset.
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req2.Header.Set(sessionHeaderName, "dsh-snapshot-session")
+	res := sr.Resolve(req2, &oaiReq{Messages: []oaiMsg{
+		systemMsg,
+		userMsg1,
+		snapshotV2,
+		{Role: "assistant", Content: "第一轮回答"},
+		{Role: "user", Content: "第二轮问题"},
+	}})
+	if res.IsNew {
+		t.Fatal("snapshot drift must not turn the session into a new session")
+	}
+	if res.ResetUpstream {
+		t.Fatalf("snapshot drift must not reset the upstream conversation; matched=%q HistoryLen=%d", res.MatchedBy, res.HistoryLen)
+	}
+	if res.HistoryLen != 4 {
+		t.Fatalf("expected HistoryLen=4 (history plus drifted snapshot), got %d", res.HistoryLen)
+	}
+	if res.MatchedBy != "explicit_prefix_4" {
+		t.Fatalf("expected explicit_prefix_4, got %q", res.MatchedBy)
+	}
+	if res.ConversationID != "conv-snap" {
+		t.Fatalf("expected conversation reuse, got %q", res.ConversationID)
+	}
+}
+
+// TestMessagesEqualToleratesRuntimeSnapshotDrift verifies the message-level
+// equality rule: two messages whose role matches but whose text differs only by
+// the drifting runtime-context snapshot are session-equivalent.
+func TestMessagesEqualToleratesRuntimeSnapshotDrift(t *testing.T) {
+	snapshotA := oaiMsg{Role: "user", Content: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nPolicy A."}
+	snapshotB := oaiMsg{Role: "user", Content: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nPolicy B: approvals disabled."}
+	if !messagesEqual(snapshotA, snapshotB) {
+		t.Fatal("two runtime-context snapshots with drifting content must compare equal")
+	}
+	// A real conversation message must still differ from a snapshot.
+	if messagesEqual(snapshotA, oaiMsg{Role: "user", Content: "Current runtime context rocks"}) {
+		t.Fatal("a plain user message must not compare equal to a snapshot")
+	}
+	if messagesEqual(snapshotA, oaiMsg{Role: "assistant", Content: snapshotB.Content}) {
+		t.Fatal("role mismatch must still fail even when both sides look like snapshots")
+	}
+}

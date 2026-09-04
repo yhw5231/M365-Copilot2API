@@ -6,6 +6,17 @@ import (
 	"strings"
 )
 
+// isRuntimeContextSnapshot reports whether a message text is a DSH
+// harness-injected runtime-context snapshot ("Current runtime context. ..."
+// blocks that describe the file sandbox / policy). DSH regenerates this
+// snapshot on every request and its content drifts as the session progresses
+// ("This snapshot supersedes earlier runtime-context snapshots"), so the text
+// is session metadata, not conversation content: it must never gate echo
+// suppression, and it must not break session-key prefix matching.
+func isRuntimeContextSnapshot(text string) bool {
+	return strings.HasPrefix(text, "Current runtime context.") || strings.Contains(text, "This snapshot supersedes earlier runtime-context snapshots")
+}
+
 // userEchoCheckPrompt returns the user's genuine question text for the
 // workspace-vocabulary echo check. The full flattened prompt
 // (flattenPromptMessages) includes harness-injected blocks — the DSH
@@ -28,7 +39,7 @@ func userEchoCheckPrompt(messages []oaiMsg) string {
 		}
 		// Skip harness-injected runtime-context snapshots (DSH "Current runtime
 		// context. ..." blocks that describe the file sandbox / policy).
-		if strings.HasPrefix(t, "Current runtime context.") || strings.Contains(t, "This snapshot supersedes earlier runtime-context snapshots") {
+		if isRuntimeContextSnapshot(t) {
 			continue
 		}
 		// Skip goal-round continuation templates injected by the harness; the

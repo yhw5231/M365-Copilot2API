@@ -339,7 +339,15 @@ func messagesEqual(a, b oaiMsg) bool {
 	ta := contentToString(a.Content)
 	tb := contentToString(b.Content)
 	if ta != tb {
-		return false
+		// DSH 在每次请求中都会重新生成"运行时上下文快照"消息（Current
+		// runtime context ... supersedes earlier runtime-context snapshots），
+		// 其内容随会话推进漂移。快照是会话元数据而非对话内容，前缀匹配时
+		// 对两条同为快照的消息视为等价；否则快照一变化，整个历史前缀被
+		// 判定为上下文重置（explicit_context_reset），上游会话每次重建、
+		// 全量重发，cached_tokens 恒为 0。
+		if !isRuntimeContextSnapshot(ta) || !isRuntimeContextSnapshot(tb) {
+			return false
+		}
 	}
 	if (a.ToolCalls == nil) != (b.ToolCalls == nil) {
 		return false
