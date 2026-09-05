@@ -1,6 +1,9 @@
 package web
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -119,77 +122,124 @@ func TestEffectiveMaxOutputPreference(t *testing.T) {
 
 func intp(v int) *int { return &v }
 
-func TestM365EffectiveContextWindowDefault(t *testing.T) {
-	t.Setenv("M365_EFFECTIVE_CONTEXT_WINDOW", "")
-	if got := m365EffectiveContextWindow(); got <= 0 {
-		t.Fatalf("default effective window must be positive: %d", got)
+// TestM365RequestInputBudgetUsesRouteMaxInputTokens verifies the route
+// setting is authoritative: an explicit per-route maxInputTokens is used
+// verbatim (never capped or widened), routes without one fall back to the
+// unified 256K default, and one route's value never leaks into another's
+// budget.
+func TestM365RequestInputBudgetUsesRouteMaxInputTokens(t *testing.T) {
+	// Unset route → unified 256K fallback.
+	if got := m365RequestInputBudget("gpt-5.6-sol", nil); got != 262144 {
+		t.Fatalf("unset route must fall back to unified 256K: got %d want 262144", got)
 	}
-	t.Setenv("M365_EFFECTIVE_CONTEXT_WINDOW", "120000")
-	if got := m365EffectiveContextWindow(); got != 120000 {
-		t.Fatalf("env override not honored: %d", got)
-	}
-}
-
-func TestModelRouteMaxInputTokensDefaultsTo256K(t *testing.T) {
-	if got := modelRouteMaxInputTokens("gpt-5.6-sol", nil); got != 262144 {
-		t.Fatalf("missing route value must use unified 256K default: got %d", got)
-	}
-	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol"}}
-	if got := modelRouteMaxInputTokens("gpt-5.6-sol", mappings); got != 262144 {
-		t.Fatalf("nil route value must use unified 256K default: got %d", got)
-	}
-}
-
-func TestModelRouteMaxInputTokensAreRouteLocal(t *testing.T) {
-	limit256 := 262144
-	limit1000 := 1000
+	// Explicit route value used verbatim, even above the effective window.
+	large := 200000
+	small := 1000
 	mappings := []modelMapping{
-		{PublicModel: "gpt-5.6-sol", MaxInputTokens: &limit256},
-		{PublicModel: "gpt-5.4", MaxInputTokens: &limit1000},
+		{PublicModel: "gpt-5.6-sol", MaxInputTokens: &large},
+		{PublicModel: "gpt-5.4", MaxInputTokens: &small},
 	}
-	if got := modelRouteMaxInputTokens("gpt-5.6-sol", mappings); got != limit256 {
-		t.Fatalf("gpt-5.6-sol route limit mismatch: got %d want %d", got, limit256)
+	if got := m365RequestInputBudget("gpt-5.6-sol", mappings); got != large {
+		t.Fatalf("explicit route limit must be authoritative: got %d want %d", got, large)
 	}
-	if got := modelRouteMaxInputTokens("gpt-5.4", mappings); got != limit1000 {
-		t.Fatalf("gpt-5.4 route limit mismatch: got %d want %d", got, limit1000)
+	if got := m365RequestInputBudget("gpt-5.4", mappings); got != small {
+		t.Fatalf("route limit mismatch: got %d want %d", got, small)
 	}
-	if got := modelRouteMaxInputTokens("unconfigured-model", mappings); got != 262144 {
+	if got := m365RequestInputBudget("unconfigured-model", mappings); got != 262144 {
 		t.Fatalf("unconfigured model must not inherit another route limit: got %d", got)
 	}
 }
 
-// TestM365RequestInputBudgetCapsRouteMaxAtEffectiveWindow verifies that the
-// enforced input budget never exceeds the effective context window, aligning
-// the actual trimming budget with the value advertised by /v1/models.
-func TestM365RequestInputBudgetCapsRouteMaxAtEffectiveWindow(t *testing.T) {
-	t.Setenv("M365_EFFECTIVE_CONTEXT_WINDOW", "120000")
-	// No route-level MaxInputTokens → route default 262144 > eff 120000 → cap at 120000
-	if got := m365RequestInputBudget("gpt-5.6-sol", nil); got != 120000 {
-		t.Fatalf("default route max must be capped at effective window: got %d want 120000", got)
+func TestCompactRequestThreshold(t *testing.T) {
+	if got := compactRequestThreshold(128000); got != 115200 {
+		t.Fatalf("90%% of 128000 must be 115200: got %d", got)
 	}
-	// Route limit smaller than effective window → route limit wins
-	small := 1000
-	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", MaxInputTokens: &small}}
-	if got := m365RequestInputBudget("gpt-5.6-sol", mappings); got != 1000 {
-		t.Fatalf("explicit route limit below effective window must be honored: got %d want 1000", got)
-	}
-	// Route limit exactly at effective window → both agree
-	equal := 120000
-	mappings2 := []modelMapping{{PublicModel: "gpt-5.6-sol", MaxInputTokens: &equal}}
-	if got := m365RequestInputBudget("gpt-5.6-sol", mappings2); got != 120000 {
-		t.Fatalf("route limit equal to effective window must match: got %d want 120000", got)
+	if got := compactRequestThreshold(1000); got != 900 {
+		t.Fatalf("90%% of 1000 must be 900: got %d", got)
 	}
 }
 
-// TestM365RequestInputBudgetRespectsRouteLimitAboveEffectiveWindow verifies
-// that a route-level MaxInputTokens above the effective window is still capped
-// at the effective window (the upstream cannot consume more).
-func TestM365RequestInputBudgetRespectsRouteLimitAboveEffectiveWindow(t *testing.T) {
-	t.Setenv("M365_EFFECTIVE_CONTEXT_WINDOW", "120000")
-	large := 200000
-	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", MaxInputTokens: &large}}
-	// Route says 200K, but effective window is 120K → cap at 120K
-	if got := m365RequestInputBudget("gpt-5.6-sol", mappings); got != 120000 {
-		t.Fatalf("route limit above effective window must be capped: got %d want 120000", got)
+func TestEstimateMessagesTokensMatchesBudgetMessagesBasis(t *testing.T) {
+	msgs := longHistory(20)
+	est := estimateMessagesTokens(msgs)
+	// The trimmer computes the same per-message cost; its essential-only lower
+	// bound (system + current turn) must stay below the total estimate.
+	if est <= 0 {
+		t.Fatalf("estimate must be positive: %d", est)
+	}
+	if trimmed := budgetMessages(msgs, est); len(trimmed) != len(msgs) {
+		t.Fatalf("estimate must be the trimmer's own basis: budget=estimate trimmed %d -> %d", len(msgs), len(trimmed))
+	}
+}
+
+// TestOpenAIChatRejectsAboveCompactionThreshold drives the full chat handler:
+// an input above the compaction threshold of the route budget must fail fast
+// with a context_length_exceeded error instead of being silently trimmed.
+// Unconfigured route → defaultRouteMaxInputTokens 262144, threshold 235929;
+// one ~960k-character message ≈ 240k estimated tokens crosses it.
+func TestOpenAIChatRejectsAboveCompactionThreshold(t *testing.T) {
+	s := &Server{}
+	raw := `{"model":"no-such-model-x","messages":[{"role":"user","content":"` + strings.Repeat("history ", 120000) + `"}]}`
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(raw))
+	w := httptest.NewRecorder()
+	s.openaiChat(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("over-threshold request must be rejected with 400: got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad error json: %v", err)
+	}
+	if resp.Error.Code != "context_length_exceeded" || resp.Error.Type != "invalid_request_error" {
+		t.Fatalf("wrong error code/type: %+v", resp.Error)
+	}
+	if !strings.Contains(resp.Error.Message, "compact your context") {
+		t.Fatalf("compaction instruction missing: %s", resp.Error.Message)
+	}
+}
+
+// TestBelowThresholdRequestsAreNotTrimmed pins the contract under the gate: a
+// request at or below the 85% threshold passes budgetMessages untouched, so
+// the gateway never silently rewrites history the client is allowed to send.
+func TestBelowThresholdRequestsAreNotTrimmed(t *testing.T) {
+	budget := m365RequestInputBudget("any-model", nil)
+	msgs := []oaiMsg{{Role: "user", Content: strings.Repeat("history ", 100)}}
+	if est := estimateMessagesTokens(msgs); est > compactRequestThreshold(budget) {
+		t.Fatalf("test fixture exceeds the threshold: est=%d threshold=%d", est, compactRequestThreshold(budget))
+	}
+	if got := budgetMessages(msgs, budget); len(got) != len(msgs) {
+		t.Fatalf("below-threshold request must not be trimmed: %d -> %d", len(msgs), len(got))
+	}
+}
+
+// TestContextOverflowErrorAnthropicDialect pins the /v1/messages wording that
+// triggers Claude Code's auto-compact.
+func TestContextOverflowErrorAnthropicDialect(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1/messages", nil)
+	w := httptest.NewRecorder()
+	writeContextOverflowError(w, r, 95000, 100000)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if resp.Error.Type != "invalid_request_error" {
+		t.Fatalf("anthropic type mismatch: %+v", resp.Error)
+	}
+	if !strings.Contains(resp.Error.Message, "prompt is too long: 95000 tokens > 90000 token maximum") {
+		t.Fatalf("anthropic compact trigger wording missing: %s", resp.Error.Message)
 	}
 }

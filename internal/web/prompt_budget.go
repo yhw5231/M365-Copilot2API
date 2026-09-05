@@ -2,8 +2,6 @@ package web
 
 import (
 	"log"
-	"os"
-	"strconv"
 	"strings"
 )
 
@@ -14,59 +12,61 @@ import (
 //	tier 2 — the current task ledger and tool evidence (tool results + calls)
 //	tier 3 — ordinary user/assistant history (trimmed first)
 //
-// The Microsoft 365 ChatHub backend does not offer a real 1M-token context.
-// The gateway manages requests under an effective input budget instead, and
-// advertises that same budget honestly in /v1/models. The default is 96K
-// input tokens; operators may raise it with M365_EFFECTIVE_CONTEXT_WINDOW.
+// The gateway manages requests under a route-configured input budget instead
+// of letting them grow unbounded, and advertises that same budget honestly in
+// /v1/models. A model route's configured maxInputTokens is the enforced budget
+// for that route; routes without one share the unified 256K default. (The
+// upstream itself tolerates far more — the context-length probe measured
+// ~838K real tokens accepted — so the budget is an operational choice, not an
+// upstream constraint.) Requests above the compaction threshold are rejected
+// with a compaction request; budgetMessages below it is a defensive no-op.
 
 const (
-	defaultM365EffectiveContextWindow = 96000
-	defaultRouteMaxInputTokens        = 262144
+	// defaultRouteMaxInputTokens is the input budget for model routes without
+	// their own maxInputTokens setting. 256K tokens matches what the upstream
+	// can actually consume (probe: ~838K real tokens ≈ 1M estimated).
+	defaultRouteMaxInputTokens = 262144
+	// compactRequestThresholdPercent is the share of the input budget at which
+	// the gateway stops accepting a request and instead answers with a
+	// context-overflow error that asks the client to compact. Agent clients
+	// (Claude Code, Codex CLI, ...) run their own context compaction on that
+	// error and resend a smaller request, which preserves their summaries
+	// instead of the gateway silently dropping oldest history.
+	compactRequestThresholdPercent = 90
 )
 
-// modelRouteMaxInputTokens returns the input-token budget for one public model
-// route. Missing values preserve compatibility by resolving to the unified
-// 256K default. Explicit values remain route-local and cannot affect another
-// model's context handling.
-func modelRouteMaxInputTokens(model string, mappings []modelMapping) int {
+// m365RequestInputBudget returns the input-token budget the gateway actually
+// enforces for one request. The model route's configured MaxInputTokens is
+// authoritative when set — the gateway never caps or widens an explicit
+// per-route value. Routes without their own limit fall back to the unified
+// 256K default. This same value is what /v1/models advertises for the route
+// and what budgetMessages trims against: enforcement, advertisement, and
+// defensive trimming share one source of truth.
+func m365RequestInputBudget(model string, mappings []modelMapping) int {
 	if mapping, ok := configuredModelMapping(model, mappings); ok && mapping.MaxInputTokens != nil && *mapping.MaxInputTokens > 0 {
 		return *mapping.MaxInputTokens
 	}
 	return defaultRouteMaxInputTokens
 }
 
-// m365RequestInputBudget returns the input-token budget the gateway actually
-// enforces for one request. It caps the per-route budget
-// (modelRouteMaxInputTokens) at the effective context window the M365 backend
-// can consume (m365EffectiveContextWindow). The route budget and the effective
-// window were historically independent (route default 256K vs advertised 128K),
-// which let requests far above the advertised window pass untrimmed. Capping at
-// the effective window keeps the enforced budget aligned with what /v1/models
-// advertises, so the gateway never silently accepts a request that exceeds the
-// advertised context_window.
-func m365RequestInputBudget(model string, mappings []modelMapping) int {
-	budget := modelRouteMaxInputTokens(model, mappings)
-	if eff := m365EffectiveContextWindow(); eff > 0 && budget > eff {
-		return eff
-	}
-	return budget
+// compactRequestThreshold is the largest accepted input-token estimate for one
+// request: above it openaiChat rejects with a compaction-required error.
+func compactRequestThreshold(budget int) int {
+	return budget * compactRequestThresholdPercent / 100
 }
 
-// m365EffectiveContextWindow returns the input budget the gateway actually
-// manages for Microsoft 365 backend models. A configured ContextWindow below
-// the default wins (the operator explicitly narrowed it); a larger configured
-// window does not raise the effective budget, because the upstream cannot
-// actually consume it.
-func m365EffectiveContextWindow() int {
-	if raw := strings.TrimSpace(os.Getenv("M365_EFFECTIVE_CONTEXT_WINDOW")); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n >= 8192 && n <= 4_000_000 {
-			return n
-		}
+// estimateMessagesTokens mirrors the per-message accounting budgetMessages
+// uses (content text + 4 protocol tokens per message), so the compaction gate
+// and the defensive trimmer measure a request on exactly the same basis.
+// Multimodal image parts collapse to short placeholders, matching the trimmer.
+func estimateMessagesTokens(msgs []oaiMsg) int {
+	tokens := make([]int, len(msgs))
+	total := 0
+	for i, m := range msgs {
+		tokens[i] = int(EstimateTokens(contentToString(m.Content))) + 4
+		total += tokens[i]
 	}
-	if cfg := currentSettings(); cfg.ContextWindow > 0 {
-		return cfg.ContextWindow
-	}
-	return defaultM365EffectiveContextWindow
+	return total
 }
 
 // budgetMessages trims a message list to fit maxTokens without violating the

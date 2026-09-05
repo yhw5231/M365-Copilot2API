@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -44,6 +45,34 @@ func writeEndpointError(w http.ResponseWriter, r *http.Request, status int, typ,
 		return
 	}
 	writeOpenAIError(w, status, typ, msg)
+}
+
+// writeContextOverflowError rejects a request whose estimated input exceeds
+// the compaction threshold, asking the client to compact its context and
+// resend. The message wording mirrors what the major agent clients match on:
+// OpenAI's "context_length_exceeded" code (plus "maximum context length" in
+// the text) and Anthropic's "prompt is too long: X tokens > Y token maximum",
+// which triggers Claude Code's auto-compact. All three protocol endpoints
+// converge on openaiChat, so the dialect is selected from the request path.
+func writeContextOverflowError(w http.ResponseWriter, r *http.Request, estimated, budget int) {
+	const status = http.StatusBadRequest
+	threshold := compactRequestThreshold(budget)
+	// The stated maximum is the compaction threshold, not the full budget: a
+	// client that compacts to just under the raw budget would be rejected
+	// again.
+	if r != nil && r.URL.Path == "/v1/messages" {
+		writeAnthropicError(w, status, "invalid_request_error",
+			fmt.Sprintf("prompt is too long: %d tokens > %d token maximum (%d%% of the %d-token context window). Please compact your context and resend a smaller request.", estimated, threshold, compactRequestThresholdPercent, budget))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+		"message": sanitizePublicInternalText(fmt.Sprintf(
+			"This model's maximum context length is %d tokens (%d%% of the %d-token context window). However, your request resulted in approximately %d input tokens. Please compact your context and resend a smaller request.", threshold, compactRequestThresholdPercent, budget, estimated)),
+		"type": "invalid_request_error",
+		"code": "context_length_exceeded",
+	}})
 }
 
 // anthropicErrorType maps an HTTP status / OpenAI-flavored type to the closest

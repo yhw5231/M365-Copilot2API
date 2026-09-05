@@ -404,22 +404,17 @@ func reasoningQuietWindow() time.Duration {
 
 func modelCatalog() []map[string]any {
 	l := configuredModelLimits()
-	models := configuredModelSpecs(currentSettings().ModelMappings)
-	// Honesty over capability inflation: the Microsoft 365 backend only
-	// consumes the effective input budget this gateway actually manages, so the
-	// catalog advertises that budget — never a larger number the gateway cannot
+	mappings := currentSettings().ModelMappings
+	models := configuredModelSpecs(mappings)
+	// Honesty over capability inflation: the catalog advertises, per model
+	// route, exactly the input budget the gateway enforces for that route
+	// (m365RequestInputBudget) — never a larger number the gateway cannot
 	// deliver (a claimed 1.05M window with ~96K of real handling is a lie).
-	eff := m365EffectiveContextWindow()
-	advertisedWindow := l.ContextWindow
-	if advertisedWindow > eff {
-		advertisedWindow = eff
-	}
-	advertisedInput := l.MaxInputTokens
-	if advertisedInput > eff {
-		advertisedInput = eff
-	}
 	out := make([]map[string]any, 0, len(models))
 	for _, m := range models {
+		// Per-route budget: the authoritative source for every advertised
+		// window/input field of this model.
+		advertisedWindow := m365RequestInputBudget(m.ID, mappings)
 		// Keep capability fields both at the top level and under capabilities:
 		// different OpenAI-compatible clients inspect different locations.
 		alias := compatibilityAliasModel(m.ID)
@@ -462,10 +457,13 @@ func modelCatalog() []map[string]any {
 			// Explicit capability declaration: which backend actually serves this
 			// model and whether the id is a compatibility alias of that backend.
 			"backend": m.Owner, "compatibility_alias": alias,
-			"max_context_window": advertisedWindow, "effective_context_window": advertisedWindow, "effective_context_window_percent": 95,
+			"max_context_window": advertisedWindow, "effective_context_window": advertisedWindow, "effective_context_window_percent": compactRequestThresholdPercent,
 			"experimental_supported_tools": []any{}, "supports_search_tool": true, "use_responses_lite": false,
 			"tool_mode": "code_mode_only", "multi_agent_version": "v2",
-			"context_window": advertisedWindow, "max_input_tokens": advertisedInput, "max_output_tokens": l.MaxOutputTokens,
+			// max_input_tokens is the compaction threshold, not the raw budget:
+			// the gateway rejects estimated input above it, so clients budgeting
+			// against the advertised value must never be rejected.
+			"context_window": advertisedWindow, "max_input_tokens": compactRequestThreshold(advertisedWindow), "max_output_tokens": l.MaxOutputTokens,
 			"capabilities": caps, "supports_tools": true, "tool_calls": true,
 			"supported_reasoning_levels": advertisedReasoningEfforts,
 			"function_calling":           true, "supports_function_calling": true, "supports_vision": !alias,

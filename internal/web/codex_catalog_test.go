@@ -95,7 +95,7 @@ func TestModelsAdvertiseContextAndReasoning(t *testing.T) {
 		if m["apply_patch_tool_type"] != "freeform" || m["web_search_tool_type"] != "text_and_image" || m["tool_mode"] != "code_mode_only" || m["multi_agent_version"] != "v2" {
 			t.Fatalf("missing Codex tool metadata: %#v", m)
 		}
-		if m["max_context_window"] != m["context_window"] || m["effective_context_window_percent"] != float64(95) {
+		if m["max_context_window"] != m["context_window"] || m["effective_context_window_percent"] != float64(compactRequestThresholdPercent) {
 			t.Fatalf("inconsistent Codex context metadata: %#v", m)
 		}
 		policy, ok := m["truncation_policy"].(map[string]any)
@@ -402,8 +402,15 @@ func TestCatalogMarksBackendAndCompatibilityAlias(t *testing.T) {
 		if m["compatibility_alias"] != true {
 			t.Fatalf("%s must be flagged compatibility_alias=true: %#v", id, m)
 		}
-		if m["context_window"].(float64) > float64(m365EffectiveContextWindow()) {
-			t.Fatalf("%s advertises context_window=%v above the effective budget %d", id, m["context_window"], m365EffectiveContextWindow())
+		// Advertised window must equal the route-enforced budget exactly, and
+		// max_input_tokens must be that budget's compaction threshold (clients
+		// budgeting against the advertised input must never be rejected).
+		wantWindow := m365RequestInputBudget(id, currentSettings().ModelMappings)
+		if int(m["context_window"].(float64)) != wantWindow {
+			t.Fatalf("%s advertises context_window=%v want route budget %d", id, m["context_window"], wantWindow)
+		}
+		if int(m["max_input_tokens"].(float64)) != compactRequestThreshold(wantWindow) {
+			t.Fatalf("%s advertises max_input_tokens=%v want compaction threshold %d", id, m["max_input_tokens"], compactRequestThreshold(wantWindow))
 		}
 		if m["max_context_window"] != m["context_window"] {
 			t.Fatalf("%s max_context_window != context_window: %#v", id, m)

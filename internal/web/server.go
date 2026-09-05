@@ -2404,13 +2404,21 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Preserve role boundaries when adapting OpenAI messages to ChatHub's
 	// single message.text field. This keeps system/developer instructions,
 	// history, and the current user turn distinguishable.
-	// Apply the three-tier context budget before flattening: tier 1
-	// (instructions) and tier 2 (tool evidence) survive, tier 3 (ordinary
-	// history) is trimmed oldest-first once the request exceeds the effective
-	// input budget the M365 backend can actually consume. The budget is the
-	// per-route value capped at the advertised effective window, so a request
-	// never exceeds what /v1/models promises.
-	body.Messages = budgetMessages(body.Messages, m365RequestInputBudget(body.Model, currentSettings().ModelMappings))
+	// Route-based input budget: the model route's configured maxInputTokens is
+	// the source of truth (unset routes fall back to the unified 256K default).
+	// Once the estimated input crosses the compaction threshold the request is
+	// rejected with a context-overflow error so the client compacts its own
+	// context and resends — agent clients (Claude Code, Codex CLI, ...) do this
+	// natively, and their summaries preserve intent better than silently
+	// dropping oldest history here. Below the threshold budgetMessages stays as
+	// a defensive no-op safety net against the same route budget.
+	inputBudget := m365RequestInputBudget(body.Model, currentSettings().ModelMappings)
+	if est := estimateMessagesTokens(body.Messages); est > compactRequestThreshold(inputBudget) {
+		log.Printf("[prompt-budget] req=%s estimated input %d exceeds compaction threshold %d (budget %d); requesting client compaction", requestID, est, compactRequestThreshold(inputBudget), inputBudget)
+		writeContextOverflowError(w, r, est, inputBudget)
+		return
+	}
+	body.Messages = budgetMessages(body.Messages, inputBudget)
 	// Per-request tool reminder: re-states the declared tool list and guards
 	// against the model concluding tools are unavailable or submitting
 	// identical old/new edit strings. Injected after the budget so it is never
