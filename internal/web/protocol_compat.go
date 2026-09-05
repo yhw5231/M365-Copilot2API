@@ -263,6 +263,10 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 			return o, err
 		}
 	}
+	// additionalTools holds tool definitions declared inline as
+	// "additional_tools" input items (see the case below). They are merged
+	// into the top-level tool list after the input loop.
+	var additionalTools []map[string]any
 	switch v := input.(type) {
 	case string:
 		if v == "" {
@@ -321,6 +325,16 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 					id, _ = m["id"].(string)
 				}
 				o.Messages = append(o.Messages, oaiMsg{Role: "tool", ToolCallID: id, Content: m["output"]})
+			case "additional_tools":
+				// Codex Desktop 0.153+ declares session tools inside the input
+				// array as an additional_tools item instead of the top-level
+				// `tools` field. The item is a tool declaration, not
+				// conversation content: dropping it left the model with zero
+				// tools, so it answered file/command requests in plain chat
+				// ("file not found / upload it to the conversation"). Collect
+				// the definitions and merge them into the tool list below.
+				additionalTools = append(additionalTools, collectAdditionalTools(m)...)
+				continue
 			case "function_call", "custom_tool_call":
 				// DSH (and other OpenAI Responses clients) replay parallel tool
 				// calls from a single assistant turn as consecutive separate
@@ -382,6 +396,19 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 		}
 		return o, fmt.Errorf("input must be string or array")
 	}
+	// additionalTools names are exempt from the exec-only filter below: a
+	// client that deliberately declares wait/request_user_input/MCP tools
+	// next to exec (Codex Desktop code mode) expects all of them honored,
+	// unlike the OpenCode bridge pattern where exec replaces generic tools.
+	additionalNames := map[string]bool{}
+	if len(additionalTools) > 0 {
+		for _, t := range additionalTools {
+			if n, _ := t["name"].(string); n != "" {
+				additionalNames[n] = true
+			}
+		}
+		r.Tools = append(r.Tools, additionalTools...)
+	}
 	hasCustomExec := false
 	for _, t := range r.Tools {
 		typ, _ := t["type"].(string)
@@ -394,7 +421,7 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 	for _, t := range r.Tools {
 		typ, _ := t["type"].(string)
 		name, _ := t["name"].(string)
-		if hasCustomExec && !(typ == "custom" && name == "exec") {
+		if hasCustomExec && !(typ == "custom" && name == "exec") && !additionalNames[name] {
 			continue
 		}
 		f := map[string]any{"name": t["name"], "description": t["description"], "parameters": t["parameters"]}
@@ -496,6 +523,26 @@ func (r anthropicRequest) openAI() (oaiReq, error) {
 			switch typ {
 			case "text":
 				text = append(text, b)
+			case "additional_tools":
+				// Codex Desktop 0.153+ relays may bridge the Responses-style
+				// additional_tools declaration onto the Anthropic endpoint as a
+				// content block. Flatten namespace groups and merge the defs into
+				// the request tools; the block itself is not conversation content.
+				for _, t := range flattenAdditionalToolGroups(blockList(b["tools"])) {
+					name, _ := t["name"].(string)
+					if name == "" {
+						continue
+					}
+					schema, _ := t["parameters"].(map[string]any)
+					if tt, _ := t["type"].(string); tt == "custom" && name == "exec" {
+						schema = map[string]any{"type": "object", "properties": map[string]any{"input": map[string]any{"type": "string"}}, "required": []string{"input"}, "additionalProperties": false}
+					}
+					if schema == nil {
+						schema = map[string]any{"type": "object", "properties": map[string]any{}}
+					}
+					desc, _ := t["description"].(string)
+					r.Tools = append(r.Tools, anthropicTool{Name: name, Description: desc, InputSchema: schema})
+				}
 			case "image":
 				source, _ := b["source"].(map[string]any)
 				if source != nil {
@@ -567,4 +614,154 @@ func responsesToolCallID(m map[string]any) string {
 		return id
 	}
 	return "call_" + uuid.NewString()
+}
+
+// collectAdditionalTools flattens a Responses "additional_tools" input item
+// into Responses tool definitions. Codex Desktop 0.153+ nests the real tool
+// defs one level deep inside namespace groups:
+//
+//	{"type":"additional_tools","tools":[
+//	  {"type":"namespace","name":"functions","tools":[tooldef...]},
+//	  {"type":"namespace","name":"mcp__x","tools":[tooldef...]}]}
+//
+// A flat tooldef array (no namespace wrapper) is accepted the same way: an
+// entry carrying a nested "tools" array is treated as a namespace group,
+// anything else as a direct tool definition. Entries without a recognizable
+// name are skipped rather than turned into broken tool schemas.
+func collectAdditionalTools(item map[string]any) []map[string]any {
+	raw, ok := item["tools"].([]any)
+	if !ok {
+		return nil
+	}
+	return flattenAdditionalToolGroups(raw)
+}
+
+// flattenAdditionalToolGroups expands a list of additional-tools entries:
+// entries with a nested "tools" array are namespace groups whose children are
+// collected, plain entries pass through when they carry a name.
+func flattenAdditionalToolGroups(raw []any) []map[string]any {
+	var out []map[string]any
+	for _, e := range raw {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if nested, ok := em["tools"].([]any); ok {
+			out = append(out, flattenAdditionalToolGroups(nested)...)
+			continue
+		}
+		if n, _ := em["name"].(string); n != "" {
+			out = append(out, em)
+		}
+	}
+	return out
+}
+
+// blockList coerces a tools field that may arrive as []any or []map[string]any
+// into a uniform []any for flattenAdditionalToolGroups.
+func blockList(v any) []any {
+	switch t := v.(type) {
+	case []any:
+		return t
+	case []map[string]any:
+		out := make([]any, 0, len(t))
+		for _, m := range t {
+			out = append(out, m)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// collectChatAdditionalTools unwraps additional_tools definitions from a
+// chat/completions message. Relays bridging Codex Desktop onto the chat
+// endpoint embed the Responses-style item as the message content (either the
+// raw map or a content block list containing it). The returned definitions
+// are Responses tool shapes ready for the shared conversion loop.
+func collectChatAdditionalTools(content any) []map[string]any {
+	switch v := content.(type) {
+	case map[string]any:
+		if t, _ := v["type"].(string); t == "additional_tools" {
+			return collectAdditionalTools(v)
+		}
+	case []any:
+		var out []map[string]any
+		for _, b := range v {
+			bm, ok := b.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := bm["type"].(string); t == "additional_tools" {
+				out = append(out, collectAdditionalTools(bm)...)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// responsesToolDefsToChatHub converts flattened Responses tool definitions
+// into internal ChatHub tools, applying the same custom-exec argument bridge
+// (grammar-constrained raw input -> single "input" string property) the
+// Responses path uses.
+func responsesToolDefsToChatHub(defs []map[string]any) []chathub.Tool {
+	var out []chathub.Tool
+	for _, t := range defs {
+		typ, _ := t["type"].(string)
+		name, _ := t["name"].(string)
+		f := map[string]any{"name": name, "description": t["description"], "parameters": t["parameters"]}
+		if typ == "custom" && name == "exec" {
+			f["parameters"] = map[string]any{"type": "object", "properties": map[string]any{"input": map[string]any{"type": "string"}}, "required": []string{"input"}, "additionalProperties": false}
+		} else if typ != "function" && typ != "" {
+			continue
+		}
+		b, _ := json.Marshal(f)
+		out = append(out, chathub.Tool{Type: typ, Function: b})
+	}
+	return out
+}
+
+// chatHubToolNames lists the names already declared in a chathub.Tool list so
+// additional_tools definitions can be merged without duplicates.
+func chatHubToolNames(tools []chathub.Tool) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range tools {
+		var f map[string]any
+		if json.Unmarshal(t.Function, &f) != nil {
+			continue
+		}
+		if n, _ := f["name"].(string); n != "" {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// stripAdditionalToolsBlocks removes additional_tools markers from message
+// content while preserving every other block (text, images, ...). A content
+// that was exactly the marker becomes nil so no empty message is forwarded.
+func stripAdditionalToolsBlocks(content any) any {
+	switch v := content.(type) {
+	case map[string]any:
+		if t, _ := v["type"].(string); t == "additional_tools" {
+			return nil
+		}
+	case []any:
+		var kept []any
+		for _, b := range v {
+			bm, ok := b.(map[string]any)
+			if ok {
+				if t, _ := bm["type"].(string); t == "additional_tools" {
+					continue
+				}
+			}
+			kept = append(kept, b)
+		}
+		if len(kept) == 0 {
+			return nil
+		}
+		return kept
+	}
+	return content
 }

@@ -6,6 +6,16 @@ import (
 	"strings"
 )
 
+// maxToolResultPromptBytes is a hard protective ceiling for a single tool
+// result inside the flattened prompt. It is NOT a budget policy: the real
+// input budget is managed per message by budgetMessages (token-based tier
+// trimming, which keeps tool evidence atomic), and tool output is full
+// fidelity context for the model (file reads, command logs). Only a single
+// result beyond this ceiling — which no realistic tool output hits — is cut
+// head-and-tail with an explicit marker so the model still knows content was
+// dropped. The value matches the trace capture bound for consistency.
+const maxToolResultPromptBytes = 256 << 10
+
 // isRuntimeContextSnapshot reports whether a message text is a DSH
 // harness-injected runtime-context snapshot ("Current runtime context. ..."
 // blocks that describe the file sandbox / policy). DSH regenerates this
@@ -100,7 +110,7 @@ func flattenPromptMessages(messages []oaiMsg, attachments []chathub.Attachment) 
 			continue
 		}
 		if role == "tool" {
-			txt = compactToolResult(txt, 4000)
+			txt = compactToolResult(txt, maxToolResultPromptBytes)
 			b.WriteString(fmt.Sprintf("\n[tool result id=%s]\n%s\n", m.ToolCallID, txt))
 			continue
 		}

@@ -2126,6 +2126,30 @@ func normalizeLegacyTools(body *oaiReq) {
 	if body.ToolChoice == nil && body.FunctionCall != nil {
 		body.ToolChoice = body.FunctionCall
 	}
+	// Some OpenAI-compatible clients (Codex Desktop 0.153+ relays) declare
+	// session tools inside a message whose content carries an
+	// additional_tools marker. Unwrap those definitions into body.Tools so
+	// the tool routing path sees them; see collectChatAdditionalTools.
+	known := chatHubToolNames(body.Tools)
+	for i := range body.Messages {
+		defs := collectChatAdditionalTools(body.Messages[i].Content)
+		if len(defs) == 0 {
+			continue
+		}
+		fresh := defs[:0:0]
+		for _, d := range defs {
+			n, _ := d["name"].(string)
+			if n == "" || known[n] {
+				continue
+			}
+			known[n] = true
+			fresh = append(fresh, d)
+		}
+		body.Tools = append(body.Tools, responsesToolDefsToChatHub(fresh)...)
+		// Keep any real content (text blocks) sharing the message; only the
+		// additional_tools markers are dropped.
+		body.Messages[i].Content = stripAdditionalToolsBlocks(body.Messages[i].Content)
+	}
 }
 
 func toolMapsFromChatHubTools(tools []chathub.Tool) []map[string]any {
@@ -2298,8 +2322,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if body.Reasoning != nil && strings.TrimSpace(body.Reasoning.Effort) != "" {
 		effort = body.Reasoning.Effort
 	}
-	// "auto" (and an omitted effort) resolves to the model's configured default
-	// reasoning level from model route settings.
+	// "auto" (and an omitted or unrecognized effort) resolves to the model's
+	// configured default reasoning level from model route settings; a value
+	// naming a real level keeps the user's own choice.
 	effort = resolveReasoningEffort(effort, body.Model, mappings)
 	body.ReasoningEffort = effort
 	if tr := traceFromRequest(r); tr != nil {
@@ -2765,7 +2790,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		calls = filterCompletedCalls(calls, ledger)
 		calls, _ = validateCalls("router", calls)
 		if !parsed {
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, maxToolResultPromptBytes), Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 			if repairErr == nil {
 				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, ledger)
@@ -3405,7 +3430,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
 		if !parsed {
 			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
-` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+` + compactToolResult(routeRes.Text, maxToolResultPromptBytes), Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 			if repairErr == nil {
 				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 			}
@@ -4424,7 +4449,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if routeErr == nil {
 			calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
 			if !parsed {
-				repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+				repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, maxToolResultPromptBytes), Tone: tone, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 				if repairErr == nil {
 					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				}

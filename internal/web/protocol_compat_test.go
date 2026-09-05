@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -458,5 +459,184 @@ func TestResponsesStoreHistoryGuard(t *testing.T) {
 	fa := false
 	if shouldStoreResponsesHistory(&fa) {
 		t.Fatal("store=false must not retain history")
+	}
+}
+
+func TestResponsesAdditionalToolsNamespaceGroupsToOpenAI(t *testing.T) {
+	// Codex Desktop 0.153+ declares tools inside the input array as an
+	// additional_tools item with namespace groups; the top-level tools field
+	// is absent. All nested defs must reach the upstream tool list.
+	r := responsesRequest{Input: []any{
+		map[string]any{
+			"type": "additional_tools",
+			"role": "developer",
+			"tools": []any{
+				map[string]any{
+					"type": "namespace",
+					"name": "functions",
+					"tools": []any{
+						map[string]any{"type": "custom", "name": "exec", "description": "run code"},
+						map[string]any{"type": "function", "name": "wait", "description": "wait for output", "parameters": map[string]any{"type": "object"}},
+					},
+				},
+				map[string]any{
+					"type": "namespace",
+					"name": "mcp__cua_repl",
+					"tools": []any{
+						map[string]any{"type": "function", "name": "js", "description": "control apps", "parameters": map[string]any{"type": "object"}},
+					},
+				},
+			},
+		},
+		map[string]any{"type": "message", "role": "user", "content": "read the file"},
+	}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, tl := range o.Tools {
+		var f map[string]any
+		if json.Unmarshal(tl.Function, &f) != nil {
+			t.Fatalf("bad tool json: %s", tl.Function)
+		}
+		names[f["name"].(string)] = true
+	}
+	for _, want := range []string{"exec", "wait", "js"} {
+		if !names[want] {
+			t.Fatalf("tool %q missing from upstream list, got %v", want, names)
+		}
+	}
+	// exec is custom; the additional_tools siblings are exempt from the
+	// exec-only filter, so all three tools survive.
+	if len(o.Tools) != 3 {
+		t.Fatalf("tools=%d, want 3 (%v)", len(o.Tools), names)
+	}
+}
+
+func TestResponsesAdditionalToolsNotConversationContent(t *testing.T) {
+	r := responsesRequest{Input: []any{
+		map[string]any{"type": "additional_tools", "tools": []any{
+			map[string]any{"type": "namespace", "name": "functions", "tools": []any{
+				map[string]any{"type": "custom", "name": "exec", "description": "run code"},
+			}},
+		}},
+		map[string]any{"type": "message", "role": "user", "content": "hello"},
+	}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// workspace instruction (system) + one user message; the additional_tools
+	// item itself must not become a message.
+	if len(o.Messages) != 2 {
+		t.Fatalf("messages=%d, want 2: %+v", len(o.Messages), o.Messages)
+	}
+	for _, m := range o.Messages {
+		if s, ok := m.Content.(string); ok && strings.Contains(s, "additional_tools") {
+			t.Fatalf("additional_tools leaked into prompt: %q", s)
+		}
+	}
+}
+
+func TestResponsesAdditionalToolsFlatShape(t *testing.T) {
+	r := responsesRequest{Input: []any{
+		map[string]any{"type": "additional_tools", "tools": []any{
+			map[string]any{"type": "function", "name": "shell", "description": "run shell", "parameters": map[string]any{"type": "object"}},
+		}},
+		"do it",
+	}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Tools) != 1 {
+		t.Fatalf("tools=%+v, want the flat shell tool", o.Tools)
+	}
+	if !strings.Contains(string(o.Tools[0].Function), "shell") {
+		t.Fatalf("shell tool lost: %s", o.Tools[0].Function)
+	}
+}
+
+func TestNormalizeLegacyToolsUnwrapsAdditionalToolsMessage(t *testing.T) {
+	// A relay bridging Codex Desktop onto chat/completions may pass the
+	// additional_tools declaration as a message content block list.
+	body := &oaiReq{Messages: []oaiMsg{
+		{Role: "developer", Content: []any{
+			map[string]any{"type": "additional_tools", "tools": []any{
+				map[string]any{"type": "namespace", "name": "functions", "tools": []any{
+					map[string]any{"type": "custom", "name": "exec", "description": "run code"},
+					map[string]any{"type": "function", "name": "wait", "description": "wait", "parameters": map[string]any{"type": "object"}},
+				}},
+			}},
+			map[string]any{"type": "text", "text": "real instruction text"},
+		}},
+		{Role: "user", Content: "read the file"},
+	}}
+	normalizeLegacyTools(body)
+	if len(body.Tools) != 2 {
+		t.Fatalf("tools=%d, want exec+wait merged", len(body.Tools))
+	}
+	if !containsJSON(body.Tools[0].Function, "input") {
+		t.Fatalf("custom exec bridge missing: %s", body.Tools[0].Function)
+	}
+	// The text block sharing the message must survive.
+	dev := body.Messages[0].Content.([]any)
+	if len(dev) != 1 || dev[0].(map[string]any)["text"] != "real instruction text" {
+		t.Fatalf("developer content mangled: %#v", dev)
+	}
+	// Second run must not duplicate tools (idempotent merge).
+	normalizeLegacyTools(body)
+	if len(body.Tools) != 2 {
+		t.Fatalf("tools duplicated on re-normalize: %d", len(body.Tools))
+	}
+}
+
+func TestNormalizeLegacyToolsTopLevelAdditionalToolsMarker(t *testing.T) {
+	body := &oaiReq{Messages: []oaiMsg{
+		{Role: "user", Content: map[string]any{"type": "additional_tools", "tools": []any{
+			map[string]any{"type": "function", "name": "shell", "description": "run shell", "parameters": map[string]any{"type": "object"}},
+		}}},
+	}}
+	normalizeLegacyTools(body)
+	if len(body.Tools) != 1 || !strings.Contains(string(body.Tools[0].Function), "shell") {
+		t.Fatalf("tools=%+v", body.Tools)
+	}
+	if body.Messages[0].Content != nil {
+		t.Fatalf("marker-only message content should be nil, got %#v", body.Messages[0].Content)
+	}
+}
+
+func TestAnthropicAdditionalToolsBlockToOpenAI(t *testing.T) {
+	r := anthropicRequest{
+		Model:     "m",
+		MaxTokens: 64,
+		Messages: []anthropicMessage{
+			{Role: "user", Content: []any{
+				map[string]any{"type": "additional_tools", "tools": []any{
+					map[string]any{"type": "namespace", "name": "functions", "tools": []any{
+						map[string]any{"type": "custom", "name": "exec", "description": "run code"},
+						map[string]any{"type": "function", "name": "wait", "description": "wait", "parameters": map[string]any{"type": "object"}},
+					}},
+				}},
+				map[string]any{"type": "text", "text": "read the file"},
+			}},
+		},
+	}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Tools) != 2 {
+		t.Fatalf("tools=%d, want 2 from additional_tools block", len(o.Tools))
+	}
+	if !containsJSON(o.Tools[0].Function, "input") {
+		t.Fatalf("exec bridge schema missing: %s", o.Tools[0].Function)
+	}
+	if len(o.Messages) != 1 {
+		t.Fatalf("messages=%d, want only the text-bearing message", len(o.Messages))
+	}
+	if err := validateToolConversation(o.Messages); err != nil {
+		t.Fatalf("tool conversation invalid: %v", err)
 	}
 }

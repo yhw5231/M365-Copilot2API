@@ -125,9 +125,9 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	id := "resp_" + uuid.NewString()
 	created := time.Now().Unix()
 	// The effective reasoning level mirrors what the inner chat request runs
-	// with: the model route's configured level overrides the client request.
-	// It is stamped on the response object so downstream clients can see which
-	// level actually ran.
+	// with: the client's own level when it names a real one, otherwise the
+	// model route's configured default. It is stamped on the response object
+	// so downstream clients can see which level actually ran.
 	effort := resolveReasoningEffort(o.ReasoningEffort, model, currentSettings().ModelMappings)
 	withReasoning := func(resp map[string]any) map[string]any {
 		if effort != "" {
@@ -612,9 +612,10 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 // streaming /v1/responses request completes. Two in-flight values are
 // authoritative and must survive completion instead of being overwritten:
 //
-//   - ReasoningLevel: the caller passes the effective level (the model route's
-//     configured level, which overrides the client's request). The raw client
-//     effort is empty for most Responses clients and would blank the level.
+//   - ReasoningLevel: the caller passes the effective level (the client's own
+//     level when it names a real one, otherwise the model route's configured
+//     default). The raw client effort is empty for most Responses clients and
+//     would blank the level.
 //   - TTFTMs: routeUpstreamTrace recorded the upstream first-token latency.
 //     The adapter only observes its first delta after the reasoning gate
 //     releases the answer text, so its own measurement can land near the total
@@ -851,9 +852,10 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		out["m365_ignored_parameters"] = params
 		out["m365_sampling_note"] = samplingNote
 	}
-	// The model route's configured reasoning level overrides whatever the
-	// client sent; resolve it once and use it for both the trace and the
-	// usage row so every record shows the level the upstream actually ran.
+	// Resolve the effective reasoning level once (the client's own level when
+	// valid, otherwise the model route's configured default) and use it for
+	// both the trace and the usage row so every record shows the level the
+	// upstream actually ran.
 	effectiveEffort := resolveReasoningEffort(o.ReasoningEffort, firstNonEmpty(body.Model, "m365-copilot"), currentSettings().ModelMappings)
 	s.usage.record(UsageRecord{
 		Time:           time.Now(),

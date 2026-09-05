@@ -216,9 +216,9 @@ func TestIsReasoningTone(t *testing.T) {
 
 func TestResolveReasoningEffort(t *testing.T) {
 	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "xhigh"}}
-	// The route's configured level overrides any requested level.
-	if got := resolveReasoningEffort("high", "gpt-5.6-sol", mappings); got != "xhigh" {
-		t.Fatalf("explicit effort got=%q want route default xhigh", got)
+	// A client-requested level wins over the route's configured default.
+	if got := resolveReasoningEffort("high", "gpt-5.6-sol", mappings); got != "high" {
+		t.Fatalf("explicit effort got=%q want requested high", got)
 	}
 	// "auto" resolves to the model's configured default.
 	if got := resolveReasoningEffort("auto", "gpt-5.6-sol", mappings); got != "xhigh" {
@@ -232,6 +232,14 @@ func TestResolveReasoningEffort(t *testing.T) {
 	if got := resolveReasoningEffort("", "gpt-5.6-sol", mappings); got != "xhigh" {
 		t.Fatalf("empty got=%q want xhigh", got)
 	}
+	// Unrecognized values are not reasoning levels: they take the default too.
+	if got := resolveReasoningEffort("extreme", "gpt-5.6-sol", mappings); got != "xhigh" {
+		t.Fatalf("unrecognized effort got=%q want xhigh", got)
+	}
+	// User-set levels are normalized (trimmed, lowercased).
+	if got := resolveReasoningEffort("  HIGH  ", "gpt-5.6-sol", mappings); got != "high" {
+		t.Fatalf("padded effort got=%q want high", got)
+	}
 	// Unknown models keep the request's own value (defaults only come from
 	// mappings that actually declare one).
 	if got := resolveReasoningEffort("auto", "no-such-model", mappings); got != "" {
@@ -239,6 +247,11 @@ func TestResolveReasoningEffort(t *testing.T) {
 	}
 	if got := resolveReasoningEffort("medium", "no-such-model", mappings); got != "medium" {
 		t.Fatalf("unknown model explicit got=%q", got)
+	}
+	// Without a configured default an unrecognized value stays passthrough so
+	// the downstream invalid-effort validation still rejects it with a 400.
+	if got := resolveReasoningEffort("extreme", "no-such-model", mappings); got != "extreme" {
+		t.Fatalf("unknown model unrecognized got=%q want passthrough", got)
 	}
 }
 
