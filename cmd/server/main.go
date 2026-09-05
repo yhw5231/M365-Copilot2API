@@ -48,9 +48,15 @@ func main() {
 		Addr:              listen,
 		Handler:           s.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		WriteTimeout:      0, // streaming endpoints need an open-ended write window.
+		// ReadTimeout must not cap large streaming uploads (multi-MB tool
+		// results / attachments): the documented ChatTimeoutSeconds governs the
+		// full request window, and a 30s read ceiling turned big slow uploads
+		// into a mid-request "context canceled" 502. Header-only protection is
+		// kept via ReadHeaderTimeout; the body read window stays open-ended,
+		// matching the open-ended WriteTimeout below.
+		ReadTimeout:  0,
+		IdleTimeout:  120 * time.Second,
+		WriteTimeout: 0, // streaming endpoints need an open-ended write window.
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
