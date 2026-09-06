@@ -3358,17 +3358,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else if err := emitText(func() string {
-			// A broken CALL_TOOL opening that neither parsed nor repaired must
-			// not reach the client as the answer: strip the protocol fragment
-			// and forward the model's own prose. If nothing survives the strip,
-			// keep the original text rather than emitting an empty answer.
-			out := text.String()
-			if hasBrokenToolCallIntent(out, toolMaps, body.ToolChoice) {
-				if stripped := stripToolCallProtocolLine(out); stripped != "" {
-					return stripped
-				}
-			}
-			return out
+			// A tool-shaped response that neither parsed into a validated call
+			// nor survived repair (or whose parsed call was pruned as an
+			// already-completed repeat) must not leak the raw protocol fragment
+			// as the answer: forward the model's own prose. If nothing survives
+			// the strip, keep the original text rather than emitting an empty
+			// answer.
+			return toolShapeReleaseText(text.String())
 		}()); err != nil {
 			// A keyword inside the buffered answer still ends in a replaced
 			// response, not a dropped stream.
@@ -4301,11 +4297,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			} else if toolShapeHold {
 				// The tool-shaped response never converted into tool calls and
-				// the repair retry failed (otherwise this path is unreachable).
-				// Emit the text with the broken protocol line stripped so the
-				// client sees at most the model's own prose, never the raw
-				// protocol fragment.
-				text := stripToolCallProtocolLine(res.Text)
+				// the repair retry failed (or the parsed call was pruned as an
+				// already-completed repeat). Emit the text with the broken
+				// protocol line stripped so the client sees at most the model's
+				// own prose, never the raw protocol fragment — but never an
+				// empty stream: a whole-response protocol line that strips to
+				// nothing falls back to the original text, since an empty
+				// completion would surface downstream as a failed response.
+				text := toolShapeReleaseText(res.Text)
 				if c, err := reviewContent(text); err != nil {
 					closeReviewHit()
 					return

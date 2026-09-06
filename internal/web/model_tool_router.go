@@ -103,6 +103,19 @@ func stripToolCallProtocolLine(text string) string {
 	return t
 }
 
+// toolShapeReleaseText picks what a held tool-shaped response releases as
+// content when it never converted into a tool call: the model's own prose
+// with the protocol line stripped, or — when nothing survives the strip
+// (the whole response was a single protocol line) — the original text. An
+// empty release ends the stream with zero content and surfaces downstream
+// as a misleading "empty completion" failure.
+func toolShapeReleaseText(text string) string {
+	if stripped := stripToolCallProtocolLine(text); stripped != "" {
+		return stripped
+	}
+	return text
+}
+
 func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]detectedToolCall, bool) {
 	text = strings.TrimSpace(text)
 	// Try the new natural language format first: CALL_TOOL: name({...})

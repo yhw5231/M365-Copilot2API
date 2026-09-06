@@ -257,10 +257,37 @@ var goalProtocolTools = map[string]bool{
 	"update_goal": true,
 }
 
+// goalProtocolExec reports whether an exec/custom-tool call's script body
+// invokes one of the goal-protocol tools. Codex code mode wraps
+// create_goal/get_goal/update_goal inside the exec tool, so the name-based
+// exemption in goalProtocolTools never matches: a goal-loop continuation
+// round that re-issues update_goal was pruned as "already completed", the
+// held tool-shaped response then converted to zero calls, and the stream
+// died empty (downstream: empty_upstream_response). Re-invoking the goal
+// tools is legitimate — update_goal carries its own optimistic-revision
+// guard on the client, and get_goal is a pure read.
+func goalProtocolExec(c detectedToolCall) bool {
+	if c.Name != "exec" {
+		return false
+	}
+	var args struct {
+		Input string `json:"input"`
+	}
+	if json.Unmarshal(c.Arguments, &args) != nil || args.Input == "" {
+		return false
+	}
+	for name := range goalProtocolTools {
+		if strings.Contains(args.Input, name+"(") || strings.Contains(args.Input, name+" (") {
+			return true
+		}
+	}
+	return false
+}
+
 func filterCompletedCalls(calls []detectedToolCall, l agentLedger) []detectedToolCall {
 	out := calls[:0]
 	for _, c := range calls {
-		if goalProtocolTools[c.Name] || !l.hasCompleted(c.Name, string(c.Arguments)) {
+		if goalProtocolTools[c.Name] || goalProtocolExec(c) || !l.hasCompleted(c.Name, string(c.Arguments)) {
 			out = append(out, c)
 		}
 	}
