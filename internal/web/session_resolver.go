@@ -46,6 +46,10 @@ type sessionBinding struct {
 	// 缓存差额法直接以它为基数：cached = min(上次值, 本次值)，
 	// 新增 = 本次值 − 上次值。
 	LastInputTokens int64 `json:"lastInputTokens,omitempty"`
+	// InputHistory 是最近 inputHistoryMax 轮完整逻辑输入的滚动窗口（时间升序，
+	// 末位与 LastInputTokens 相同）。锚点未命中但总输入收缩的请求据此对照
+	// 上上轮记录，判断收缩后是否仍延续更早的上下文（见 shrinkFallbackBase）。
+	InputHistory []int64 `json:"inputHistory,omitempty"`
 }
 
 type sessionResolver struct {
@@ -215,6 +219,13 @@ type ResolveResult struct {
 	// method uses it as the base: cached = min(LastInputTokens, current),
 	// new = current - cached.
 	LastInputTokens int64
+	// FallbackCacheBase carries the shrink-window cache base for a request that
+	// is still judged ResetUpstream: its input shrank below the last recorded
+	// round but still exceeds the round before it, so that older round's size
+	// stays the cached share. The caller keeps the fresh upstream conversation
+	// but derives cached = min(FallbackCacheBase, full input) instead of 0.
+	// 0 means a plain context reset — everything counts as new.
+	FallbackCacheBase int64
 }
 
 func clientIPFingerprint(r *http.Request) string {
@@ -337,8 +348,19 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 				return result
 			}
 			// A multi-message request that no longer extends the stored history is
-			// treated as a compacted/replaced context. Preserve the downstream ID,
-			// but require the caller to create a fresh upstream conversation.
+			// normally a compacted/replaced context: preserve the downstream ID,
+			// but require the caller to create a fresh upstream conversation with
+			// cache 0. The shrink-window rule refines the accounting first: when
+			// the request's total input shrank below the last recorded round yet
+			// still exceeds the round before it, the request plausibly still
+			// extends that older context — its size stays the cached share and
+			// only the growth beyond it counts as new.
+			if base, ok := shrinkFallbackBase(sess, msgs); ok {
+				result.MatchedBy = "explicit_context_shrink"
+				result.ResetUpstream = true
+				result.FallbackCacheBase = base
+				return result
+			}
 			result.MatchedBy = "explicit_context_reset"
 			result.ResetUpstream = true
 			return result
@@ -639,10 +661,70 @@ func (sr *sessionResolver) RecordSessionInputTokens(conversationID string, input
 		if sess.ConversationID != conversationID {
 			continue
 		}
+		sess.InputHistory = appendInputHistory(sess.InputHistory, sess.LastInputTokens, inputTokens)
 		sess.LastInputTokens = inputTokens
 		sr.sessions[sid] = sess
 		sr.persist.markDirty()
 	}
+}
+
+// inputHistoryMax bounds the rolling window of per-round full input sizes kept
+// on the session binding (records 1..3, newest last). Three entries keep the
+// round before the last available as the shrink-window cache base even after a
+// tool-heavy turn recorded several rounds in a row.
+const inputHistoryMax = 3
+
+// appendInputHistory appends one recorded round input to the rolling window.
+// Bindings persisted by an older build carry only LastInputTokens; seeding the
+// window with it keeps the previous round available as the shrink fallback base
+// from the first post-upgrade round on.
+func appendInputHistory(history []int64, prevLast, v int64) []int64 {
+	if len(history) == 0 && prevLast > 0 {
+		history = append(history, prevLast)
+	}
+	history = append(history, v)
+	if len(history) > inputHistoryMax {
+		history = history[len(history)-inputHistoryMax:]
+	}
+	return history
+}
+
+// shrinkFallbackBase implements the shrink-window rule for a matched request
+// that no longer anchor-extends the stored history: when its total input shrank
+// below the last recorded round ("消息3 < 消息2") but still exceeds the round
+// before it ("消息3 > 消息1"), the round before the last is the cache base —
+// its size counts as the cached share and only the growth beyond it as new.
+// ok=false leaves the request on the plain context-reset path (cache 0).
+func shrinkFallbackBase(sess sessionBinding, msgs []oaiMsg) (int64, bool) {
+	history := sess.InputHistory
+	if len(history) == 0 {
+		if sess.LastInputTokens <= 0 {
+			return 0, false
+		}
+		history = []int64{sess.LastInputTokens}
+	}
+	if len(history) < 2 {
+		return 0, false
+	}
+	last := history[len(history)-1]
+	prev := history[len(history)-2]
+	if last <= 0 || prev <= 0 {
+		return 0, false
+	}
+	current := estimateMsgInputTokens(msgs)
+	if current < last && current > prev {
+		return prev, true
+	}
+	return 0, false
+}
+
+// estimateMsgInputTokens estimates a client message list's full logical input
+// on the same flatten basis the usage rows record (EstimateTokens over the
+// flattened prompt), so the comparison against the recorded window stays
+// consistent with the diff method's fullInput.
+func estimateMsgInputTokens(msgs []oaiMsg) int64 {
+	prompt, _ := flattenPromptMessages(msgs, nil)
+	return EstimateTokens(prompt)
 }
 
 // SetTask attaches a task ledger to an existing session binding. It is a no-op

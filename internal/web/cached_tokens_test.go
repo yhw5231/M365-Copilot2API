@@ -210,6 +210,102 @@ func TestAnchorChainSnapshotDriftStillMatches(t *testing.T) {
 	}
 }
 
+// TestCachedTokensShrinkWindowFallback covers the shrink-window rule: a matched
+// request whose total input shrank below the last recorded round but still
+// exceeds the round before it keeps that older round's size as the cache base
+// (cached = older round, new = growth beyond it) instead of being judged a
+// no-cache context reset. A request smaller than even that older round still
+// resets with cache 0.
+func TestCachedTokensShrinkWindowFallback(t *testing.T) {
+	sr := newIsolatedSessionResolver(t)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer sk-diff-test")
+	req.Header.Set("session_id", "diff-shrink")
+
+	system := oaiMsg{Role: "system", Content: strings.Repeat("system rules ", 20)}
+	q1 := oaiMsg{Role: "user", Content: strings.Repeat("question one ", 10)}
+	q2 := oaiMsg{Role: "user", Content: strings.Repeat("question two ", 10)}
+	summary := oaiMsg{Role: "user", Content: "summary of the earlier conversation"}
+	q3 := oaiMsg{Role: "user", Content: strings.Repeat("question three ", 10)}
+
+	// Turn 1: system + question one. Turn 2 replays it plus question two —
+	// strictly larger. Both rounds bind the same cloud conversation and record
+	// their full input sizes, so the window holds [i1, i2].
+	turn1 := []oaiMsg{system, q1}
+	turn2 := []oaiMsg{system, q1, q2}
+	i1 := estimateMsgInputTokens(turn1)
+	i2 := i1 + estimateMsgInputTokens([]oaiMsg{q2}) + 500
+	if i1 <= 0 || i2 <= i1 {
+		t.Fatalf("window sizes must grow: i1=%d i2=%d", i1, i2)
+	}
+	body1 := &oaiReq{Messages: turn1, SessionID: "diff-shrink"}
+	sr.BindWithTask("upstream-sess-s", "conv-shrink-1", "acc-1", body1, "", req, nil)
+	sr.RecordSessionInputTokens("conv-shrink-1", i1)
+	body2 := &oaiReq{Messages: turn2, SessionID: "diff-shrink"}
+	sr.BindWithTask("upstream-sess-s", "conv-shrink-1", "acc-1", body2, "", req, nil)
+	sr.RecordSessionInputTokens("conv-shrink-1", i2)
+
+	// Turn 3: compaction replaced the whole history (question two's anchor is
+	// gone), but the remaining context still exceeds turn 1's input. The
+	// shrink-window rule must grant turn 1's size as the cache base instead of
+	// judging the request a no-cache context reset.
+	turn3 := []oaiMsg{system, summary, q3}
+	i3 := estimateMsgInputTokens(turn3)
+	if i3 <= i1 || i3 >= i2 {
+		t.Fatalf("test setup: turn3 input must fall between i1 and i2: i1=%d i3=%d i2=%d", i1, i3, i2)
+	}
+	body3 := &oaiReq{Messages: turn3, SessionID: "diff-shrink"}
+	res := sr.Resolve(req, body3)
+	if res.IsNew || !res.ResetUpstream {
+		t.Fatalf("shrunken context must still rebuild the upstream conversation: %+v", res)
+	}
+	if res.MatchedBy != "explicit_context_shrink" {
+		t.Fatalf("matched=%q want explicit_context_shrink", res.MatchedBy)
+	}
+	if res.FallbackCacheBase != i1 {
+		t.Fatalf("shrink fallback base=%d want turn1 input %d", res.FallbackCacheBase, i1)
+	}
+	if res.LastInputTokens != 0 {
+		t.Fatalf("reset path must not leak the plain cache base, got %d", res.LastInputTokens)
+	}
+	// Diff-method invariant with the fallback base: cached = i1, new > 0.
+	cached := res.FallbackCacheBase
+	if cached > i3 {
+		cached = i3
+	}
+	if cached != i1 || i3-cached <= 0 {
+		t.Fatalf("diff method wrong: cached=%d new=%d i3=%d", cached, i3-cached, i3)
+	}
+
+	// The completed round rolls the window to [i1, i2, i3].
+	body3b := &oaiReq{Messages: turn3, SessionID: "diff-shrink"}
+	sr.BindWithTask("upstream-sess-s3", "conv-shrink-3", "acc-1", body3b, "", req, nil)
+	sr.RecordSessionInputTokens("conv-shrink-3", i3)
+	sess, ok := sr.GetConversation("conv-shrink-3")
+	if !ok {
+		t.Fatal("round 3 session must stay bound")
+	}
+	if len(sess.InputHistory) != 3 || sess.InputHistory[0] != i1 || sess.InputHistory[1] != i2 || sess.InputHistory[2] != i3 {
+		t.Fatalf("input window=%v want [%d %d %d]", sess.InputHistory, i1, i2, i3)
+	}
+
+	// Turn 4: shrinks below even the older rounds — a plain context reset with
+	// cache 0, no fallback base.
+	turn4 := []oaiMsg{system, oaiMsg{Role: "user", Content: "tiny"}}
+	if estimateMsgInputTokens(turn4) >= i1 {
+		t.Fatalf("test setup: turn4 input must be below i1=%d", i1)
+	}
+	body4 := &oaiReq{Messages: turn4, SessionID: "diff-shrink"}
+	res4 := sr.Resolve(req, body4)
+	if !res4.ResetUpstream || res4.MatchedBy != "explicit_context_reset" {
+		t.Fatalf("fully shrunk context must stay explicit_context_reset, got matched=%s reset=%t", res4.MatchedBy, res4.ResetUpstream)
+	}
+	if res4.FallbackCacheBase != 0 {
+		t.Fatalf("fully shrunk context must not grant a fallback base, got %d", res4.FallbackCacheBase)
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

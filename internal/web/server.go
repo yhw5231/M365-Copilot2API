@@ -2545,9 +2545,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			body.AccountID = firstNonEmpty(body.AccountID, resolved.AccountID)
 			log.Printf("[session-resolver] matched=%s conversation=%s history=%d total=%d reset=%t", resolved.MatchedBy, resolved.ConversationID, resolved.HistoryLen, len(body.Messages), resolved.ResetUpstream)
 			// Diff-method cache base: the matched session's previous turn input
-			// size. A context reset re-sends everything, so the base drops to 0.
+			// size. A context reset re-sends everything, so the base drops to 0
+			// — unless the shrink-window rule still grants a cached share: a
+			// compacted request whose input shrank below the last round but
+			// still exceeds the round before it keeps that older round's size
+			// as the cache base, so only the growth beyond it counts as new.
 			if !resolved.ResetUpstream {
 				sessionCacheBase = resolved.LastInputTokens
+			} else if resolved.FallbackCacheBase > 0 {
+				sessionCacheBase = resolved.FallbackCacheBase
 			}
 			if tr := traceFromRequest(r); tr != nil {
 				s.trace.update(tr.ID, func(rec *traceRecord) {
