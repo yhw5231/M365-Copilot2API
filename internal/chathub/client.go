@@ -297,6 +297,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		httpClient = outbound.HTTPClientFor(req.BindAccount)
 		dialer = outbound.WebSocketDialerFor(req.BindAccount)
 	}
+	// A stateless client replaying a long transcript can carry more images
+	// than one ChatHub turn accepts; cap them before the upload goroutine so
+	// the turn degrades instead of failing with "too many image attachments".
+	c.capImageAttachments(&req)
 	// Attachment upload and the WebSocket dial are independent network round
 	// trips. Run them concurrently so total latency is max(upload, dial) instead
 	// of upload+dial (upstream perf fix: saves ~200ms when images are present).
@@ -937,6 +941,47 @@ func buildWSURL(acc Account, sessionID, conversationID, requestID string) (strin
 	// Gorilla/url will encode " to %22 which MS accepts.
 	u := fmt.Sprintf("%s/%s@%s?%s", wsBase, acc.OID, acc.TID, q.Encode())
 	return u, nil
+}
+
+// capImageAttachments bounds one upstream turn to maxAttachments images.
+// A stateless client replaying a long transcript (new session, context
+// compaction, account switch) carries every image of the whole history in one
+// request, and ChatHub accepts only maxAttachments images per turn. Drop the
+// OLDEST images — the newest belong to the current turn while older ones are
+// already summarized by the replayed transcript text — and append a notice to
+// the prompt so the model knows images were omitted instead of failing the
+// whole turn with "too many image attachments". The notice lives only in this
+// upstream turn's prompt; the web layer stores its own prompt copy for the
+// session history, so the notice never leaks into later turns.
+func (c *Client) capImageAttachments(req *Request) {
+	imageCount := 0
+	for i := range req.Attachments {
+		if req.Attachments[i].Type == "image" {
+			imageCount++
+		}
+	}
+	dropped := imageCount - maxAttachments
+	if dropped <= 0 {
+		return
+	}
+	kept := make([]Attachment, 0, len(req.Attachments)-dropped)
+	skipped := 0
+	for _, a := range req.Attachments {
+		if a.Type == "image" && skipped < dropped {
+			skipped++
+			continue
+		}
+		kept = append(kept, a)
+	}
+	req.Attachments = kept
+	req.Text += fmt.Sprintf(
+		"\n\n[attachment notice] %d of %d images were omitted from this request because the upstream accepts at most %d images per turn; only the most recent %d images are attached.",
+		dropped, imageCount, maxAttachments, maxAttachments,
+	)
+	log.Printf("chathub attachments_capped images=%d dropped=%d kept=%d", imageCount, dropped, maxAttachments)
+	if c.Trace != nil {
+		c.Trace(map[string]any{"stage": "attachments_capped", "images": imageCount, "dropped": dropped, "kept": maxAttachments})
+	}
 }
 
 func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversationID string, attachments []Attachment, httpClient *http.Client) error {

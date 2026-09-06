@@ -2,6 +2,7 @@ package chathub
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -52,5 +53,63 @@ func TestImageURLsRejectsUnsafe(t *testing.T) {
 	raw := []json.RawMessage{json.RawMessage(`{"url":"http://example.com/a.png"}`)}
 	if got := imageURLs(raw); len(got) != 0 {
 		t.Fatal(got)
+	}
+}
+
+func TestCapImageAttachmentsTruncatesOldest(t *testing.T) {
+	// A session-miss transcript replay: 13 images plus one file attachment.
+	req := &Request{Text: "answer the question"}
+	for i := 1; i <= 13; i++ {
+		req.Attachments = append(req.Attachments, Attachment{Type: "image", URL: fmt.Sprintf("data:image/png;base64,img-%02d", i)})
+	}
+	req.Attachments = append(req.Attachments,
+		Attachment{Type: "file", URL: "data:text/plain;base64,doc", Name: "doc.txt"},
+		Attachment{Type: "image", URL: "data:image/png;base64,img-14"},
+	)
+	(&Client{}).capImageAttachments(req)
+
+	images, files := 0, 0
+	for _, a := range req.Attachments {
+		switch a.Type {
+		case "image":
+			images++
+		case "file":
+			files++
+		}
+	}
+	if images != maxAttachments {
+		t.Fatalf("images kept = %d, want %d", images, maxAttachments)
+	}
+	if files != 1 {
+		t.Fatalf("file attachments lost: got %d, want 1", files)
+	}
+	// The OLDEST images are dropped; the newest (img-05..img-14) stay, in order.
+	first, last := req.Attachments[0].URL, req.Attachments[len(req.Attachments)-1].URL
+	if !strings.Contains(first, "img-05") {
+		t.Fatalf("first kept image = %q, want img-05", first)
+	}
+	if !strings.Contains(last, "img-14") {
+		t.Fatalf("last kept image = %q, want img-14", last)
+	}
+	if !strings.Contains(req.Text, "4 of 14 images were omitted") {
+		t.Fatalf("prompt notice missing: %q", req.Text)
+	}
+	if !strings.HasPrefix(req.Text, "answer the question") {
+		t.Fatalf("original prompt altered: %q", req.Text)
+	}
+}
+
+func TestCapImageAttachmentsUnderLimit(t *testing.T) {
+	req := &Request{Text: "hi"}
+	for i := 1; i <= maxAttachments; i++ {
+		req.Attachments = append(req.Attachments, Attachment{Type: "image", URL: fmt.Sprintf("data:image/png;base64,img-%02d", i)})
+	}
+	orig := len(req.Attachments)
+	(&Client{}).capImageAttachments(req)
+	if len(req.Attachments) != orig {
+		t.Fatalf("attachments changed: got %d, want %d", len(req.Attachments), orig)
+	}
+	if req.Text != "hi" {
+		t.Fatalf("notice appended under limit: %q", req.Text)
 	}
 }
