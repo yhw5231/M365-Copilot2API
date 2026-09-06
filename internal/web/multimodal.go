@@ -10,6 +10,11 @@ import (
 func parseContent(c any) (string, []chathub.Attachment) {
 	var text strings.Builder
 	var files []chathub.Attachment
+	if c == nil {
+		// Assistant tool-call messages carry no text content; fmt.Sprint(nil)
+		// would render a literal "<nil>" line into the flattened prompt.
+		return "", nil
+	}
 	if s, ok := c.(string); ok {
 		return s, nil
 	}

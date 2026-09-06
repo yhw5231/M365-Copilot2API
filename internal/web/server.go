@@ -2052,6 +2052,12 @@ func mustJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
 
 func contentToString(c any) string {
 	switch v := c.(type) {
+	case nil:
+		// Assistant tool-call messages carry no text content. Rendering them
+		// with fmt.Sprint produced a literal "<nil>" line in every flattened
+		// prompt (and inside every session anchor), which the model read as
+		// garbage conversation content.
+		return ""
 	case string:
 		return v
 	case []any:
@@ -2573,16 +2579,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				resolvedConversationID = resolved.ConversationID
 				body.ConversationID = resolved.ConversationID
 				body.SessionID = resolved.SessionID
-				if resolved.HistoryLen > 0 && resolved.HistoryLen < len(body.ClientMessages) {
+				if resolved.HistoryLen > 0 {
 					// Slice the increment from the client's ORIGINAL messages (the
 					// prefix was matched against ClientMessages). Budget trimming
 					// shortens body.Messages from the head, so slicing the mutated
 					// copy would misalign the index; the pristine capture keeps it
-					// correct. The upstream conversation already holds the matched
-					// history, so the increment carries only the new client
-					// messages — the injected tool reminder was part of the
-					// previously sent context and does not need re-sending.
-					incPrompt, incAtt := flattenPromptMessages(body.ClientMessages[resolved.HistoryLen:], nil)
+					// correct. sessionIncrementMessages further drops the leading
+					// assistant echo (the upstream conversation already holds that
+					// turn in its own encoding) and degrades an already-consumed
+					// request to its final message instead of a full-transcript
+					// resend into the live conversation.
+					incMsgs := sessionIncrementMessages(body.ClientMessages, resolved.HistoryLen)
+					incPrompt, incAtt := flattenPromptMessages(incMsgs, nil)
 					incPrompt = strings.TrimSpace(incPrompt)
 					if incPrompt != "" {
 						answerPrompt = incPrompt

@@ -377,6 +377,14 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 				}
 			default:
 				role, _ := m["role"].(string)
+				if typ != "" && typ != "message" && role == "" {
+					// A typed input item the gateway does not model (e.g.
+					// item_reference, web_search_call, local_shell_call). It is
+					// protocol metadata, not conversation content: converting it
+					// through the user-message fallback injected its raw JSON into
+					// the prompt as a user turn and derailed the session. Skip it.
+					continue
+				}
 				if role == "" {
 					role = "user"
 				}

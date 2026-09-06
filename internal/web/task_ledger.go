@@ -113,6 +113,13 @@ func buildTaskLedger(body *oaiReq) *taskLedger {
 			}
 		case "user":
 			if t.OriginalGoal == "" {
+				// Agent-client context blocks (<environment_context> and friends)
+				// describe the session sandbox, not a request: recording one as
+				// the goal made every later prompt claim the user's objective is
+				// a sandbox description and pulled answers toward stale content.
+				if isSyntheticContextMessage(text) {
+					continue
+				}
 				// A goal-round message is protocol scaffolding, not the goal
 				// itself: record the round's Objective instead of the raw
 				// <goal_round> block, so later objective comparisons (goal

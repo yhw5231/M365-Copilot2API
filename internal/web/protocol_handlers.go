@@ -573,7 +573,25 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		if len(calls) > 0 {
 			converted := make([]map[string]any, 0, len(calls))
 			for _, call := range calls {
-				converted = append(converted, map[string]any{"id": call.ID, "type": "function", "function": map[string]any{"name": call.Name, "arguments": call.Args}})
+				if call == nil {
+					continue
+				}
+				// Mirror the shapes the input conversion produces when the client
+				// replays these items: custom tool calls carry their grammar
+				// input wrapped as {"input": ...} arguments, and a call whose id
+				// never arrived falls back to the adapter's item id. Storing a
+				// custom call as a plain function call with raw non-JSON
+				// arguments corrupted every subsequent previous_response_id
+				// history built from this record.
+				id := call.ID
+				if id == "" {
+					id = call.ItemID
+				}
+				args := call.Args
+				if call.Type == "custom" {
+					args = mustJSON(map[string]any{"input": customToolInput(call.Args)})
+				}
+				converted = append(converted, map[string]any{"id": id, "type": call.Type, "function": map[string]any{"name": call.Name, "arguments": args}})
 			}
 			stored = append(stored, oaiMsg{Role: "assistant", ToolCalls: converted})
 		} else if text.Len() > 0 {

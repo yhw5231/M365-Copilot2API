@@ -727,6 +727,42 @@ func estimateMsgInputTokens(msgs []oaiMsg) int64 {
 	return EstimateTokens(prompt)
 }
 
+// sessionIncrementMessages slices the client messages that still need to be
+// delivered to a reused upstream conversation.
+//
+// Two adjustments keep the upstream thread clean:
+//
+//   - A historyLen that already covers the whole client list (a client retry of
+//     a request whose increment the upstream conversation consumed before the
+//     response failed) must not degrade into re-sending the ENTIRE transcript
+//     into the live conversation: that duplicates every earlier turn inside one
+//     user message and is a proven derailment trigger. The increment shrinks to
+//     the final client message so the upstream turn simply continues.
+//   - Leading assistant messages are echoes of turns the upstream already holds
+//     in its own encoding — its own answers and its own tool calls. Re-including
+//     them inside the flattened user prompt duplicates the content and reads as
+//     the caller speaking with an [assistant] label, which both wastes tokens
+//     and hands the model a fresh copy of its previous answer to regenerate
+//     from. Tool results and the new user turn are the genuinely new
+//     information and are always kept. At least one message is always returned.
+func sessionIncrementMessages(clientMsgs []oaiMsg, historyLen int) []oaiMsg {
+	if len(clientMsgs) == 0 {
+		return nil
+	}
+	if historyLen < 0 {
+		historyLen = 0
+	}
+	if historyLen >= len(clientMsgs) {
+		historyLen = len(clientMsgs) - 1
+	}
+	inc := clientMsgs[historyLen:]
+	start := 0
+	for start < len(inc)-1 && strings.EqualFold(strings.TrimSpace(inc[start].Role), "assistant") {
+		start++
+	}
+	return inc[start:]
+}
+
 // SetTask attaches a task ledger to an existing session binding. It is a no-op
 // when the session is unknown (the ledger is then attached by the next bind).
 func (sr *sessionResolver) SetTask(sessionID string, task *taskLedger) {

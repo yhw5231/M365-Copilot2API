@@ -27,6 +27,38 @@ func isRuntimeContextSnapshot(text string) bool {
 	return strings.HasPrefix(text, "Current runtime context.") || strings.Contains(text, "This snapshot supersedes earlier runtime-context snapshots")
 }
 
+// syntheticContextPrefixes are the angle-bracket context blocks agent clients
+// (Codex CLI/Desktop, DSH) prepend to their user turns. They describe the
+// session environment rather than carry a user request.
+var syntheticContextPrefixes = []string{
+	"<environment_context>",
+	"<user_instructions>",
+	"<turn_context>",
+	"<permissions>",
+	"<app_context>",
+	"<app-context>",
+	"<editable_files>",
+}
+
+// isSyntheticContextMessage reports whether a user message is one of the
+// agent clients' generated context blocks. It must never become the task
+// ledger's ORIGINAL_GOAL (the ledger would then tell the model that the
+// user's request is a sandbox description) and must not participate in the
+// workspace-echo check (its "sandbox" vocabulary would permanently disable
+// the misjudgment gate).
+func isSyntheticContextMessage(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	for _, p := range syntheticContextPrefixes {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return isRuntimeContextSnapshot(t)
+}
+
 // userEchoCheckPrompt returns the user's genuine question text for the
 // workspace-vocabulary echo check. The full flattened prompt
 // (flattenPromptMessages) includes harness-injected blocks — the DSH
@@ -48,8 +80,11 @@ func userEchoCheckPrompt(messages []oaiMsg) string {
 			continue
 		}
 		// Skip harness-injected runtime-context snapshots (DSH "Current runtime
-		// context. ..." blocks that describe the file sandbox / policy).
-		if isRuntimeContextSnapshot(t) {
+		// context. ..." blocks that describe the file sandbox / policy) and the
+		// agent clients' generated context blocks (<environment_context> and
+		// friends, whose "sandbox" vocabulary would permanently disable the
+		// misjudgment gate).
+		if isSyntheticContextMessage(t) {
 			continue
 		}
 		// Skip goal-round continuation templates injected by the harness; the
