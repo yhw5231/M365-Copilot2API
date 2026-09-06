@@ -107,3 +107,28 @@ Application context and evidence:
 FUNCTION_DEFINITIONS:
 %s`, prompt, string(defs))
 }
+
+// malformedToolCallRepairText builds the one-shot repair prompt for a round
+// whose output opened with a CALL_TOOL line that failed to parse — typically
+// unescaped inner quotes inside the JSON arguments or a truncated line. The
+// model is asked to re-emit the SAME intended call as one fenced block with
+// strictly valid JSON, because re-parsing the broken original is impossible:
+// the argument boundaries themselves are ambiguous once inner quotes went
+// unescaped.
+func malformedToolCallRepairText(toolMaps []map[string]any, attempt string) string {
+	defs, _ := json.Marshal(toolMaps)
+	return fmt.Sprintf(`Your previous output tried to invoke a tool with a "CALL_TOOL: name({...})" line, but it could not be parsed: the JSON was invalid (inner double quotes were not escaped) or the line was cut off before it ended.
+
+Broken output:
+%s
+
+Emit the SAME intended tool call again, as ONE fenced block and nothing else:
+%s
+- the block body must be a single valid JSON object of arguments
+- escape every double quote that appears INSIDE a JSON string value (\" )
+- do not truncate the block, do not add prose or a trailing protocol line
+- pick tool_name from FUNCTION_DEFINITIONS only and validate every argument against it
+
+FUNCTION_DEFINITIONS:
+%s`, compactToolResult(attempt, 2000), "```tool_name\n{\"arg\": \"value\"}\n```", string(defs))
+}

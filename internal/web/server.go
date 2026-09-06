@@ -3246,6 +3246,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if len(rawCalls) == 0 {
 			rawCalls = fencedToolCalls(text.String(), toolMaps, body.ToolChoice)
 		}
+		if len(rawCalls) == 0 {
+			// The model may encode its decision as an explicit CALL_TOOL line
+			// (the router prompt's shape) even on this path; parse it before
+			// treating the text as a plain answer.
+			if parsedCalls, parsed := parseModelToolDecision(text.String(), toolMaps, body.ToolChoice); parsed && len(parsedCalls) > 0 {
+				rawCalls = parsedCalls
+			}
+		}
 		calls, rejected := validateCalls("stream", rawCalls)
 		toolResult := chathub.Result{Text: text.String()}
 		if len(calls) == 0 && rejected > 0 {
@@ -3280,9 +3288,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// final answer makes the client believe the change happened when it did
 		// not (the model often misreads "不用进行测试" — "no tests needed" — as
 		// "skip the change"). Run one soft repair that demands a real call;
-		// with no calls the original text is forwarded unchanged.
-		if len(calls) == 0 && len(toolMaps) > 0 && unfulfilledRepairEnabled() && unfulfilledToolClaimed(res.Text) {
+		// with no calls the original text is forwarded unchanged. A response
+		// that OPENS with a CALL_TOKEN the parser rejected is the same failure
+		// class — the model intended a call — and gets the targeted re-emit
+		// repair instead of leaking the broken protocol line as the answer.
+		brokenIntent := hasBrokenToolCallIntent(res.Text, toolMaps, body.ToolChoice)
+		if len(calls) == 0 && len(toolMaps) > 0 && unfulfilledRepairEnabled() && (unfulfilledToolClaimed(res.Text) || brokenIntent) {
 			repairPrompt := unfulfilledClaimRepairText(toolMaps, prompt+"\n"+ledger.RouterContext())
+			if brokenIntent {
+				repairPrompt = malformedToolCallRepairText(toolMaps, res.Text)
+			}
 			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: repairPrompt, Tone: tone, Attachments: body.Attachments})
 			if repairErr == nil {
 				repaired, parsed := parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
@@ -3342,7 +3357,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 				return
 			}
-		} else if err := emitText(text.String()); err != nil {
+		} else if err := emitText(func() string {
+			// A broken CALL_TOOL opening that neither parsed nor repaired must
+			// not reach the client as the answer: strip the protocol fragment
+			// and forward the model's own prose. If nothing survives the strip,
+			// keep the original text rather than emitting an empty answer.
+			out := text.String()
+			if hasBrokenToolCallIntent(out, toolMaps, body.ToolChoice) {
+				if stripped := stripToolCallProtocolLine(out); stripped != "" {
+					return stripped
+				}
+			}
+			return out
+		}()); err != nil {
 			// A keyword inside the buffered answer still ends in a replaced
 			// response, not a dropped stream.
 			if errors.Is(err, errContentFilterHit) {
@@ -3607,6 +3634,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		textGateReleased := !textGateActive
 		textGateMisjudged := false
 		corrected := false
+		// Tool-call shape hold: a response that OPENS with an explicit
+		// CALL_TOOL token or a fenced block is the model trying to encode a
+		// tool decision inside the text stream. Forwarding those bytes inline
+		// leaks the raw protocol line to the client (a malformed one —
+		// unescaped JSON, truncated mid-line — then shows up as the whole
+		// answer). Hold tool-shaped output entirely; after completion the
+		// normal detection converts it into real tool_calls, or a targeted
+		// repair recovers a broken call, and only a non-call answer is ever
+		// released as text.
+		toolShapeHold := false
+		toolShapeDecided := false
 
 		// reviewContent runs the content filter over a delta. A hit returns the
 		// sentinel so the caller aborts the upstream stream; finishContentReview
@@ -3644,8 +3682,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.dropFilteredSession(r, &body)
 		}
 
-		onDelta := func(content string) error {
-			bufferedContent.WriteString(content)
+		// deliver runs the downstream pipeline for one piece of content:
+		// misjudgment gate → content review → identity filter → client chunk.
+		deliver := func(content string) error {
 			if textGateMisjudged {
 				return nil
 			}
@@ -3679,6 +3718,32 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			return nil
+		}
+		onDelta := func(content string) error {
+			bufferedContent.WriteString(content)
+			// Decide the response shape from its opening bytes: a tool-call
+			// protocol opening is held back entirely (never streamed as
+			// content), plain prose flows through the normal pipeline.
+			if !toolShapeDecided {
+				trimmed := strings.TrimLeft(bufferedContent.String(), " \t\r\n")
+				if len(trimmed) < 10 {
+					// Not enough evidence yet; keep buffering so a multi-chunk
+					// "CALL" + "_TOOL: ..." opening can never leak partially.
+					return nil
+				}
+				toolShapeDecided = true
+				if toolCallIntentPrefix(trimmed) || strings.HasPrefix(trimmed, "```") {
+					toolShapeHold = true
+					log.Printf("[req-trace] id=%s stage=tool_shape_hold len=%d", requestID, bufferedContent.Len())
+					return nil
+				}
+				// Plain prose: release everything held so far unchanged.
+				return deliver(bufferedContent.String())
+			}
+			if toolShapeHold {
+				return nil
+			}
+			return deliver(content)
 		}
 		onReasoning := func(reasoning string) error {
 			// Reasoning (think block) is intentionally dropped: the client sees
@@ -3864,12 +3929,21 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				// content-stream path: an answer that asserts a completed
 				// change ("已修正…/已更新文件…") without any encoded tool call
 				// is repaired once to force a real call, so the client executes
-				// it instead of believing the prose. Only reasoning was
-				// streamed inline so far; the content is still buffered and can
-				// be replaced by the repair.
-				if len(calls) == 0 && len(toolMaps) > 0 && unfulfilledRepairEnabled() && unfulfilledToolClaimed(res.Text) && !textGateMisjudged && !corrected {
+				// it instead of believing the prose. A response that OPENS with
+				// a CALL_TOOL token the parser rejected (unescaped/truncated
+				// JSON) is the same failure class — the model intended a call —
+				// and gets the targeted re-emit-as-valid-JSON repair instead of
+				// leaking the broken protocol line as the answer. Only reasoning
+				// was streamed inline so far; the content is still buffered and
+				// can be replaced by the repair.
+				brokenIntent := hasBrokenToolCallIntent(res.Text, toolMaps, body.ToolChoice)
+				if len(calls) == 0 && len(toolMaps) > 0 && unfulfilledRepairEnabled() && (unfulfilledToolClaimed(res.Text) || brokenIntent) && !textGateMisjudged && !corrected {
 					repairReq := answerReq
-					repairReq.Text = unfulfilledClaimRepairText(toolMaps, prompt+"\n"+ledger.RouterContext())
+					if brokenIntent {
+						repairReq.Text = malformedToolCallRepairText(toolMaps, res.Text)
+					} else {
+						repairReq.Text = unfulfilledClaimRepairText(toolMaps, prompt+"\n"+ledger.RouterContext())
+					}
 					repairRes, repairErr := s.chatWithAccountReasoning(ctx, acc.ID, account, repairReq, nil, nil)
 					if repairErr == nil {
 						repaired, parsed := parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
@@ -4221,6 +4295,37 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			if textGateMisjudged || corrected {
 				// correction content already written inline above
+				if reviewTail() {
+					closeReviewHit()
+					return
+				}
+			} else if toolShapeHold {
+				// The tool-shaped response never converted into tool calls and
+				// the repair retry failed (otherwise this path is unreachable).
+				// Emit the text with the broken protocol line stripped so the
+				// client sees at most the model's own prose, never the raw
+				// protocol fragment.
+				text := stripToolCallProtocolLine(res.Text)
+				if c, err := reviewContent(text); err != nil {
+					closeReviewHit()
+					return
+				} else if c != "" {
+					if c = contentFilter.Push(c); c != "" {
+						if writeErr := writeChunk(map[string]any{"content": c}); writeErr != nil {
+							return
+						}
+					}
+				}
+				if c := contentFilter.Flush(); c != "" {
+					if c2, err := reviewContent(c); err != nil {
+						closeReviewHit()
+						return
+					} else if c2 != "" {
+						if writeErr := writeChunk(map[string]any{"content": c2}); writeErr != nil {
+							return
+						}
+					}
+				}
 				if reviewTail() {
 					closeReviewHit()
 					return

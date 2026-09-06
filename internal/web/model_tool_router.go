@@ -41,6 +41,68 @@ User request and evidence:
 %s`, defs, mode, rules, prompt)
 }
 
+// toolCallIntentPrefix reports whether a response text opens with the explicit
+// CALL_TOOL protocol token. The router prompt teaches this shape, and models
+// sometimes emit it even in modes that were told to use fenced blocks — a
+// broken (unescaped / truncated) one must never reach the client as answer
+// prose.
+func toolCallIntentPrefix(text string) bool {
+	t := strings.TrimSpace(text)
+	return strings.HasPrefix(t, "CALL_TOOL:") || strings.HasPrefix(t, "call_tool:")
+}
+
+// hasBrokenToolCallIntent reports whether the response opens with a CALL_TOOL
+// token that failed to parse into a validated tool call. Such text is a
+// malformed tool invocation, not an answer: it gets one targeted repair retry
+// (re-emit as a properly escaped fenced block) instead of being forwarded to
+// the client as content.
+func hasBrokenToolCallIntent(text string, tools []map[string]any, choice any) bool {
+	if !toolCallIntentPrefix(text) {
+		return false
+	}
+	if calls, parsed := parseModelToolDecision(text, tools, choice); parsed && len(calls) > 0 {
+		return false
+	}
+	return true
+}
+
+// stripToolCallProtocolLine removes a leading, unparseable CALL_TOOL protocol
+// line (and a trailing truncated protocol fragment on its own line) from a
+// response whose tool-call repair failed. The remainder — usually the model's
+// own planning prose — is what the client should see instead of the raw
+// protocol fragment.
+func stripToolCallProtocolLine(text string) string {
+	t := strings.TrimSpace(text)
+	if !toolCallIntentPrefix(t) {
+		return text
+	}
+	if idx := strings.IndexByte(t, '\n'); idx >= 0 {
+		t = strings.TrimSpace(t[idx+1:])
+	} else {
+		// The whole response is one broken protocol line.
+		return ""
+	}
+	// A truncated trailing fragment (e.g. "text(JSON.stringify(*") that the
+	// model appended to the broken call must not survive as prose either.
+	for {
+		lineEnd := strings.IndexByte(t, '\n')
+		line := t
+		if lineEnd >= 0 {
+			line = t[:lineEnd]
+		}
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" || strings.HasPrefix(trimmedLine, "text(JSON.stringify") || strings.HasPrefix(trimmedLine, "CALL_TOOL:") || strings.HasPrefix(trimmedLine, "call_tool:") {
+			if lineEnd < 0 {
+				return ""
+			}
+			t = strings.TrimSpace(t[lineEnd+1:])
+			continue
+		}
+		break
+	}
+	return t
+}
+
 func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]detectedToolCall, bool) {
 	text = strings.TrimSpace(text)
 	// Try the new natural language format first: CALL_TOOL: name({...})
