@@ -28,10 +28,24 @@ def get_pid():
         return None
 
 def is_running(pid):
+    if os.name == "nt":
+        # os.kill(pid, 0) needs PROCESS_ALL_ACCESS and can raise WinError 87
+        # against a process started under a different token (detached server).
+        # The process-list query is the reliable, least-privilege probe; read
+        # bytes because tasklist emits the OEM codepage (GBK on zh-CN).
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True, timeout=10,
+            ).stdout.decode("utf-8", errors="ignore")
+            # The PID is the second CSV column: "name","<pid>","..."
+            return f',"{pid}",' in out
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
         return True
-    except:
+    except OSError:
         return False
 
 def wait_until_ready(address, timeout=10):
