@@ -513,6 +513,7 @@ if (response.output_text) {
         <div class="tabs" role="tablist">
           <button class="tab active" role="tab" data-action="show-sub" data-page="usage" data-sub="overview"><i data-lucide="chart-column" style="width:14px;height:14px"></i><span>用量概览</span></button>
           <button class="tab" role="tab" data-action="show-sub" data-page="usage" data-sub="debug"><i data-lucide="bug" style="width:14px;height:14px"></i><span>调试记录</span></button>
+          <button class="tab" role="tab" data-action="show-sub" data-page="usage" data-sub="errors"><i data-lucide="triangle-alert" style="width:14px;height:14px"></i><span>错误记录</span></button>
           <button class="tab" role="tab" data-action="show-sub" data-page="usage" data-sub="logs"><i data-lucide="list-tree" style="width:14px;height:14px"></i><span>请求明细</span></button>
         </div>
         <div class="tab-pane" id="pane-usage-overview">
@@ -569,6 +570,21 @@ if (response.output_text) {
           <p style="font-size:11px;color:var(--muted);padding:8px 12px 0">启用后，将保留最近 <b id="traceMaxLabel">50</b> 个请求的完整下游请求、上游 ChatHub 请求、上游响应和下游响应，并实时显示状态（处理中、成功或错误）。更早的记录会自动删除。</p>
           <table class="table"><thead><tr><th>时间</th><th>模型</th><th>推理等级</th><th>端点</th><th>状态</th><th>Token<br><small>总输入与输出 / 新增 / 缓存</small></th><th>耗时 / 首字耗时</th><th>详情</th></tr></thead><tbody id="traceLogRows"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody></table>
           <div class="pagination"><span id="tracePageInfo"></span><button class="btn btn-sm" id="tracePrev" data-action="trace-page" data-direction="-1">上一页</button><button class="btn btn-sm" id="traceNext" data-action="trace-page" data-direction="1">下一页</button></div>
+        </div>
+        </div>
+        <div class="tab-pane" id="pane-usage-errors" style="display:none">
+        <div class="card" id="errorCard">
+          <div class="card-head">
+            <div><span class="card-title">错误记录</span></div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+              <input class="form-input" id="errorMax" type="number" min="1" max="2000" style="width:86px" title="服务端最多保留的错误记录数" data-action="save-error-config">
+              <button class="btn btn-sm dynamic-refresh" id="errorRefreshBtn" data-action="load-error-logs" title="立即刷新当前分页"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i> <span>刷新</span></button>
+              <button class="btn btn-sm" data-action="clear-error-logs"><i data-lucide="trash-2" style="width:13px;height:13px"></i> 清空</button>
+            </div>
+          </div>
+          <p style="font-size:11px;color:var(--muted);padding:8px 12px 0">独立记录失败的 /v1 请求（与调试模式开关无关），默认保留最近 <b id="errorMaxLabel">50</b> 条。调试模式关闭时记录下游请求与响应；调试模式开启时同时保留完整上游交互。</p>
+          <table class="table"><thead><tr><th>时间</th><th>模型</th><th>端点</th><th>状态</th><th>错误</th><th>Token<br><small>总输入与输出 / 新增 / 缓存</small></th><th>耗时 / 首字耗时</th><th>详情</th></tr></thead><tbody id="errorLogRows"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody></table>
+          <div class="pagination"><span id="errorPageInfo"></span><button class="btn btn-sm" id="errorPrev" data-action="error-page" data-direction="-1">上一页</button><button class="btn btn-sm" id="errorNext" data-action="error-page" data-direction="1">下一页</button></div>
         </div>
         </div>
         <div class="tab-pane" id="pane-usage-logs" style="display:none">
@@ -1442,6 +1458,7 @@ document.addEventListener('change',e=>{
     applyLocale(e.target.value);
   }
   if(e.target?.dataset.action==='save-trace-config')saveTraceConfig();
+  if(e.target?.dataset.action==='save-error-config')saveErrorConfig();
   if(e.target?.dataset.action==='save-proxy-mode')saveProxyMode();
   if(e.target?.dataset.action==='create-new-mapping')createNewMapping(e.target);
 });
@@ -1464,6 +1481,9 @@ document.addEventListener('click',e=>{
     case 'usage-refresh': ugRefresh(); break;
     case 'set-usage-range': setUsageRange(Number(target.dataset.days)); break;
     case 'load-trace-logs': loadTraceLogs(true,{manual:true}); break;
+    case 'load-error-logs': loadErrorLogs(true); break;
+    case 'clear-error-logs': clearErrorLogs(); break;
+    case 'error-page': errorPage(Number(target.dataset.direction)); break;
     case 'toggle-trace-lock': toggleTraceViewLock(target.checked); break;
     case 'clear-trace-logs': clearTraceLogs(); break;
     case 'trace-page': tracePage(Number(target.dataset.direction)); break;
@@ -1521,6 +1541,7 @@ document.addEventListener('click',e=>{
     case 'toggle-key': toggleKey(target.dataset.keyId, target.dataset.revoked === 'true'); break;
     case 'revoke-key': revokeKey(target.dataset.keyId); break;
     case 'toggle-trace-detail': toggleTraceDetail(target.dataset.traceId,target.dataset.traceMode||'current'); break;
+    case 'toggle-error-detail': toggleErrorDetail(target.dataset.traceId,target.dataset.traceMode||'current'); break;
     case 'select-use-key-client': ukeClient=target.dataset.clientId; renderUkeTabs(); renderUkeFiles(); break;
     case 'select-use-key-os': ukeOsSel=target.dataset.osId; renderUkeFiles(); break;
     case 'copy-use-key-file': navigator.clipboard.writeText(target.closest('.uke-file').querySelector('pre').textContent.trim()).then(()=>showNotice('已复制','success')).catch(()=>{}); break;
@@ -1552,7 +1573,7 @@ function showNotice(msg,type='info'){
 // while showSub(p, sub) opens a specific one. The current sub is remembered in
 // the URL hash as #/page/sub.
 const PAGE_SUBS={
-  usage:   ['overview','debug','logs'],
+  usage:   ['overview','debug','errors','logs'],
   accounts:['list','add','schedule'],
   proxies: ['config','list'],
   settings:['general','password','routing','censor'],
@@ -1573,6 +1594,7 @@ function showSub(p, sub){
   try{history.replaceState(null,'','#/'+p+'/'+target);}catch(e){}
   // On-demand loaders for the pane that just became visible.
   if(p==='usage'&&target==='debug')loadTraceLogs(true);
+  if(p==='usage'&&target==='errors')loadErrorLogs(true);
   if(p==='usage'&&target==='logs')loadUsageLogs();
   if(p==='accounts'&&target==='list')loadAccounts();
   return target;
@@ -2876,6 +2898,217 @@ async function insertTraceDetailRow(id){
 async function clearTraceLogs(){
   try{await api('/api/admin/trace/clear',{method:'POST'});traceExpanded.clear();for(const k in traceDetailCache)delete traceDetailCache[k];loadTraceLogs();}
   catch(e){showNotice(e.message,'error');}
+}
+// ===== Error records (independent ring of failed /v1/ requests) =====
+let errorPageNo=0,errorTotal=0;
+const errorExpanded=new Set(),errorDetailCache={};
+function setErrorRefreshState(state,message){
+  const button=$('errorRefreshBtn');
+  if(!button)return;
+  button.classList.remove('is-loading','is-success','is-error');
+  if(state)button.classList.add('is-'+state);
+  const label=button.querySelector('span');
+  if(label)label.textContent=message||'刷新';
+  button.disabled=state==='loading';
+}
+function errorRowHTML(x){
+  const tokens=usageTokenParts({
+    input_total_tokens:x.inputTotalTokens,
+    input_tokens:x.inputTokens,
+    new_input_tokens:x.newInputTokens,
+    cache_tokens:x.cachedTokens,
+    output_tokens:x.outputTokens,
+    total_tokens:x.totalTokens
+  });
+  const errText=esc(x.error||'-');
+  return `<tr id="er-${escAttr(x.id)}">
+    <td style="font-size:12px;color:var(--muted)">${new Date(x.at).toLocaleTimeString()}</td>
+    <td style="font-size:12px">${esc(x.model||'-')}</td>
+    <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
+    <td><span class="usage-status err">错误</span></td>
+    <td style="font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escAttr(x.error||'')}">${errText}</td>
+    <td class="trace-token-cell" title="缓存占输入总量 ${tokens.cachePercent.toFixed(1)}%">
+      <div><b>总输入 / 输出</b><span>${fmtTok(tokens.inputTotal)} / ${fmtTok(tokens.output)}</span></div>
+      <div><b>新增</b><span>${fmtTok(tokens.newInput)}</span></div>
+      <div><b>缓存</b><span>${fmtTok(tokens.cached)} · ${tokens.cachePercent.toFixed(1)}%</span></div>
+    </td>
+    <td class="trace-latency-cell">
+      <div><b>耗时</b><span class="${traceLatencyClass(x.durationMs)}">${fmtDuration(x.durationMs)}</span></div>
+      <div><b>首字耗时</b><span class="${traceLatencyClass(x.ttftMs)}">${fmtDuration(x.ttftMs)}</span></div>
+    </td>
+    <td><div style="display:flex;gap:6px;white-space:nowrap"><button class="btn btn-sm" data-action="toggle-error-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="current">查看本次响应</button><button class="btn btn-sm" data-action="toggle-error-detail" data-trace-id="${escAttr(x.id)}" data-trace-mode="full">查看完整请求</button></div></td>
+  </tr>`;
+}
+async function loadErrorLogs(force=false){
+  if(force)setErrorRefreshState('loading','刷新中');
+  try{
+    const d=await api('/api/admin/errors/status?limit='+TRACE_PAGE+'&offset='+(errorPageNo*TRACE_PAGE));
+    if($('errorMax'))$('errorMax').value=d.max||50;
+    if($('errorMaxLabel'))$('errorMaxLabel').textContent=d.max||50;
+    errorTotal=d.total||0;
+    const records=d.records||[];
+    const tbody=$('errorLogRows');
+    tbody.innerHTML='';
+    for(const x of records)tbody.insertAdjacentHTML('beforeend',errorRowHTML(x));
+    if(!records.length)tbody.innerHTML='<tr><td colspan="8" class="empty">暂无错误记录</td></tr>';
+    for(const id of Array.from(errorExpanded)){
+      if(!records.some(x=>String(x.id)===String(id))){errorExpanded.delete(id);continue;}
+      await insertErrorDetailRow(id);
+    }
+    const totalPages=Math.max(1,Math.ceil(errorTotal/TRACE_PAGE));
+    $('errorPageInfo').textContent=`Page ${errorPageNo+1} / ${totalPages} · ${errorTotal} total`;
+    $('errorPrev').disabled=errorPageNo<=0;
+    $('errorNext').disabled=errorPageNo>=totalPages-1;
+    if(force)setErrorRefreshState('success','已刷新');
+  }catch(e){
+    if(!$('errorLogRows').querySelector('tr:not(.empty)'))$('errorLogRows').innerHTML=`<tr><td colspan="8" class="empty">${esc(e.message)}</td></tr>`;
+    if(force)setErrorRefreshState('error','刷新失败');
+  }
+  if(force)setTimeout(()=>setErrorRefreshState(null,'刷新'),1200);
+}
+function errorPage(delta){
+  errorPageNo=Math.max(0,errorPageNo+delta);
+  loadErrorLogs(true);
+}
+async function toggleErrorDetail(id,mode='current'){
+  const row=document.getElementById('erd-'+id);
+  const rec=errorDetailCache[id];
+  if(row){
+    if(rec&&rec._mode!==mode){
+      rec._mode=mode;
+      row.querySelectorAll('[data-error-panel]').forEach(panel=>{
+        panel.hidden=panel.dataset.errorPanel!==mode;
+      });
+      row.querySelectorAll('[data-error-mode]').forEach(button=>{
+        button.classList.toggle('primary',button.dataset.errorMode===mode);
+      });
+      return;
+    }
+    if(rec){
+      const ds=row.querySelectorAll('details');
+      rec._open=Array.from(ds).map(d=>d.open);
+    }
+    row.remove();errorExpanded.delete(id);return;
+  }
+  try{
+    if(rec)rec._mode=mode;
+    if(await insertErrorDetailRow(id)){
+      const loaded=errorDetailCache[id];
+      if(loaded)loaded._mode=mode;
+      const inserted=document.getElementById('erd-'+id);
+      if(inserted){
+        inserted.querySelectorAll('[data-error-panel]').forEach(panel=>{
+          panel.hidden=panel.dataset.errorPanel!==mode;
+        });
+        inserted.querySelectorAll('[data-error-mode]').forEach(button=>{
+          button.classList.toggle('primary',button.dataset.errorMode===mode);
+        });
+      }
+      errorExpanded.add(id);
+    }
+  }catch(e){showNotice(e.message,'error');}
+}
+async function insertErrorDetailRow(id){
+  const anchor=document.getElementById('er-'+id);
+  if(!anchor)return false;
+  if(document.getElementById('erd-'+id))return true;
+  let rec=errorDetailCache[id];
+  if(!rec){
+    const d=await api('/api/admin/errors/status?id='+encodeURIComponent(id));
+    const list=d.records||[];
+    if(!list.length){errorExpanded.delete(id);return false;}
+    rec=list[0];errorDetailCache[id]=rec;
+  }
+  const tr=document.createElement('tr');tr.id='erd-'+id;
+  const open=(rec._open&&rec._open.length)?rec._open:[];
+  const o=(i)=>open[i]!==false;
+  tr.innerHTML=`<td colspan="8" class="trace-detail-cell"><div class="trace-detail">
+      <div class="trace-detail-meta"><b>端点：</b> ${esc(rec.endpoint||'-')} · <b>方法：</b> ${esc(rec.method||'-')} · <b>状态：</b> ${rec.statusCode||'-'} · <b>账户：</b> ${esc(rec.accountEmail||'-')} · <b>密钥：</b> ${esc(rec.apiKeyPrefix||'-')}<br><b>会话：</b> ${rec.sessionMatched?('<span class="usage-status">命中 '+esc(rec.sessionMatched)+'</span>'):'<span style="color:var(--muted)">未命中（新会话）</span>'}${rec.conversationId?(' · <b>对话ID：</b> '+esc(rec.conversationId)):''}</div>
+      ${rec.error?`<div style="color:var(--red)"><b>错误：</b> ${esc(rec.error)}</div>`:''}
+      ${rec.upstreamError?`<div style="color:var(--orange)"><b>上游错误：</b> ${esc(rec.upstreamError)}</div>`:''}
+      <div class="trace-detail-modes" style="display:flex;gap:8px;margin:10px 0">
+        <button type="button" class="btn btn-sm primary" data-error-mode="current">本次响应</button>
+        <button type="button" class="btn btn-sm" data-error-mode="full">完整请求</button>
+      </div>
+      <div data-error-panel="current">
+        <details${o(0)?' open':''}><summary><span>下游响应</span><button type="button" class="btn btn-sm" data-copy-error="downstreamResp">复制</button></summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+      </div>
+      <div data-error-panel="full" hidden>
+        <div style="display:flex;justify-content:flex-end;margin:0 0 8px"><button type="button" class="btn btn-sm" data-copy-error-all title="复制完整请求全部内容。四个 JSON 段落分别为：下游请求=客户端发往本网关的请求；上游请求=网关转发给上游服务的请求；上游响应=上游服务返回的原始响应；下游响应=网关最终返回给客户端的响应">全部复制</button></div>
+        <details${o(1)?' open':''}><summary><span>下游请求</span><button type="button" class="btn btn-sm" data-copy-error="downstreamReq">复制</button></summary><pre>${esc(JSON.stringify(rec.downstreamReq,null,2)||'—')}</pre></details>
+        <details${o(2)?' open':''}><summary><span>上游请求</span><button type="button" class="btn btn-sm" data-copy-error="upstreamReq">复制</button></summary><pre>${esc(JSON.stringify(rec.upstreamReq,null,2)||'—')}</pre></details>
+        <details${o(3)?' open':''}><summary><span>上游响应</span><button type="button" class="btn btn-sm" data-copy-error="upstreamResp">复制</button></summary><pre>${esc(JSON.stringify(rec.upstreamResp,null,2)||'—')}</pre></details>
+        <details${o(4)?' open':''}><summary><span>下游响应</span><button type="button" class="btn btn-sm" data-copy-error="downstreamResp">复制</button></summary><pre>${esc(JSON.stringify(rec.downstreamResp,null,2)||'—')}</pre></details>
+      </div>
+    </div></td>`;
+  anchor.insertAdjacentElement('afterend',tr);
+  const setErrorMode=(mode)=>{
+    rec._mode=mode;
+    tr.querySelectorAll('[data-error-panel]').forEach(panel=>{
+      panel.hidden=panel.dataset.errorPanel!==mode;
+    });
+    tr.querySelectorAll('[data-error-mode]').forEach(button=>{
+      button.classList.toggle('primary',button.dataset.errorMode===mode);
+    });
+  };
+  tr.querySelectorAll('[data-error-mode]').forEach(button=>{
+    button.addEventListener('click',()=>setErrorMode(button.dataset.errorMode));
+  });
+  tr.querySelectorAll('[data-copy-error]').forEach(button=>{
+    button.addEventListener('click',async event=>{
+      event.preventDefault();
+      event.stopPropagation();
+      const value=rec[button.dataset.copyError];
+      const text=JSON.stringify(value,null,2)||'—';
+      try{
+        await navigator.clipboard.writeText(text);
+        showNotice('已复制','success');
+      }catch(e){
+        showNotice('复制失败','error');
+      }
+    });
+  });
+  tr.querySelectorAll('[data-copy-error-all]').forEach(button=>{
+    button.addEventListener('click',async event=>{
+      event.preventDefault();
+      event.stopPropagation();
+      const text=fullTraceCopyText(rec);
+      try{
+        await navigator.clipboard.writeText(text);
+        showNotice('已复制','success');
+      }catch(e){
+        showNotice('复制失败','error');
+      }
+    });
+  });
+  setErrorMode(rec._mode||'current');
+  tr.querySelectorAll('details').forEach((detail,index)=>{
+    detail.addEventListener('toggle',()=>{
+      if(!Array.isArray(rec._open))rec._open=[];
+      rec._open[index]=detail.open;
+    });
+  });
+  return true;
+}
+async function clearErrorLogs(){
+  try{
+    await api('/api/admin/errors/clear',{method:'POST'});
+    errorExpanded.clear();
+    for(const k in errorDetailCache)delete errorDetailCache[k];
+    errorPageNo=0;
+    loadErrorLogs(true);
+  }
+  catch(e){showNotice(e.message,'error');}
+}
+async function saveErrorConfig(){
+  try{
+    const max=Math.max(1,Math.min(2000,parseInt($('errorMax').value||'50',10)));
+    $('errorMax').value=max;
+    const d=await api('/api/admin/errors',{method:'POST',body:JSON.stringify({max})});
+    if($('errorMaxLabel'))$('errorMaxLabel').textContent=d.max||max;
+    errorPageNo=0;
+    loadErrorLogs(true);
+  }catch(e){showNotice(e.message,'error');}
 }
 // Poll the live trace list while the usage debug pane is visible so in-progress
 // requests flip to success/error without a manual refresh.

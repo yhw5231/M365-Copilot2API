@@ -65,7 +65,10 @@ func minInt(a, b int) int {
 const (
 	rs          = "\x1e"
 	defaultTone = "magic"
-	wsBase      = "wss://substrate.office.com/m365Copilot/Chathub"
+	// defaultWSBase is the production ChatHub SignalR endpoint. wsEndpoint()
+	// resolves the dial-time value so M365_CHATHUB_WS_BASE can redirect the
+	// WebSocket (self-hosted endpoint override and integration tests).
+	defaultWSBase = "wss://substrate.office.com/m365Copilot/Chathub"
 	// maxAttachments bounds per-request remote downloads: each image is
 	// base64-encoded and held in memory alongside the multipart body.
 	maxAttachments   = 10
@@ -919,6 +922,17 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	return Result{}, fmt.Errorf("chathub response deadline exceeded before completion")
 }
 
+// wsEndpoint resolves the ChatHub WebSocket base URL at dial time.
+// M365_CHATHUB_WS_BASE (e.g. ws://127.0.0.1:8080/m365Copilot/Chathub)
+// overrides the production endpoint; the value is read per dial so tests can
+// redirect it without restarting the process.
+func wsEndpoint() string {
+	if v := strings.TrimSpace(os.Getenv("M365_CHATHUB_WS_BASE")); v != "" {
+		return v
+	}
+	return defaultWSBase
+}
+
 func buildWSURL(acc Account, sessionID, conversationID, requestID string) (string, error) {
 	q := url.Values{}
 	q.Set("chatsessionid", requestID)
@@ -939,7 +953,7 @@ func buildWSURL(acc Account, sessionID, conversationID, requestID string) (strin
 
 	// url.Values encodes quotes; probe used safe='",' so keep quotes unescaped-ish.
 	// Gorilla/url will encode " to %22 which MS accepts.
-	u := fmt.Sprintf("%s/%s@%s?%s", wsBase, acc.OID, acc.TID, q.Encode())
+	u := fmt.Sprintf("%s/%s@%s?%s", wsEndpoint(), acc.OID, acc.TID, q.Encode())
 	return u, nil
 }
 

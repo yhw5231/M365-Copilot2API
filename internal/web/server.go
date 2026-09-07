@@ -141,6 +141,7 @@ type Server struct {
 	responseMessages    map[string]map[string]respHistory
 	usage               *usageLog
 	trace               *traceStore
+	errors              *errorStore
 	generatedImages     map[string]*generatedImage
 	generatedImagesMu   sync.Mutex
 	pendingToolsMu      sync.Mutex
@@ -234,6 +235,7 @@ func New() (*Server, error) {
 		pendingTools:        map[string]map[string]pendingToolCall{},
 		usage:               openUsageLog(),
 		trace:               openTraceStore(),
+		errors:              openErrorStore(),
 		generatedImages:     make(map[string]*generatedImage),
 	}
 	srv.chat.OnUpstream = srv.routeUpstreamTrace
@@ -395,6 +397,9 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/admin/trace", s.adminTrace)
 	m.HandleFunc("/api/admin/trace/status", s.adminTraceStatus)
 	m.HandleFunc("/api/admin/trace/clear", s.adminTraceClear)
+	m.HandleFunc("/api/admin/errors", s.adminErrorRecords)
+	m.HandleFunc("/api/admin/errors/status", s.adminErrorRecordsStatus)
+	m.HandleFunc("/api/admin/errors/clear", s.adminErrorRecordsClear)
 	m.HandleFunc("/api/health", s.health)
 	m.HandleFunc("/api/version", s.version)
 	m.HandleFunc("/api/update", s.update)
@@ -2261,6 +2266,25 @@ func failoverRequest(base chathub.Request, body oaiReq, resolvedConversationID, 
 	}
 	req.BindAccount = nextID
 	return req
+}
+
+// unseenSuffixOf returns the portion of full that never reached the client.
+// An empty delivered stream means nothing was written yet, so the whole text
+// is outstanding; a delivered prefix is extended only when full is a strict
+// prefix superset of it — the same rule as the content-stream path, because a
+// ChatHub mid-stream non-prefix rewrite cannot be un-sent. ok=false means
+// there is nothing safe to add.
+func unseenSuffixOf(full, delivered string) (suffix string, ok bool) {
+	if full == "" {
+		return "", false
+	}
+	if delivered == "" {
+		return full, true
+	}
+	if len(full) > len(delivered) && strings.HasPrefix(full, delivered) {
+		return full[len(delivered):], true
+	}
+	return "", false
 }
 
 func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
@@ -4290,7 +4314,21 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if textGateMisjudged || corrected {
-				// correction content already written inline above
+				// correction content already written inline above; still recover
+				// the unseen tail when the authoritative completion carried text
+				// that never streamed (same final-result-only case as below).
+				if suffix, ok := unseenSuffixOf(res.Text, bufferedContent.String()); ok && strings.TrimSpace(suffix) != "" {
+					if c, err := reviewContent(suffix); err != nil {
+						closeReviewHit()
+						return
+					} else if c != "" {
+						if c = contentFilter.Push(c); c != "" {
+							if writeErr := writeChunk(map[string]any{"content": c}); writeErr != nil {
+								return
+							}
+						}
+					}
+				}
 				if reviewTail() {
 					closeReviewHit()
 					return
@@ -4344,6 +4382,25 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			} else {
+				// ChatHub can place the completed answer only in the final result
+				// frame (zero text updates on the stream) or lose the tail of a
+				// long answer to a mid-stream rewrite. Nothing was streamed inline
+				// in that case and the filter tails below are empty, so the
+				// authoritative completion must be emitted from res.Text here —
+				// otherwise the stream closes as a "successful" blank answer and
+				// the Responses adapter reports empty_upstream_response.
+				if suffix, ok := unseenSuffixOf(res.Text, bufferedContent.String()); ok && strings.TrimSpace(suffix) != "" {
+					if c, err := reviewContent(suffix); err != nil {
+						closeReviewHit()
+						return
+					} else if c != "" {
+						if c = contentFilter.Push(c); c != "" {
+							if writeErr := writeChunk(map[string]any{"content": c}); writeErr != nil {
+								return
+							}
+						}
+					}
+				}
 				if content := contentFilter.Flush(); content != "" {
 					if c, err := reviewContent(content); err != nil {
 						closeReviewHit()

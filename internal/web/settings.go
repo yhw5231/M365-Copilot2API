@@ -309,6 +309,9 @@ type runtimeSettings struct {
 	// recent TraceMaxRecords full request/response captures (default 50).
 	TraceEnabled    bool `json:"traceEnabled,omitempty"`
 	TraceMaxRecords int  `json:"traceMaxRecords,omitempty"`
+	// ErrorMaxRecords bounds the always-on error-record ring (failed /v1/
+	// requests), independent of the debug-mode trace capture.
+	ErrorMaxRecords int `json:"errorMaxRecords,omitempty"`
 	// AccountConcurrency is the maximum number of simultaneous requests allowed
 	// for each account. It defaults to 1 and can be updated at runtime.
 	AccountConcurrency int `json:"accountConcurrency"`
@@ -459,6 +462,7 @@ func defaultRuntimeSettings() runtimeSettings {
 		UpstreamMappings:                append([]upstreamMapping(nil), defaultUpstreamMappings...),
 		ToolPlanningMode:                toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
 		TraceMaxRecords:                 defaultTraceMaxRecords,
+		ErrorMaxRecords:                 defaultErrorMaxRecords,
 		AccountConcurrency:              envInt("M365_ACCOUNT_DEFAULT_CONCURRENCY", defaultAccountConcurrency),
 		GatewayConcurrency:              envInt("M365_GATEWAY_CONCURRENCY", defaultGatewayConcurrency),
 		AccountRoutingRule:              "available-first",
@@ -600,6 +604,9 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.TraceMaxRecords < 0 || v.TraceMaxRecords > 2000 {
 		return fmt.Errorf("调试记录条数必须为 0-2000")
+	}
+	if v.ErrorMaxRecords < 0 || v.ErrorMaxRecords > 2000 {
+		return fmt.Errorf("错误记录条数必须为 0-2000")
 	}
 	if v.AccountConcurrency < 1 || v.AccountConcurrency > 256 {
 		return fmt.Errorf("账号并发必须为 1-256")

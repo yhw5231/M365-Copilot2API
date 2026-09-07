@@ -130,7 +130,15 @@ func traceEnabled() bool {
 // begin registers a new in-progress trace record. It returns nil when tracing
 // is disabled so callers can skip work cheaply.
 func (t *traceStore) begin(rec *traceRecord) *traceRecord {
-	if !traceEnabled() {
+	return t.beginFor(rec, traceEnabled())
+}
+
+// beginFor registers a record under an explicitly resolved switch. The capture
+// middleware resolves the switch from the server's own settings store (which in
+// production is the same store the traceConfig singleton reads) so tests can
+// drive the debug mode deterministically.
+func (t *traceStore) beginFor(rec *traceRecord, enabled bool) *traceRecord {
+	if !enabled {
 		return nil
 	}
 	if rec.ID == "" {
@@ -424,6 +432,17 @@ func traceMaxNorm(max int) int {
 	return max
 }
 
+// traceEnabledCurrent resolves the debug-trace switch from the server's own
+// settings store when available; in production that store IS the settings
+// singleton, so behavior is unchanged, while tests can inject a standalone
+// store to drive the switch deterministically.
+func (s *Server) traceEnabledCurrent() bool {
+	if s != nil && s.settings != nil {
+		return s.settings.get().TraceEnabled
+	}
+	return traceEnabled()
+}
+
 // traceFromRequest finds the active trace record attached to a request by the
 // traceCaptureMiddleware. It is a no-op (returns nil) when tracing is disabled.
 func traceFromRequest(r *http.Request) *traceRecord {
@@ -437,10 +456,15 @@ func traceFromRequest(r *http.Request) *traceRecord {
 // enabled it snapshots the downstream request body and the exact bytes written
 // back to the client (the downstream response), and keeps the record live while
 // the handler runs so in-flight status is visible in the console.
+//
+// Independent of the debug switch, every /v1/ request is observed so a failed
+// request (non-2xx status, handler panic, or a handler-reported error) lands in
+// the error-record ring — the error console must stay useful when the full
+// debug capture is off.
 func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		enabled, _ := traceConfig()
-		if !enabled || !strings.HasPrefix(r.URL.Path, "/v1/") {
+		enabled := s.traceEnabledCurrent()
+		if !strings.HasPrefix(r.URL.Path, "/v1/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -452,19 +476,23 @@ func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		startedAt := requestStartedAtFrom(r)
 		rec := &traceRecord{
-			ID:            requestIDFrom(r),
-			At:            startedAt,
-			Endpoint:      r.URL.Path,
-			Method:        r.Method,
-			Status:        "in_progress",
-			DownstreamReq: redactBody(body),
+			ID:       requestIDFrom(r),
+			At:       startedAt,
+			Endpoint: r.URL.Path,
+			Method:   r.Method,
+			Status:   "in_progress",
 		}
 		if rec.ID == "" {
 			rec.ID = "trace_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 		}
-		if s.trace.begin(rec) == nil {
-			next.ServeHTTP(w, r)
-			return
+		if enabled {
+			// The live console shows the request payload while the handler runs,
+			// so the redacted body lands on the record before it begins.
+			rec.DownstreamReq = redactBody(body)
+			if s.trace.beginFor(rec, enabled) == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 		rc := &traceResponseWriter{ResponseWriter: w}
 		start := time.Now()
@@ -474,40 +502,104 @@ func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 		// re-raised after the update so recoverPanics (outermost middleware)
 		// still writes the 500 error to the client.
 		var panicVal any
-		func() {
-			defer func() {
-				if v := recover(); v != nil {
-					panicVal = v
-				}
+		if enabled {
+			var ctx context.Context
+			ctx = context.WithValue(r.Context(), traceKey{}, rec)
+			func() {
+				defer func() {
+					if v := recover(); v != nil {
+						panicVal = v
+					}
+				}()
+				next.ServeHTTP(rc, r.WithContext(ctx))
 			}()
-			next.ServeHTTP(rc, r.WithContext(context.WithValue(r.Context(), traceKey{}, rec)))
-		}()
-		s.trace.update(rec.ID, func(x *traceRecord) {
-			x.DownstreamResp = redactBody(rc.body.Bytes())
-			x.StatusCode = rc.status
-			x.DurationMs = time.Since(start).Milliseconds()
-		})
-		s.trace.finish(rec.ID, func(x *traceRecord) {
-			if panicVal != nil {
-				x.Error = fmt.Sprintf("handler panic: %v", panicVal)
-				x.Status = "error"
-				return
-			}
-			if x.StatusCode >= 400 || x.Error != "" {
-				x.Status = "error"
-			}
-			if x.Status == "in_progress" {
-				if x.Error != "" {
+			s.trace.update(rec.ID, func(x *traceRecord) {
+				x.DownstreamResp = redactBody(rc.body.Bytes())
+				x.StatusCode = rc.status
+				x.DurationMs = time.Since(start).Milliseconds()
+			})
+			s.trace.finish(rec.ID, func(x *traceRecord) {
+				if panicVal != nil {
+					x.Error = fmt.Sprintf("handler panic: %v", panicVal)
 					x.Status = "error"
-				} else {
-					x.Status = "success"
+					return
 				}
+				if x.StatusCode >= 400 || x.Error != "" {
+					x.Status = "error"
+				}
+				if x.Status == "in_progress" {
+					if x.Error != "" {
+						x.Status = "error"
+					} else {
+						x.Status = "success"
+					}
+				}
+			})
+			// Mirror the finalized record into the error ring when the request
+			// failed; the copy carries the full debug payloads. Handlers that
+			// reject a request before reporting a trace error (early 4xx
+			// validation paths) leave Error empty — recover the message from
+			// the captured response body so the error console never shows a
+			// blank reason.
+			if finished, ok := s.trace.get(rec.ID); ok && finished.Status == "error" {
+				if finished.Error == "" {
+					finished.Error = extractErrorText(rc.body.Bytes())
+				}
+				s.errors.record(&finished)
 			}
-		})
+		} else {
+			func() {
+				defer func() {
+					if v := recover(); v != nil {
+						panicVal = v
+					}
+				}()
+				next.ServeHTTP(rc, r)
+			}()
+			// Debug capture is off: still keep a self-contained error record
+			// (redacted request/response bodies, status, error message) so the
+			// error console works without the trace overhead.
+			if panicVal != nil || rc.status >= 400 {
+				errRec := &traceRecord{
+					ID:             "err_" + strconv.FormatInt(time.Now().UnixNano(), 10),
+					At:             startedAt,
+					Endpoint:       r.URL.Path,
+					Method:         r.Method,
+					Status:         "error",
+					StatusCode:     rc.status,
+					DurationMs:     time.Since(start).Milliseconds(),
+					APIKeyPrefix:   apiKeyPrefix(r),
+					DownstreamReq:  redactBody(body),
+					DownstreamResp: redactBody(rc.body.Bytes()),
+				}
+				if panicVal != nil {
+					errRec.Error = fmt.Sprintf("handler panic: %v", panicVal)
+				} else {
+					errRec.Error = extractErrorText(rc.body.Bytes())
+				}
+				if reqModel := peekRequestModel(body); reqModel != "" {
+					errRec.Model = reqModel
+				}
+				s.errors.record(errRec)
+			}
+		}
 		if panicVal != nil {
 			panic(panicVal)
 		}
 	})
+}
+
+// peekRequestModel extracts the "model" field from a JSON request body without
+// fully validating it — a best-effort label for error records captured while
+// the debug capture is off.
+func peekRequestModel(body []byte) string {
+	var probe struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &probe) != nil {
+		return ""
+	}
+	return probe.Model
 }
 
 // traceResponseWriter captures the downstream response while streaming it
