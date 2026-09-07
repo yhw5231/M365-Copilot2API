@@ -280,17 +280,42 @@ func (s *Server) dropFilteredSession(r *http.Request, body *oaiReq) {
 	}
 }
 
-// recordContentReviewStop writes the usage row and debug-trace update for a
-// request that the content filter stopped. The row records the replacement as
-// the completion so the request table does not show a zero-token row.
-func (s *Server) recordContentReviewStop(r *http.Request, body *oaiReq, acc auth.AccountToken, prompt string, startedAt time.Time, replacement string, stream bool) {
+// blockFilteredSession blocks the downstream session after a filter hit. A
+// client whose history triggered the keyword once will trigger it on every
+// replay (it cannot remove the turn that produced the hit), so dropping only
+// the upstream binding turns every retry into a fresh repeat of the same
+// violation. Blocking makes every further request on the session fail fast
+// locally; the block survives restarts and expires with the configured TTL.
+func (s *Server) blockFilteredSession(r *http.Request, body *oaiReq) {
+	if s == nil || s.blockedSessions == nil {
+		return
+	}
+	explicitID := explicitSessionID(r, body)
+	if explicitID == "" {
+		log.Printf("[content-filter] hit on a request without an explicit session id; nothing to block")
+		return
+	}
+	if rec := s.blockedSessions.BlockedRecord(explicitID); rec.BlockedAt.IsZero() {
+		s.blockedSessions.Block(explicitID, "content filter hit")
+		log.Printf("[content-filter] session %s blocked after keyword hit (ttl %s)", explicitID, s.blockedSessions.ttl)
+	}
+}
+
+// contentFilterRejectMessage is the client-facing text for a rejected request,
+// on the wire as HTTP 403 (headers not yet sent) or as an in-stream error
+// frame (a stream already in progress).
+const contentFilterRejectMessage = "content policy violated: the response was blocked by the gateway's content filter and this session is now blocked; start a new session to continue"
+
+// recordContentFilterRejection writes the usage row and debug-trace update for
+// a request the content filter rejected. The row carries the 403 status so the
+// usage/error pages show the policy block instead of a silent success.
+func (s *Server) recordContentFilterRejection(r *http.Request, body *oaiReq, acc auth.AccountToken, prompt string, startedAt time.Time) {
 	if s == nil {
 		return
 	}
 	pt := EstimateTokens(prompt)
-	ct := EstimateTokens(replacement)
 	model := firstNonEmpty(body.Model, defaultPublicModelName)
-	log.Printf("[content-filter] hit: response replaced with %d-byte configured text, session terminated", len(replacement))
+	log.Printf("[content-filter] hit: request rejected with 403 and the session blocked")
 	if s.usage != nil {
 		s.usage.record(UsageRecord{
 			Time:           time.Now(),
@@ -299,20 +324,27 @@ func (s *Server) recordContentReviewStop(r *http.Request, body *oaiReq, acc auth
 			Model:          model,
 			ReasoningLevel: body.ReasoningEffort,
 			Endpoint:       "/v1/chat/completions",
-			Stream:         stream,
 			InputTokens:    int64(pt),
-			OutputTokens:   int64(ct),
 			DurationMs:     time.Since(startedAt).Milliseconds(),
-			Status:         http.StatusOK,
+			Status:         http.StatusForbidden,
 		})
 	}
 	if tr := traceFromRequest(r); tr != nil {
 		s.trace.update(tr.ID, func(rec *traceRecord) {
-			rec.Status = "success"
-			rec.StatusCode = http.StatusOK
+			rec.Status = "error"
+			rec.StatusCode = http.StatusForbidden
 			rec.InputTokens = int64(pt)
-			rec.OutputTokens = int64(ct)
-			rec.Error = "content filter hit: response replaced"
+			rec.Error = "content filter hit: session blocked"
 		})
 	}
+}
+
+// rejectContentFilterHit is the shared bookkeeping for every rejection path:
+// block the session (persistent), drop the upstream binding, and record the
+// rejection. The wire response (403 JSON or in-stream error frame) is emitted
+// by the caller, which knows whether response headers were already sent.
+func (s *Server) rejectContentFilterHit(r *http.Request, body *oaiReq, acc auth.AccountToken, prompt string, startedAt time.Time) {
+	s.blockFilteredSession(r, body)
+	s.dropFilteredSession(r, body)
+	s.recordContentFilterRejection(r, body, acc, prompt, startedAt)
 }

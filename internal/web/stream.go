@@ -37,6 +37,12 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
+	// A session that hit the content filter is blocked: reject before any
+	// upstream work (see openaiChat for the same gate on the OpenAI endpoints).
+	if body.SessionKey != "" && s.blockedSessions != nil && s.blockedSessions.IsBlocked(body.SessionKey) {
+		writeOpenAIError(w, http.StatusForbidden, "content_policy_blocked", (&contentPolicyBlockedError{SessionID: body.SessionKey}).Error())
+		return
+	}
 	requestedAccountID := body.AccountID
 	acc, err := s.resolveAccount(requestedAccountID)
 	if err != nil {
@@ -127,9 +133,17 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	res.Text = sanitizePublicAssistantText(res.Text)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
-	if repl, hit := filterContentFull(res.Text); hit {
-		log.Printf("[content-filter] replaced chathub stream done text (%d bytes) with configured replacement", len(res.Text))
-		res.Text = repl
+	if _, hit := filterContentFull(res.Text); hit {
+		// A keyword hit rejects the response outright and blocks the session
+		// persistently — no replaced text is sent on this raw-event stream.
+		log.Printf("[content-filter] rejected chathub stream text (%d bytes) on keyword hit", len(res.Text))
+		s.rejectContentFilterHit(r, &oaiReq{SessionKey: body.SessionKey}, acc, text, time.Now())
+		if !headersWritten {
+			headersWritten = true
+			setSSEHeaders(w)
+		}
+		_ = writeSSE(r, w, flusher, "error", map[string]any{"type": "error", "code": "content_policy_blocked", "message": contentFilterRejectMessage})
+		return
 	}
 
 	if !headersWritten {

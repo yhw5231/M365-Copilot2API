@@ -146,6 +146,7 @@ type Server struct {
 	generatedImagesMu   sync.Mutex
 	pendingToolsMu      sync.Mutex
 	pendingTools        map[string]map[string]pendingToolCall // tenant -> callID -> pendingToolCall
+	blockedSessions     *blockedSessions
 }
 
 const maxResponsesPerTenant = 256
@@ -233,6 +234,7 @@ func New() (*Server, error) {
 		settings:            openSettingsStore(),
 		responseMessages:    map[string]map[string]respHistory{},
 		pendingTools:        map[string]map[string]pendingToolCall{},
+		blockedSessions:     openBlockedSessions(),
 		usage:               openUsageLog(),
 		trace:               openTraceStore(),
 		errors:              openErrorStore(),
@@ -2383,6 +2385,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	defer releaseSession()
 
 	log.Printf("[req-trace] id=%s stage=body_parsed messages=%d tools=%d choice=%s raw_bytes=%d", requestID, len(body.Messages), len(body.Tools), normalizedToolChoiceMode(body.ToolChoice), len(raw))
+	// A session that hit the content filter is blocked: every further request
+	// on it is rejected locally — no upstream call, no session resolution, no
+	// prompt work — because replaying the same history keeps re-triggering the
+	// keyword. The block expires with the configured TTL; deleting
+	// blockSessions.json (or restarting with the filter disabled) lifts it.
+	if sid := explicitSessionID(r, &body); sid != "" && s.blockedSessions != nil && s.blockedSessions.IsBlocked(sid) {
+		log.Printf("[content-filter] id=%s rejected blocked session %s", requestID, sid)
+		writeOpenAIError(w, http.StatusForbidden, "content_policy_blocked", (&contentPolicyBlockedError{SessionID: sid}).Error())
+		return
+	}
 	// Some clients replay history with the same tool-call id used more than
 	// once (retry/compaction re-emits an identical parallel-call group). Alias
 	// the repeats deterministically before validation; otherwise the 400 below
@@ -2483,6 +2495,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		sb.WriteString(" If you just want to verify file content, use the read tool instead of edit. Do NOT submit edit with old_string == new_string, and do NOT write a line back to the same broken value.")
 		body.Messages = append(body.Messages, oaiMsg{Role: "system", Content: sb.String(), ServiceInjected: true})
 	}
+	// Identity concealment (primary defense; the content filter is the
+	// backstop): an output-side keyword replacement can never survive an
+	// identity-guessing conversation — answering "am I model X" names X in
+	// either direction, so every answer re-triggers the filter. Keeping other
+	// vendors' names out of the output in the first place is the only stable
+	// fix. Appended last so it is the most recent instruction the model reads.
+	body.Messages = injectIdentityConcealment(body.Messages)
 	var prompt string
 	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
@@ -3016,28 +3035,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		// finishContentReview closes a stream that the content filter stopped:
-		// the configured replacement text is the final content delta, followed
-		// by the normal finish/usage/[DONE] frames. The session binding is
-		// dropped so the next turn starts a fresh upstream conversation.
+		// instead of a replaced response the client gets an in-stream error
+		// frame (headers are already sent), the session is blocked persistently
+		// and its upstream binding is dropped.
 		finishContentReview := func() {
-			repl := contentReview.replacement()
-			if repl != "" {
-				if err := writeContentDelta(repl); err != nil {
-					return
-				}
-			}
-			finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
-			if body.ReasoningEffort != "" {
-				finishChunk["reasoning_effort"] = body.ReasoningEffort
-			}
-			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(finishChunk)+"\n\n")
-			if body.shouldSendStreamUsage() {
-				usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{}, "usage": usageWithCache(EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), EstimateTokens(repl), cachedTokens())}
-				_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
-			}
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": contentFilterRejectMessage, "type": "content_policy_error", "code": "content_policy_blocked"}})+"\n\n")
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
-			s.recordContentReviewStop(r, &body, acc, prompt, startedAt, repl, true)
-			s.dropFilteredSession(r, &body)
+			s.rejectContentFilterHit(r, &body, acc, prompt, startedAt)
 		}
 		res, err := s.chatWithAccountEvents(ctx, acc.ID, account, answerReq, func(ev chathub.StreamEvent) error {
 			if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
@@ -3685,26 +3689,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return out, nil
 		}
 		// finishContentReview closes a stream that the content filter stopped:
-		// the configured replacement text is the final content delta, followed
-		// by the normal finish/usage/[DONE] frames. The session binding is
-		// dropped so the next turn starts a fresh upstream conversation.
+		// instead of a replaced response the client gets an in-stream error
+		// frame (headers are already sent), the session is blocked persistently
+		// and its upstream binding is dropped.
 		finishContentReview := func() {
-			repl := contentReview.replacement()
-			if repl != "" {
-				_ = writeChunk(map[string]any{"content": repl})
-			}
-			finishFrame := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
-			if body.ReasoningEffort != "" {
-				finishFrame["reasoning_effort"] = body.ReasoningEffort
-			}
-			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(finishFrame)+"\n\n")
-			if body.shouldSendStreamUsage() {
-				usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{}, "usage": usageWithCache(EstimateTokens(prompt)+EstimateTokens(storedContextPrompt), EstimateTokens(repl), cachedTokens())}
-				_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
-			}
+			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": contentFilterRejectMessage, "type": "content_policy_error", "code": "content_policy_blocked"}})+"\n\n")
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
-			s.recordContentReviewStop(r, &body, acc, prompt, startedAt, repl, true)
-			s.dropFilteredSession(r, &body)
+			s.rejectContentFilterHit(r, &body, acc, prompt, startedAt)
 		}
 
 		// deliver runs the downstream pipeline for one piece of content:
@@ -4689,16 +4680,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	res.Text = capOutputTokens(res.Text, effectiveMaxOutput(&body))
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
-	// Content review (non-streaming): a keyword hit replaces the whole answer
-	// with the configured replacement text and drops the reasoning transcript,
-	// which may repeat the keyword. Tool-call responses returned above bypass
-	// the filter so agent loops are never corrupted by the replacement.
-	contentFiltered := false
+	// Content review (non-streaming): a keyword hit rejects the whole request
+	// with 403 and blocks the session persistently. Tool-call responses
+	// returned above bypass the filter so agent loops are never corrupted.
 	if repl, hit := filterContentFull(res.Text); hit {
-		log.Printf("[content-filter] id=%s replaced response text (%d bytes) with configured replacement", requestID, len(res.Text))
-		res.Text = repl
-		res.Reasoning = ""
-		contentFiltered = true
+		log.Printf("[content-filter] id=%s rejected response text (%d bytes) on keyword hit", requestID, len(res.Text))
+		_ = repl
+		s.rejectContentFilterHit(r, &body, acc, prompt, startedAt)
+		writeOpenAIError(w, http.StatusForbidden, "content_policy_blocked", contentFilterRejectMessage)
+		return
 	} else if res.Reasoning != "" {
 		if _, hit := filterContentFull(res.Reasoning); hit {
 			res.Reasoning = ""
@@ -4709,9 +4699,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Never serialize an empty assistant message as a successful completion.
 	// Some clients interpret finish_reason=stop with blank content as
 	// "completed response with no content". Image-only responses remain valid.
-	// A content-filter hit with an empty replacement is an intentional deletion
-	// and passes through as a (near-)empty completion.
-	if strings.TrimSpace(res.Text) == "" && len(res.Images) == 0 && !contentFiltered {
+	if strings.TrimSpace(res.Text) == "" && len(res.Images) == 0 {
 		log.Printf("[req-trace] id=%s stage=empty_completion model=%s reasoning_bytes=%d events=%d", requestID, model, len(res.Reasoning), len(res.Events))
 		writeOpenAIError(w, http.StatusBadGateway, "upstream_empty_completion", "upstream completed without assistant content; retry the request or verify that the requested model is available for this tenant")
 		return
@@ -4720,13 +4708,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Persist only the final validated response. This point is after workspace/tool
 	// misjudgment detection, the bounded corrective retry, tool-call recovery,
 	// content-policy handling, and completion-evidence normalization, but before
-	// either streaming or non-streaming client output. A content-filter hit
-	// skips the binding: the upstream conversation holds the tainted answer, so
-	// the session is terminated and the next turn starts fresh.
-	if contentFiltered {
-		s.recordContentReviewStop(r, &body, acc, prompt, startedAt, res.Text, body.Stream)
-		s.dropFilteredSession(r, &body)
-	} else if res.ConversationID != "" {
+	// either streaming or non-streaming client output.
+	if res.ConversationID != "" {
 		s.bindConversation(acc, &body, r, res, prompt, startedAt, task, cachedTokens(), fullInput(), true)
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
