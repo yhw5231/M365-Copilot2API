@@ -13,10 +13,29 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // maxTraceCaptureBytes bounds how much of each request/response body is kept.
 const maxTraceCaptureBytes = 256 << 10
+
+// captureLimit bounds a captured body to maxTraceCaptureBytes, cutting on a
+// rune boundary and appending a visible truncation marker so console readers
+// can tell a captured prefix from the complete body. Note: the marker makes an
+// originally-JSON body invalid JSON, so redactBody then keeps it as a plain
+// string — acceptable for upstream chat payloads, which carry no credential
+// keys.
+func captureLimit(s string) string {
+	if len(s) <= maxTraceCaptureBytes {
+		return s
+	}
+	const marker = "\n…[trace capture truncated]"
+	cut := maxTraceCaptureBytes - len(marker)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + marker
+}
 
 // defaultTraceMaxRecords is how many full request captures the debug mode keeps
 // unless the operator changes the value in settings.
@@ -514,7 +533,7 @@ func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 				next.ServeHTTP(rc, r.WithContext(ctx))
 			}()
 			s.trace.update(rec.ID, func(x *traceRecord) {
-				x.DownstreamResp = redactBody(rc.body.Bytes())
+				x.DownstreamResp = redactBody([]byte(captureLimit(rc.body.String())))
 				x.StatusCode = rc.status
 				x.DurationMs = time.Since(start).Milliseconds()
 			})
@@ -543,7 +562,7 @@ func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 			// blank reason.
 			if finished, ok := s.trace.get(rec.ID); ok && finished.Status == "error" {
 				if finished.Error == "" {
-					finished.Error = extractErrorText(rc.body.Bytes())
+					finished.Error = extractErrorText([]byte(captureLimit(rc.body.String())))
 				}
 				s.errors.record(&finished)
 			}
@@ -559,23 +578,23 @@ func (s *Server) traceCaptureMiddleware(next http.Handler) http.Handler {
 			// Debug capture is off: still keep a self-contained error record
 			// (redacted request/response bodies, status, error message) so the
 			// error console works without the trace overhead.
-			if panicVal != nil || rc.status >= 400 {
-				errRec := &traceRecord{
-					ID:             "err_" + strconv.FormatInt(time.Now().UnixNano(), 10),
-					At:             startedAt,
-					Endpoint:       r.URL.Path,
-					Method:         r.Method,
-					Status:         "error",
-					StatusCode:     rc.status,
-					DurationMs:     time.Since(start).Milliseconds(),
-					APIKeyPrefix:   apiKeyPrefix(r),
-					DownstreamReq:  redactBody(body),
-					DownstreamResp: redactBody(rc.body.Bytes()),
-				}
+				if panicVal != nil || rc.status >= 400 {
+					errRec := &traceRecord{
+						ID:             "err_" + strconv.FormatInt(time.Now().UnixNano(), 10),
+						At:             startedAt,
+						Endpoint:       r.URL.Path,
+						Method:         r.Method,
+						Status:         "error",
+						StatusCode:     rc.status,
+						DurationMs:     time.Since(start).Milliseconds(),
+						APIKeyPrefix:   apiKeyPrefix(r),
+						DownstreamReq:  redactBody(body),
+						DownstreamResp: redactBody([]byte(captureLimit(rc.body.String()))),
+					}
 				if panicVal != nil {
 					errRec.Error = fmt.Sprintf("handler panic: %v", panicVal)
 				} else {
-					errRec.Error = extractErrorText(rc.body.Bytes())
+					errRec.Error = extractErrorText([]byte(captureLimit(rc.body.String())))
 				}
 				if reqModel := peekRequestModel(body); reqModel != "" {
 					errRec.Model = reqModel

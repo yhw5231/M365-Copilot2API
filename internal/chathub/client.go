@@ -877,14 +877,8 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					ttft = firstDeltaAt.Sub(payloadSentAt).Milliseconds()
 				}
 				if c.OnUpstream != nil {
-					preview := text
-					if len(preview) > 500 {
-						preview = preview[:500]
-					}
-					reasoning := reasoningBuf.String()
-					if len(reasoning) > 4096 {
-						reasoning = reasoning[:4096]
-					}
+					preview := truncateRunes(text, 500)
+					reasoning := truncateRunes(reasoningBuf.String(), 4096)
 					c.OnUpstream(req.TraceID, "upstream_response", map[string]any{
 						"text":          text,
 						"reasoning":     reasoning,

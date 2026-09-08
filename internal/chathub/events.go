@@ -1,6 +1,21 @@
 package chathub
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"unicode/utf8"
+)
+
+// truncateRunes bounds s to at most n bytes without splitting a multi-byte
+// UTF-8 rune, so trace previews never end in replacement garbage.
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
 
 type Event struct {
 	Type       int             `json:"type,omitempty"`

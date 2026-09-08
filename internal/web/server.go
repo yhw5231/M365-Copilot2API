@@ -284,10 +284,7 @@ func (s *Server) routeUpstreamTrace(traceID, stage string, meta map[string]any) 
 		switch stage {
 		case "upstream_request":
 			payload := fmt.Sprint(meta["payload"])
-			if len(payload) > maxTraceCaptureBytes {
-				payload = payload[:maxTraceCaptureBytes]
-			}
-			rec.UpstreamReq = redactBody([]byte(payload))
+			rec.UpstreamReq = redactBody([]byte(captureLimit(payload)))
 			rec.UpstreamError = ""
 		case "upstream_first_delta":
 			if ms, ok := meta["first_delta_ms"].(int64); ok {
@@ -297,14 +294,8 @@ func (s *Server) routeUpstreamTrace(traceID, stage string, meta map[string]any) 
 			if ms, ok := meta["ttft_ms"].(int64); ok {
 				rec.TTFTMs = ms
 			}
-			text := fmt.Sprint(meta["text"])
-			if len(text) > maxTraceCaptureBytes {
-				text = text[:maxTraceCaptureBytes]
-			}
-			reasoning := fmt.Sprint(meta["reasoning"])
-			if len(reasoning) > maxTraceCaptureBytes {
-				reasoning = reasoning[:maxTraceCaptureBytes]
-			}
+			text := captureLimit(fmt.Sprint(meta["text"]))
+			reasoning := captureLimit(fmt.Sprint(meta["reasoning"]))
 			rec.UpstreamResp = map[string]any{
 				"text":         text,
 				"reasoning":    reasoning,
@@ -2852,6 +2843,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// replay with cache 0.
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
 		log.Printf("[req-trace] id=%s stage=router_return elapsed_ms=%d err=%t", requestID, time.Since(startedAt).Milliseconds(), routeErr != nil)
+		// Tone fallback for the router turn: chatWithAccount already retried the
+		// same tone once, so a persistent empty completion usually means the
+		// mapped tone is unavailable for this tenant — the same condition the
+		// answer paths recover from with a magic-tone retry (upstream fix 6e44b43).
+		// Without it, one transient upstream empty kills the whole agent turn.
+		if routeErr != nil && IsEmptyCompletion(routeErr) && tone != "magic" {
+			log.Printf("[tone-fallback] router tone=%q returned empty, retrying with magic", tone)
+			if res2, err2 := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: "magic", ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID}); err2 == nil {
+				routeRes, routeErr = res2, nil
+			}
+		}
 		if routeErr != nil {
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "tool router: "+routeErr.Error())
 			return
@@ -3487,6 +3489,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						if !(IsRateLimited(err2) || IsAuthFailure(err2) || errors.Is(err2, outbound.ErrNoProxyNode)) {
 							break
 						}
+					}
+				}
+			}
+			if routeErr != nil {
+				// Tone fallback after the account sweep: the sweep only retries
+				// throttle/auth/proxy failures, so an empty completion surviving
+				// it is still tone-shaped and gets the same magic retry the
+				// answer path uses before the request is failed.
+				if IsEmptyCompletion(routeErr) && tone != "magic" {
+					log.Printf("[tone-fallback] router tone=%q returned empty, retrying with magic", tone)
+					if res2, err2 := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: "magic", ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID}); err2 == nil {
+						routeRes, routeErr = res2, nil
+						s.accountPool.MarkSuccess(acc.ID)
 					}
 				}
 			}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // defaultErrorMaxRecords is how many error records the gateway keeps unless the
@@ -197,7 +198,13 @@ func extractErrorText(body []byte) string {
 	}
 	const maxLen = 300
 	if len(trimmed) > maxLen {
-		return trimmed[:maxLen] + "…"
+		// Cut on a rune boundary so a multi-byte character at the boundary
+		// never renders as replacement garbage in the console.
+		cut := maxLen
+		for cut > 0 && !utf8.RuneStart(trimmed[cut]) {
+			cut--
+		}
+		return trimmed[:cut] + "…"
 	}
 	return trimmed
 }
