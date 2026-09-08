@@ -128,3 +128,83 @@ func TestValidateToolConversationRejectsDuplicateIDs(t *testing.T) {
 		t.Fatal("duplicate id must still be rejected when the repair has not run")
 	}
 }
+
+// TestRepairInterleavedAssistantText reproduces the 2026-09-08 error record:
+// Codex Desktop replays an assistant turn that narrated while calling a tool
+// as separate Responses items — function_call, assistant message,
+// function_call_output. The literal conversion puts a plain assistant message
+// between the call and its result and validateToolConversation rejects the
+// whole turn ("tool results missing before assistant message"), bricking the
+// session because every retry replays the same history. The narration must be
+// merged into the tool-call assistant message.
+func TestRepairInterleavedAssistantText(t *testing.T) {
+	msgs := []oaiMsg{
+		{Role: "user", Content: "check the file"},
+		assistantCallMsg("call-1"),
+		{Role: "assistant", Content: "我先检查文件内容。"},
+		toolResultMsg("call-1"),
+		{Role: "user", Content: "next"},
+	}
+	body := repairInterleavedAssistantText(msgs)
+	if len(body) != 4 {
+		t.Fatalf("expected 4 messages after merge, got %d", len(body))
+	}
+	if err := validateToolConversation(body); err != nil {
+		t.Fatalf("interleaved history still rejected after repair: %v", err)
+	}
+	// The narration is folded into the tool-call assistant message; the
+	// standalone assistant message is gone.
+	merged := body[1]
+	if len(merged.ToolCalls) != 1 {
+		t.Fatalf("merged assistant message lost its tool calls: %d", len(merged.ToolCalls))
+	}
+	if contentToString(merged.Content) != "我先检查文件内容。" {
+		t.Fatalf("merged content = %q, want narration text", contentToString(merged.Content))
+	}
+}
+
+// TestRepairInterleavedAssistantTextPreservesCleanHistory: a conversation
+// where assistant text messages follow completed tool rounds must pass
+// through unchanged — the repair only fires while results are still pending.
+func TestRepairInterleavedAssistantTextPreservesCleanHistory(t *testing.T) {
+	msgs := []oaiMsg{
+		{Role: "user", Content: "hi"},
+		assistantCallMsg("call_1"),
+		toolResultMsg("call_1"),
+		{Role: "assistant", Content: "done"},
+		{Role: "user", Content: "next"},
+	}
+	before := fmt.Sprintf("%#v", msgs)
+	after := repairInterleavedAssistantText(msgs)
+	if fmt.Sprintf("%#v", after) != before {
+		t.Fatalf("clean history was modified:\nbefore: %s\nafter:  %s", before, fmt.Sprintf("%#v", after))
+	}
+}
+
+// TestRepairDuplicateToolCallIDsSameGroupTwice: the trace also shows a client
+// re-emitting the SAME call id twice inside one replayed group (two
+// function_call items, two outputs). Both results must be aliased by
+// consumption order — result #1 → original id, result #2 → #dup2 — instead of
+// both being re-pointed at #dup2 by the declared count.
+func TestRepairDuplicateToolCallIDsSameGroupTwice(t *testing.T) {
+	msgs := []oaiMsg{
+		{Role: "user", Content: "go"},
+		assistantCallMsg("call-dup"),
+		assistantCallMsg("call-dup"),
+		toolResultMsg("call-dup"),
+		toolResultMsg("call-dup"),
+		{Role: "user", Content: "next"},
+	}
+	msgs = repairInterleavedAssistantText(msgs)
+	// The two call turns collapse into one parallel round.
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages after group merge, got %d", len(msgs))
+	}
+	repairDuplicateToolCallIDs(msgs)
+	if err := validateToolConversation(msgs); err != nil {
+		t.Fatalf("same-group duplicate ids still rejected after repair: %v", err)
+	}
+	if got := msgs[3].ToolCallID; got != "call-dup#dup2" {
+		t.Fatalf("second result id = %q, want call-dup#dup2", got)
+	}
+}

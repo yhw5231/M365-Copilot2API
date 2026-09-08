@@ -2390,6 +2390,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// once (retry/compaction re-emits an identical parallel-call group). Alias
 	// the repeats deterministically before validation; otherwise the 400 below
 	// bricks the session because every retry replays the same history.
+	// Codex Desktop additionally interleaves assistant narration between a
+	// tool call and its result; merge it back so the pair validates.
+	body.Messages = repairInterleavedAssistantText(body.Messages)
 	repairDuplicateToolCallIDs(body.Messages)
 	if err := validateToolConversation(body.Messages); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "tool_protocol_error", err.Error())
@@ -3045,7 +3048,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
 			s.rejectContentFilterHit(r, &body, acc, prompt, startedAt)
 		}
-		res, err := s.chatWithAccountEvents(ctx, acc.ID, account, answerReq, func(ev chathub.StreamEvent) error {
+		// Stream event handler shared by the first attempt, the failover sweep
+		// and the tone fallback below: tool events feed streamedTools, text
+		// deltas buffer (and stream inline when no tools are declared).
+		collectEvents := func(ev chathub.StreamEvent) error {
 			if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
 				streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
 				return nil
@@ -3063,7 +3069,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			text.WriteString(ev.Text)
 			return nil
-		})
+		}
+		res, err := s.chatWithAccountEvents(ctx, acc.ID, account, answerReq, collectEvents)
 		failoverTried := false
 		// A content-filter hit must never trigger the failover sweep below: the
 		// response is being replaced locally and the client may already have
@@ -3091,24 +3098,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				// Failover re-creates the upstream conversation on the next
 				// account: the diff-method base no longer applies.
 				sessionCacheBase = 0
-				failoverReq := failoverRequest(answerReq, body, resolvedConversationID, tone, ledger, planningMode, mcpServerURL, task, next.ID)
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				res2, err2 := s.chatWithAccountEvents(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
-					if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
-						streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
-						return nil
-					}
-					if ev.Kind != "text" || ev.Text == "" {
-						return nil
-					}
-					if noTools {
-						if err := emitText(ev.Text); err != nil {
-							return err
-						}
-					}
-					text.WriteString(ev.Text)
-					return nil
-				})
+					failoverReq := failoverRequest(answerReq, body, resolvedConversationID, tone, ledger, planningMode, mcpServerURL, task, next.ID)
+					ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
+					res2, err2 := s.chatWithAccountEvents(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, collectEvents)
 				cancel2()
 				if err2 == nil {
 					task.recordSwitch(acc.ID, next.ID)
@@ -3129,15 +3121,30 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				if !(IsRateLimited(err2) || IsAuthFailure(err2) || errors.Is(err2, outbound.ErrNoProxyNode)) {
 					break
 				}
+				}
 			}
-		}
-		if err != nil {
-			// A content-filter hit that surfaces after the failover sweep still
-			// ends as a replaced response, not as a stream error.
-			if errors.Is(err, errContentFilterHit) {
-				finishContentReview()
-				return
+			// Tone fallback (same as the non-streaming path): an empty
+			// completion usually means the requested tone is not available for
+			// this tenant. Retry once with the magic tone before surfacing the
+			// error; only the ": connected" preamble reached the client, so the
+			// retry is indistinguishable from a fresh stream. The declared
+			// tools must survive the retry or the router silently loses them.
+			if IsEmptyCompletion(err) && tone != "magic" {
+				log.Printf("[tone-fallback] events-stream tone=%q returned empty, retrying with magic", tone)
+				magicReq := answerReq
+				magicReq.Tone = "magic"
+				if res2, err2 := s.chatWithAccountEvents(ctx, acc.ID, account, magicReq, collectEvents); err2 == nil && (strings.TrimSpace(res2.Text) != "" || len(streamedTools) > 0) {
+					res = res2
+					err = nil
+				}
 			}
+			if err != nil {
+				// A content-filter hit that surfaces after the failover sweep still
+				// ends as a replaced response, not as a stream error.
+				if errors.Is(err, errContentFilterHit) {
+					finishContentReview()
+					return
+				}
 			// The failover sweep above already tried every healthy account. A
 			// final throttle/auth/proxy failure therefore means "no account can
 			// serve this right now" — surface it as a gateway-local capacity
@@ -3213,7 +3220,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 		res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 		// Empty completion detection: if upstream returned no text and no tool
-		// calls, surface a clear error instead of an empty successful response.
+		// calls, retry once with the magic tone (a "successful" empty stream is
+		// the same tone-unavailable signal the error path recovers from); only
+		// when the retry also comes back empty does the request fail.
+		if text.Len() == 0 && strings.TrimSpace(res.Text) == "" && len(streamedTools) == 0 && tone != "magic" {
+			log.Printf("[tone-fallback] events-stream tone=%q completed empty, retrying with magic", tone)
+			magicReq := answerReq
+			magicReq.Tone = "magic"
+			if res2, err2 := s.chatWithAccountEvents(ctx, acc.ID, account, magicReq, collectEvents); err2 == nil {
+				res = res2
+			}
+		}
 		if text.Len() == 0 && strings.TrimSpace(res.Text) == "" && len(streamedTools) == 0 {
 			msg := "upstream returned empty completion; the requested model may be unavailable for this tenant"
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "upstream_error"}})+"\n\n")
@@ -3835,9 +3852,23 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 				}
+				}
 			}
-		}
-		if err == nil {
+			// Tone fallback (same as the non-streaming path): an empty
+			// completion usually means the requested tone is not available for
+			// this tenant. Retry once with the magic tone before surfacing the
+			// error; only the ": connected" preamble reached the client, so the
+			// retry is indistinguishable from a fresh stream.
+			if err != nil && IsEmptyCompletion(err) && tone != "magic" {
+				log.Printf("[tone-fallback] reasoning-stream tone=%q returned empty, retrying with magic", tone)
+				magicReq := answerReq
+				magicReq.Tone = "magic"
+				if res2, err2 := s.chatWithAccountReasoning(ctx, acc.ID, account, magicReq, onDelta, onReasoning); err2 == nil && strings.TrimSpace(res2.Text) != "" {
+					res = res2
+					err = nil
+				}
+			}
+			if err == nil {
 			// The upstream stream has been fully buffered. Validate the complete
 			// assistant response before emitting any client-visible body content or
 			// persisting conversation state.

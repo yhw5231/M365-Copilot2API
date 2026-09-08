@@ -233,6 +233,46 @@ func TestResponsesParallelToolCallsAndMetadata(t *testing.T) {
 	}
 }
 
+// TestResponsesInterleavedAssistantNarrationReplay reproduces the 2026-09-08
+// error record: Codex Desktop replays a tool round where the assistant
+// narrated between the call and its executor output as separate items —
+// function_call, assistant message, function_call_output. The literal
+// conversion yields assistant(calls) → assistant(text) → tool(result), which
+// validateToolConversation rejects ("tool results missing before assistant
+// message"). The request-boundary repair must merge the narration into the
+// tool-call assistant message so the replayed history validates.
+func TestResponsesInterleavedAssistantNarrationReplay(t *testing.T) {
+	r := responsesRequest{Model: "m", Input: []any{
+		map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "check the math"}}},
+		map[string]any{"type": "function_call", "call_id": "call-a", "id": "fc_a", "name": "shell_command", "arguments": `{"command":"Select-String ..."}`},
+		map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "我先检查公式分隔符。"}}},
+		map[string]any{"type": "function_call_output", "call_id": "call-a", "output": "0\n212"},
+		map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "公式已全部改成 $...$。"}}},
+	}}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without the repair the converted history is protocol-invalid.
+	if err := validateToolConversation(o.Messages); err == nil {
+		t.Fatal("precondition failed: raw conversion should reject interleaved narration")
+	}
+	o.Messages = repairInterleavedAssistantText(o.Messages)
+	if err := validateToolConversation(o.Messages); err != nil {
+		t.Fatalf("interleaved Codex replay still rejected after repair: %v", err)
+	}
+	if len(o.Messages) != 4 {
+		t.Fatalf("messages=%d, want 4 (user, assistant-with-call+text, tool, assistant)", len(o.Messages))
+	}
+	if contentToString(o.Messages[1].Content) != "我先检查公式分隔符。" {
+		t.Fatalf("narration not merged into call message: %q", contentToString(o.Messages[1].Content))
+	}
+	// The trailing assistant answer stays standalone.
+	if o.Messages[3].Role != "assistant" || len(o.Messages[3].ToolCalls) != 0 {
+		t.Fatalf("final assistant message altered: %#v", o.Messages[3])
+	}
+}
+
 func TestResponsesTextInputAlias(t *testing.T) {
 	r := responsesRequest{Model: "m", Text: "inspect this repo"}
 	o, err := r.openAI()
