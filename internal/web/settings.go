@@ -357,6 +357,16 @@ type runtimeSettings struct {
 	// streaming filter may hold before releasing text, so a hit inside the
 	// opening window is replaced before any byte reaches the client.
 	ContentFilterOpeningBuffer int `json:"contentFilterOpeningBuffer,omitempty"`
+	// ContentFilterInputEnabled turns on client-input content review: when an
+	// enabled input rule's keyword occurs in any user-supplied message of the
+	// request, the request is rejected with 403 and the session blocked.
+	ContentFilterInputEnabled bool `json:"contentFilterInputEnabled"`
+	// ContentFilterInputRules is the input-side rule list, fully independent of
+	// the output rules above: input review answers "may this text enter the
+	// gateway at all", output review answers "may this answer reach the
+	// client". A rule without replacement behaves identically (rejection), so
+	// the input table only shows keywords.
+	ContentFilterInputRules []contentFilterRule `json:"contentFilterInputRules,omitempty"`
 }
 
 type settingsStore struct {
@@ -709,6 +719,18 @@ func validateSettings(v runtimeSettings) error {
 		}
 		if utf8.RuneCountInString(rule.Replacement) > 8192 {
 			return fmt.Errorf("内容审查规则 #%d 的替换文本不能超过 8192 字符", i+1)
+		}
+	}
+	if len(v.ContentFilterInputRules) > 200 {
+		return fmt.Errorf("输入审查规则最多 200 条")
+	}
+	for i, rule := range v.ContentFilterInputRules {
+		keyword := strings.TrimSpace(rule.Keyword)
+		if keyword == "" {
+			return fmt.Errorf("输入审查规则 #%d 的关键词不能为空", i+1)
+		}
+		if utf8.RuneCountInString(keyword) > 512 {
+			return fmt.Errorf("输入审查规则 #%d 的关键词不能超过 512 字符", i+1)
 		}
 	}
 	if v.ContentFilterOpeningBuffer < 0 || v.ContentFilterOpeningBuffer > 65536 {

@@ -53,6 +53,81 @@ func activeContentFilterRules() []contentFilterRule {
 	return rules
 }
 
+// activeContentFilterInputRules mirrors activeContentFilterRules for the
+// input-side rule set. Input review is a gate on what may enter the gateway at
+// all, so there is no replacement concept: every hit rejects the request.
+func activeContentFilterInputRules() []contentFilterRule {
+	s := currentSettings()
+	if !s.ContentFilterInputEnabled || len(s.ContentFilterInputRules) == 0 {
+		return nil
+	}
+	rules := make([]contentFilterRule, 0, len(s.ContentFilterInputRules))
+	for _, r := range s.ContentFilterInputRules {
+		if strings.TrimSpace(r.Keyword) == "" {
+			continue
+		}
+		rules = append(rules, r)
+	}
+	if len(rules) == 0 {
+		return nil
+	}
+	return rules
+}
+
+// filterInputContent scans client-supplied text against the enabled input
+// rules. The first rule (in configuration order) whose keyword occurs anywhere
+// (case-insensitive) wins; the matched keyword is returned for logging.
+func filterInputContent(text string) (keyword string, hit bool) {
+	rules := activeContentFilterInputRules()
+	if len(rules) == 0 || text == "" {
+		return "", false
+	}
+	lower := strings.ToLower(text)
+	for _, r := range rules {
+		kw := strings.ToLower(strings.TrimSpace(r.Keyword))
+		if kw != "" && strings.Contains(lower, kw) {
+			return r.Keyword, true
+		}
+	}
+	return "", false
+}
+
+// inputReviewSample is the per-message cap on the text fed to the input
+// review. A user message longer than this cannot hide a keyword that the
+// streaming response filter would still see mirrored back, and capping keeps
+// the scan O(1) per message on agent payloads with megabyte histories.
+const inputReviewSampleLimit = 256 * 1024
+
+// reviewUserInput scans the user-supplied messages of a request against the
+// input rule set. Only client-authored turns participate: system/developer and
+// service-injected messages (tool reminders, corrections, the identity policy)
+// are gateway fixtures, not user input, and would otherwise trip rules meant
+// for the user (e.g. the model names the policy itself talks around).
+func reviewUserInput(messages []oaiMsg) (keyword string, hit bool) {
+	if len(activeContentFilterInputRules()) == 0 {
+		return "", false
+	}
+	for _, m := range messages {
+		if m.ServiceInjected {
+			continue
+		}
+		// Only genuine user turns are gated. System/developer messages are
+		// gateway or client fixtures and tool results originate from the
+		// model's own tool calls — none of it is user input.
+		if !strings.EqualFold(strings.TrimSpace(m.Role), "user") {
+			continue
+		}
+		text := contentToString(m.Content)
+		if len(text) > inputReviewSampleLimit {
+			text = text[:inputReviewSampleLimit]
+		}
+		if kw, ok := filterInputContent(text); ok {
+			return kw, true
+		}
+	}
+	return "", false
+}
+
 // filterContentFull scans a complete text against the enabled rules. The first
 // rule (in configuration order) whose keyword occurs anywhere wins; the whole
 // text is then replaced by that rule's replacement.
@@ -347,4 +422,25 @@ func (s *Server) rejectContentFilterHit(r *http.Request, body *oaiReq, acc auth.
 	s.blockFilteredSession(r, body)
 	s.dropFilteredSession(r, body)
 	s.recordContentFilterRejection(r, body, acc, prompt, startedAt)
+}
+
+// rejectUserInputHit is the bookkeeping for an input-review hit: identical to
+// the output path (block the session so replaying the same input cannot
+// retry-spam, drop the binding, record the 403) with its own log line so
+// operators can tell which rule set fired.
+func (s *Server) rejectUserInputHit(r *http.Request, body *oaiReq, acc auth.AccountToken, scannedText string, startedAt time.Time) {
+	log.Printf("[content-filter] input review hit: request rejected with 403 and the session blocked")
+	s.rejectContentFilterHit(r, body, acc, scannedText, startedAt)
+}
+
+// lastUserContent returns the text of the most recent user message, or "" when
+// the request carries none. Used for the usage/trace record of an input
+// rejection so the operator sees what was scanned.
+func lastUserContent(messages []oaiMsg) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if strings.EqualFold(strings.TrimSpace(messages[i].Role), "user") {
+			return contentToString(messages[i].Content)
+		}
+	}
+	return ""
 }

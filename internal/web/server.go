@@ -1547,6 +1547,21 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
+	// A session that hit the content filter is blocked: reject before any
+	// upstream work (see openaiChat for the same gate on the OpenAI endpoints).
+	if body.SessionKey != "" && s.blockedSessions != nil && s.blockedSessions.IsBlocked(body.SessionKey) {
+		writeOpenAIError(w, http.StatusForbidden, "content_policy_blocked", (&contentPolicyBlockedError{SessionID: body.SessionKey}).Error())
+		return
+	}
+	// Input review (see openaiChat): the user's own text is checked against the
+	// input rule set before any upstream work; a hit rejects with 403 and
+	// blocks the session persistently.
+	if kw, hit := filterInputContent(text); hit {
+		log.Printf("[content-filter] input review hit on keyword %q", kw)
+		writeOpenAIError(w, http.StatusForbidden, "content_policy_blocked", contentFilterRejectMessage)
+		s.rejectUserInputHit(r, &oaiReq{SessionKey: body.SessionKey}, auth.AccountToken{}, text, time.Now())
+		return
+	}
 	requestedAccountID := body.AccountID
 	acc, err := s.resolveAccount(requestedAccountID)
 	if err != nil {
@@ -2386,6 +2401,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusForbidden, "content_policy_blocked", (&contentPolicyBlockedError{SessionID: sid}).Error())
 		return
 	}
+	// Input review runs before ANY upstream work: the user's own messages are
+	// checked against the input rule set (independent of the output rules that
+	// review model responses). A hit rejects with 403 and blocks the session
+	// persistently — same policy outcome as an output hit.
+	if kw, hit := reviewUserInput(body.Messages); hit {
+		log.Printf("[content-filter] id=%s input review hit on keyword %q", requestID, kw)
+		writeOpenAIError(w, http.StatusForbidden, "content_policy_blocked", contentFilterRejectMessage)
+		s.rejectUserInputHit(r, &body, auth.AccountToken{}, firstNonEmpty(contentToString(lastUserContent(body.Messages)), kw), startedAt)
+		return
+	}
 	// Some clients replay history with the same tool-call id used more than
 	// once (retry/compaction re-emits an identical parallel-call group). Alias
 	// the repeats deterministically before validation; otherwise the 400 below
@@ -2489,12 +2514,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		sb.WriteString(" If you just want to verify file content, use the read tool instead of edit. Do NOT submit edit with old_string == new_string, and do NOT write a line back to the same broken value.")
 		body.Messages = append(body.Messages, oaiMsg{Role: "system", Content: sb.String(), ServiceInjected: true})
 	}
-	// Identity concealment (primary defense; the content filter is the
-	// backstop): an output-side keyword replacement can never survive an
-	// identity-guessing conversation — answering "am I model X" names X in
-	// either direction, so every answer re-triggers the filter. Keeping other
-	// vendors' names out of the output in the first place is the only stable
-	// fix. Appended last so it is the most recent instruction the model reads.
+	// Identity protocol (primary defense; the content filter is the
+	// backstop): every identity probe forces the fixed reveal token (the real
+	// model name in brackets) to the head of the answer, so the output keyword
+	// filter always has exactly one canonical, matchable string to catch —
+	// encoded or rephrased bypasses die because the token must come first
+	// regardless of the requested output format. Appended last so it is the
+	// most recent instruction the model reads.
 	body.Messages = injectIdentityConcealment(body.Messages)
 	var prompt string
 	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"m365-copilot2api/internal/auth"
 	"m365-copilot2api/internal/chathub"
 )
 
@@ -41,6 +42,15 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	// upstream work (see openaiChat for the same gate on the OpenAI endpoints).
 	if body.SessionKey != "" && s.blockedSessions != nil && s.blockedSessions.IsBlocked(body.SessionKey) {
 		writeOpenAIError(w, http.StatusForbidden, "content_policy_blocked", (&contentPolicyBlockedError{SessionID: body.SessionKey}).Error())
+		return
+	}
+	// Input review (see openaiChat): the user's own text is checked against the
+	// input rule set before any upstream work; a hit rejects with 403 and
+	// blocks the session persistently.
+	if kw, hit := filterInputContent(text); hit {
+		log.Printf("[content-filter] input review hit on keyword %q", kw)
+		writeOpenAIError(w, http.StatusForbidden, "content_policy_blocked", contentFilterRejectMessage)
+		s.rejectUserInputHit(r, &oaiReq{SessionKey: body.SessionKey}, auth.AccountToken{}, text, time.Now())
 		return
 	}
 	requestedAccountID := body.AccountID

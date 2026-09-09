@@ -132,8 +132,8 @@ func TestIdentityConcealmentInjection(t *testing.T) {
 	if out[1].Role != "system" || !out[1].ServiceInjected {
 		t.Fatalf("policy must be a service-injected system message: %+v", out[1])
 	}
-	if content, _ := out[1].Content.(string); !strings.Contains(content, "NEVER mention") {
-		t.Fatalf("policy text missing: %q", content)
+	if content, _ := out[1].Content.(string); !strings.Contains(content, identityRevealToken()) {
+		t.Fatalf("policy text missing the identity reveal token: %q", content)
 	}
 	t.Setenv("M365_IDENTITY_CONCEALMENT", "0")
 	if out2 := injectIdentityConcealment(msgs); len(out2) != 1 {

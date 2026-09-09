@@ -862,16 +862,23 @@ if (response.output_text) {
         </div>
         <div class="tab-pane" id="pane-settings-censor" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <div><h2 style="font-size:18px;font-weight:700">内容审查</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">对上游返回内容进行审查：命中关键词（不区分大小写）时，仅返回该规则的自定义替换文本，后续内容不再发送并终止会话。</p></div>
+          <div><h2 style="font-size:18px;font-weight:700">内容审查</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">输入审查拦截用户提交的内容（命中即拒绝并拉黑会话）；输出审查拦截大模型返回的内容。两套规则（关键词）相互独立、分别匹配。</p></div>
           <button class="btn primary" data-action="save-content-filter"><i data-lucide="save" style="width:14px;height:14px"></i> 保存内容审查</button>
         </div>
-        <div class="card">
-          <div class="card-head"><span class="card-title">审查规则</span><span style="font-size:11px;color:var(--muted)">按顺序匹配，命中第一条即触发替换。</span><button class="btn btn-sm" data-action="add-content-filter-row"><i data-lucide="plus" style="width:13px;height:13px"></i> 添加规则</button></div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-head"><span class="card-title">输入审查规则（用户输入）</span><span style="font-size:11px;color:var(--muted)">对请求中用户提交的消息做关键词匹配，命中第一条即拒绝（403）并拉黑会话。</span><button class="btn btn-sm" data-action="add-content-filter-input-row"><i data-lucide="plus" style="width:13px;height:13px"></i> 添加规则</button></div>
           <div class="card-body">
-            <div class="form-group"><label class="form-label" for="contentFilterEnabled" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="contentFilterEnabled" style="width:16px;height:16px;accent-color:var(--accent)">启用内容审查</label><p class="form-hint">启用后对所有对话响应（含流式与非流式）生效；工具调用响应不参与审查。</p></div>
+            <div class="form-group"><label class="form-label" for="contentFilterInputEnabled" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="contentFilterInputEnabled" style="width:16px;height:16px;accent-color:var(--accent)">启用用户输入审查</label><p class="form-hint">启用后对所有对话请求中用户自己的消息（含历史回放中的用户消息）生效；系统注入、工具结果与助手消息不参与审查。</p></div>
+          </div>
+          <div style="overflow-x:auto"><table class="table"><thead><tr><th>关键词</th><th>Actions</th></tr></thead><tbody id="contentFilterInputRows"><tr><td colspan="2" class="empty">暂无规则</td></tr></tbody></table></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">输出审查规则（大模型输出）</span><span style="font-size:11px;color:var(--muted)">按顺序匹配，命中第一条即触发替换/拒绝。</span><button class="btn btn-sm" data-action="add-content-filter-row"><i data-lucide="plus" style="width:13px;height:13px"></i> 添加规则</button></div>
+          <div class="card-body">
+            <div class="form-group"><label class="form-label" for="contentFilterEnabled" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="contentFilterEnabled" style="width:16px;height:16px;accent-color:var(--accent)">启用输出内容审查</label><p class="form-hint">启用后对所有对话响应（含流式与非流式）生效；工具调用响应不参与审查。</p></div>
             <div class="form-group"><label class="form-label" for="contentFilterOpeningBuffer">开头缓冲（字节）</label><input class="form-input" id="contentFilterOpeningBuffer" type="number" min="0" max="65536" step="1" placeholder="256"><p class="form-hint">流式响应开头缓冲的字节数：关键词在开头缓冲内命中时，客户端只会看到替换文本（此前内容不外发）。0 表示仅保留关键词长度的尾部缓冲（关键词跨块必然被检出，但命中前已发送的内容无法撤回）。默认 256。</p></div>
           </div>
-          <div style="overflow-x:auto"><table class="table"><thead><tr><th>关键词（句子）</th><th>替换文本（留空则删除内容）</th><th>Actions</th></tr></thead><tbody id="contentFilterRows"><tr><td colspan="3" class="empty">暂无规则</td></tr></tbody></table></div>
+          <div style="overflow-x:auto"><table class="table"><thead><tr><th>关键词（句子）</th><th>替换文本（留空则拒绝响应）</th><th>Actions</th></tr></thead><tbody id="contentFilterRows"><tr><td colspan="3" class="empty">暂无规则</td></tr></tbody></table></div>
         </div>
         </div>
       </section>
@@ -1506,6 +1513,8 @@ document.addEventListener('click',e=>{
     case 'save-content-filter': saveContentFilter(); break;
     case 'add-content-filter-row': addContentFilterRow(); break;
     case 'remove-content-filter-row': removeContentFilterRow(target); break;
+    case 'add-content-filter-input-row': addContentFilterInputRow(); break;
+    case 'remove-content-filter-input-row': removeContentFilterInputRow(target); break;
     case 'copy-auth-url': copyAuthUrl(); break;
     case 'submit-callback': submitCallback(); break;
     case 'save-account-scheduling-settings': saveAccountSchedulingSettings(); break;
@@ -3518,6 +3527,7 @@ async function loadSettings(){
     routeLevels=(d.reasoningLevels||[]).map(x=>x&&x.effort).filter(Boolean);
     renderModelRoutes(d.catalogModels||[]);
     renderContentFilter(s.contentFilterEnabled,s.contentFilterOpeningBuffer,s.contentFilterRules||[]);
+    renderContentFilterInput(s.contentFilterInputEnabled,s.contentFilterInputRules||[]);
   }catch(e){showNotice(e.message,'error');}
 }
 function renderModelRoutes(rows){
@@ -3606,11 +3616,47 @@ async function saveContentFilter(){
       if(replacement.length>8192)throw new Error('替换文本不能超过 8192 字符');
       return {keyword,replacement};
     }).filter(Boolean);
-    if(enabled&&!rules.length)throw new Error('启用内容审查前请至少添加一条规则（或先关闭开关）');
-    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({contentFilterEnabled:enabled,contentFilterOpeningBuffer:openingBuffer,contentFilterRules:rules})});
+    const inputEnabled=$('contentFilterInputEnabled').checked;
+    const inputRules=[...document.querySelectorAll('#contentFilterInputRows tr')].map(tr=>{
+      const g=f=>{const el=tr.querySelector(`[data-f="${f}"]`);return el?el.value:'';};
+      const keyword=(g('keyword')||'').trim();
+      if(!keyword)return null;
+      if(keyword.length>512)throw new Error('输入审查关键词不能超过 512 字符');
+      return {keyword,replacement:''};
+    }).filter(Boolean);
+    if(enabled&&!rules.length)throw new Error('启用输出审查前请至少添加一条规则（或先关闭开关）');
+    if(inputEnabled&&!inputRules.length)throw new Error('启用输入审查前请至少添加一条规则（或先关闭开关）');
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify({contentFilterEnabled:enabled,contentFilterOpeningBuffer:openingBuffer,contentFilterRules:rules,contentFilterInputEnabled:inputEnabled,contentFilterInputRules:inputRules})});
     showNotice('内容审查已保存','success');
     loadSettings();
   }catch(e){showNotice(e.message,'error');}
+}
+function renderContentFilterInput(enabled,rules){
+  const enabledField=$('contentFilterInputEnabled');
+  if(enabledField)enabledField.checked=!!enabled;
+  const rows=rules||[];
+  if(!rows.length){$('contentFilterInputRows').innerHTML='<tr><td colspan="2" class="empty">暂无规则</td></tr>';return;}
+  $('contentFilterInputRows').innerHTML=rows.map(r=>contentFilterInputRowHtml(r.keyword)).join('');
+}
+function contentFilterInputRowHtml(keyword){
+  return `<tr>
+    <td><input class="form-input" style="min-width:320px" data-f="keyword" value="${escAttr(keyword||'')}" placeholder="Microsoft"></td>
+    <td><button class="btn btn-sm danger" data-action="remove-content-filter-input-row"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button></td>
+  </tr>`;
+}
+function addContentFilterInputRow(){
+  const empty=$('contentFilterInputRows').querySelector('tr .empty');
+  if(empty)$('contentFilterInputRows').innerHTML='';
+  $('contentFilterInputRows').insertAdjacentHTML('beforeend',contentFilterInputRowHtml(''));
+  try{lucide.createIcons();}catch(e){}
+  const rows=$('contentFilterInputRows').querySelectorAll('tr');
+  rows[rows.length-1].querySelector('[data-f="keyword"]').focus();
+}
+function removeContentFilterInputRow(btn){
+  const tr=btn.closest('tr');
+  if(!tr)return;
+  tr.remove();
+  if(!$('contentFilterInputRows').querySelector('tr'))$('contentFilterInputRows').innerHTML='<tr><td colspan="2" class="empty">暂无规则</td></tr>';
 }
 async function saveModelRoutes(){
   try{

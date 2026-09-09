@@ -321,3 +321,138 @@ func TestAdminSettingsContentFilterRejectsBadRule(t *testing.T) {
 		t.Fatalf("blank keyword must be rejected with 400, got %d %s", w.Code, w.Body.String())
 	}
 }
+
+func setTestContentFilterInputRules(t *testing.T, rules []contentFilterRule) {
+	t.Helper()
+	prev := openSettingsStore
+	t.Cleanup(func() { openSettingsStore = prev })
+	store := newSettingsStore("", "")
+	store.v.ContentFilterInputEnabled = true
+	store.v.ContentFilterInputRules = rules
+	openSettingsStore = func() *settingsStore { return store }
+}
+
+// TestReviewUserInputScopes pins what counts as user input: user-role message
+// text is scanned; system/assistant turns, tool results and service-injected
+// messages are not.
+func TestReviewUserInputScopes(t *testing.T) {
+	setTestContentFilterInputRules(t, []contentFilterRule{{Keyword: "forbidden-fruit"}})
+	if kw, hit := reviewUserInput([]oaiMsg{{Role: "user", Content: "please explain forbidden-fruit"}}); !hit || kw != "forbidden-fruit" {
+		t.Fatalf("user message must hit, got kw=%q hit=%v", kw, hit)
+	}
+	if _, hit := reviewUserInput([]oaiMsg{{Role: "system", Content: "forbidden-fruit"}, {Role: "assistant", Content: "forbidden-fruit"}, {Role: "user", Content: "clean"}}); hit {
+		t.Fatalf("system/assistant content must not be scanned as user input")
+	}
+	if _, hit := reviewUserInput([]oaiMsg{{Role: "user", Content: "clean"}, {Role: "tool", Content: "forbidden-fruit"}}); hit {
+		t.Fatalf("tool results must not be scanned as user input")
+	}
+	injected := []oaiMsg{{Role: "user", Content: "clean"}, {Role: "system", Content: "forbidden-fruit", ServiceInjected: true}}
+	if _, hit := reviewUserInput(injected); hit {
+		t.Fatalf("service-injected messages must not be scanned")
+	}
+	// Multimodal string-parts content is covered too.
+	parts := []any{map[string]any{"type": "text", "text": "hidden forbidden-fruit in parts"}}
+	if _, hit := reviewUserInput([]oaiMsg{{Role: "user", Content: parts}}); !hit {
+		t.Fatalf("array content parts must be scanned")
+	}
+	// The output rule set must not leak into the input path and vice versa.
+	setTestContentFilterRules(t, []contentFilterRule{{Keyword: "forbidden-fruit", Replacement: "x"}})
+	if _, hit := reviewUserInput([]oaiMsg{{Role: "user", Content: "forbidden-fruit"}}); hit {
+		t.Fatalf("output rules must not apply to input review")
+	}
+	setTestContentFilterInputRules(t, nil)
+	setTestContentFilterRules(t, nil)
+	if _, hit := filterInputContent("forbidden-fruit"); hit {
+		t.Fatalf("input review must be inert when disabled")
+	}
+}
+
+// TestOpenaiChatRejectsInputReviewHit drives the real openaiChat entry: a
+// request whose user message trips an input rule must fail with 403 BEFORE any
+// upstream work, and the session must become blocked for further requests.
+func TestOpenaiChatRejectsInputReviewHit(t *testing.T) {
+	s, _ := newBlockedSessionsTestServer(t)
+	setTestContentFilterInputRules(t, []contentFilterRule{{Keyword: "forbidden-fruit"}})
+
+	body := `{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"tell me about forbidden-fruit please"}],"session_key":"input-sess-1"}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer sk-test")
+	w := httptest.NewRecorder()
+	s.openaiChat(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("input review hit must be rejected with 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "content_policy_blocked") {
+		t.Fatalf("rejection must name the content_policy_blocked code: %s", w.Body.String())
+	}
+	if !s.blockedSessions.IsBlocked("input-sess-1") {
+		t.Fatalf("session must be blocked after an input review hit")
+	}
+	// A later clean request on the same session is rejected by the block, not
+	// by the review.
+	clean := `{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"hello"}],"session_key":"input-sess-1"}`
+	w2 := httptest.NewRecorder()
+	s.openaiChat(w2, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(clean)))
+	if w2.Code != http.StatusForbidden || !strings.Contains(w2.Body.String(), "content_policy_blocked") {
+		t.Fatalf("blocked session must keep rejecting clean requests, got %d %s", w2.Code, w2.Body.String())
+	}
+	// A different session without the keyword proceeds past the gate.
+	cleanOther := strings.Replace(clean, "input-sess-1", "input-sess-2", 1)
+	w4 := httptest.NewRecorder()
+	s.openaiChat(w4, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(cleanOther)))
+	if w4.Code == http.StatusForbidden && strings.Contains(w4.Body.String(), "content_policy_blocked") {
+		t.Fatalf("unrelated clean session must not hit the content-policy gate: %d %s", w4.Code, w4.Body.String())
+	}
+}
+
+func TestValidateSettingsContentFilterInput(t *testing.T) {
+	v := defaultRuntimeSettings()
+	v.ContentFilterInputEnabled = true
+	v.ContentFilterInputRules = []contentFilterRule{{Keyword: "  "}}
+	if err := validateSettings(v); err == nil || !strings.Contains(err.Error(), "输入审查") {
+		t.Fatalf("expected input keyword validation error, got %v", err)
+	}
+	v.ContentFilterInputRules = []contentFilterRule{{Keyword: "bad", Replacement: strings.Repeat("x", 9000)}}
+	if err := validateSettings(v); err != nil {
+		t.Fatalf("input rules must not require replacement validation, got %v", err)
+	}
+	v.ContentFilterInputRules = make([]contentFilterRule, 201)
+	for i := range v.ContentFilterInputRules {
+		v.ContentFilterInputRules[i].Keyword = "k"
+	}
+	if err := validateSettings(v); err == nil {
+		t.Fatalf("over 200 input rules must be rejected")
+	}
+}
+
+func TestAdminSettingsContentFilterInputRoundTrip(t *testing.T) {
+	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), accountPath: filepath.Join(t.TempDir(), "account-settings.json"), v: defaultRuntimeSettings()}
+	s := &Server{settings: st}
+
+	body := `{"contentFilterInputEnabled":true,"contentFilterInputRules":[{"keyword":"forbidden-fruit"}]}`
+	r := httptest.NewRequest(http.MethodPut, "/api/admin/settings", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	s.adminSettings(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("input filter PUT=%d %s", w.Code, w.Body.String())
+	}
+	got := st.get()
+	if !got.ContentFilterInputEnabled || len(got.ContentFilterInputRules) != 1 || got.ContentFilterInputRules[0].Keyword != "forbidden-fruit" {
+		t.Fatalf("input filter settings not persisted: %+v", got)
+	}
+	gr := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
+	gw := httptest.NewRecorder()
+	s.adminSettings(gw, gr)
+	if gw.Code != http.StatusOK {
+		t.Fatalf("GET=%d", gw.Code)
+	}
+	var payload struct {
+		Settings runtimeSettings `json:"settings"`
+	}
+	if err := json.Unmarshal(gw.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("GET body decode: %v", err)
+	}
+	if !payload.Settings.ContentFilterInputEnabled || len(payload.Settings.ContentFilterInputRules) != 1 {
+		t.Fatalf("GET does not expose input filter settings: %s", gw.Body.String())
+	}
+}
