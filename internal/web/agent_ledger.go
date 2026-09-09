@@ -136,7 +136,20 @@ func (l agentLedger) RouterContext() string {
 		Pending      []toolEvidence `json:"pending"`
 		RepeatedCall bool           `json:"repeated_call"`
 	}
-	b, _ := json.Marshal(compact{l.Completed, l.Pending, l.RepeatedCall})
+	// The router prompt already carries the full replayed history, so every
+	// call's complete arguments appear there verbatim. Serializing them again
+	// unbounded pushed the router payload past 300KB on replay-heavy sessions
+	// and the upstream answered with an empty completion; the ledger only
+	// needs enough of the arguments to identify the call.
+	shrink := func(ev []toolEvidence) []toolEvidence {
+		out := make([]toolEvidence, len(ev))
+		for i, e := range ev {
+			e.Arguments = compactToolResult(e.Arguments, 600)
+			out[i] = e
+		}
+		return out
+	}
+	b, _ := json.Marshal(compact{shrink(l.Completed), shrink(l.Pending), l.RepeatedCall})
 	hint := "Use only this compact evidence. A completed call is final evidence; do not issue the same name and arguments again."
 	if l.RepeatedFailure {
 		hint += " The same call failed repeatedly; change strategy instead of retrying unchanged."

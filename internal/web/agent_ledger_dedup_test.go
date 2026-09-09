@@ -1,6 +1,9 @@
 package web
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCanonicalToolArgumentsDeduplicateEquivalentJSON(t *testing.T) {
 	ledger := agentLedger{Completed: []toolEvidence{{
@@ -37,5 +40,21 @@ func TestRouterContextStaysCompact(t *testing.T) {
 	}
 	if len(ctx) == 0 {
 		t.Fatal("router context is empty")
+	}
+}
+
+func TestRouterContextTruncatesOversizedArguments(t *testing.T) {
+	huge := `{"input":"` + strings.Repeat("x", 200_000) + `"}`
+	ledger := agentLedger{Completed: []toolEvidence{{
+		ID: "call_1", Name: "exec", Arguments: huge, Result: "Script completed",
+	}}}
+	ctx := ledger.RouterContext()
+	if len(ctx) > 10_000 {
+		t.Fatalf("router context not bounded by argument truncation: %d bytes", len(ctx))
+	}
+	// The full arguments must still exist in the replayed history the answer
+	// path sees; the ledger only needs an identifying slice.
+	if !strings.Contains(ctx, "[truncated") {
+		t.Fatalf("expected truncation marker in router context: %.200s", ctx)
 	}
 }
