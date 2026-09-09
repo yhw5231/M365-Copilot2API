@@ -2857,19 +2857,37 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				routeRes, routeErr = res2, nil
 			}
 		}
+		var calls []detectedToolCall
+		parsed := false
 		if routeErr != nil {
-			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "tool router: "+routeErr.Error())
-			return
-		}
-		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
-		calls = filterCompletedCalls(calls, ledger)
-		calls, _ = validateCalls("router", calls)
-		if !parsed {
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, maxToolResultPromptBytes), Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
-			if repairErr == nil {
-				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
-				calls = filterCompletedCalls(calls, ledger)
-				calls, _ = validateCalls("router", calls)
+			// Transient router failure (deadline, empty completion, network).
+			// Only tool_choice=required hard-fails here: falling through with
+			// a forced call would let a text-only status report be treated as
+			// a completed turn. Otherwise fall through to the normal answer
+			// stream below — it carries the same tool definitions, so the
+			// model can still call tools through the native/tool-shaped
+			// detection paths. One router deadline used to 502 the whole
+			// agent turn even though the answer path would have served it.
+			if fmt.Sprint(body.ToolChoice) == "required" {
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "tool router: "+routeErr.Error())
+				return
+			}
+			log.Printf("[req-trace] id=%s stage=router_failed_fallthrough err=%v", requestID, routeErr)
+			// The router attempt may have consumed most of the budget; give
+			// the answer a fresh deadline derived from the client connection.
+			ctx, cancel = context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
+			defer cancel()
+		} else {
+			calls, parsed = parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+			calls = filterCompletedCalls(calls, ledger)
+			calls, _ = validateCalls("router", calls)
+			if !parsed {
+				repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, maxToolResultPromptBytes), Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+				if repairErr == nil {
+					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
+					calls = filterCompletedCalls(calls, ledger)
+					calls, _ = validateCalls("router", calls)
+				}
 			}
 		}
 		if parsed && len(calls) > 0 {
@@ -3450,6 +3468,29 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// Last-resort content guarantee (same rationale as the reasoning
+		// path): a result-only answer whose text never entered the delta loop
+		// would close as a successful blank answer otherwise. first stays
+		// true only when nothing was ever written.
+		if first && strings.TrimSpace(res.Text) != "" {
+			log.Printf("[req-trace] id=%s stage=events_stream_tail_recovery text_len=%d", requestID, len(res.Text))
+			if err := emitText(res.Text); err != nil {
+				if errors.Is(err, errContentFilterHit) {
+					finishContentReview()
+					return
+				}
+				log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+				return
+			}
+			if err := flushText(); err != nil {
+				if errors.Is(err, errContentFilterHit) {
+					finishContentReview()
+					return
+				}
+				log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+				return
+			}
+		}
 		// Official order: finish chunk first, then the usage chunk (empty
 		// choices) — the usage chunk must never precede the finish chunk.
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
@@ -3659,6 +3700,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
 		firstDelta := true
+		contentEmitted := false
 		writeChunk := func(delta map[string]any) error {
 			if err := r.Context().Err(); err != nil {
 				return err
@@ -3672,6 +3714,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					withRole[k] = v
 				}
 				delta = withRole
+			}
+			if _, ok := delta["content"]; ok {
+				contentEmitted = true
 			}
 			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta}}}
 			return keepalive.lockedWrite("data: " + mustJSON(chunk) + "\n\n")
@@ -4459,6 +4504,23 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			s.accountPool.MarkSuccess(acc.ID)
+			// Last-resort content guarantee: every branch above flushes its
+			// own filter tail, but their interaction can still end with zero
+			// client-visible bytes while the completion frame carried the
+			// full answer (observed 2026-09-09: the Responses adapter reported
+			// empty_upstream_response with the authoritative text present
+			// upstream). contentEmitted stays false only when nothing was ever
+			// written; emit the authoritative completion rather than closing
+			// as a successful blank answer.
+			if !contentEmitted && strings.TrimSpace(res.Text) != "" {
+				log.Printf("[req-trace] id=%s stage=reasoning_stream_tail_recovery text_len=%d", requestID, len(res.Text))
+				if c := contentFilter.Push(res.Text); c != "" {
+					_ = writeChunk(map[string]any{"content": c})
+				}
+				if c := contentFilter.Flush(); c != "" {
+					_ = writeChunk(map[string]any{"content": c})
+				}
+			}
 		} else {
 			// A content-filter hit that surfaces through the error path still
 			// ends as a replaced response, not as a stream error.

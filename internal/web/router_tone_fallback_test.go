@@ -176,19 +176,28 @@ func TestToolRouterEmptyCompletionFallsBackToMagic(t *testing.T) {
 
 // TestToolRouterMagicToneDoesNotRetryFallback verifies a request whose tone is
 // already magic (no model mapping → modelTone default) does NOT trigger the
-// fallback: the router turn gets the central same-request retry only (2 upstream
-// connections) and then fails, instead of looping on the recovery tone itself.
+// tone fallback: the router turn gets the central same-request retry only
+// (connections 1-2) and the answer stream then makes exactly ONE attempt
+// (connection 3) — a 4th connection would mean the fallback fired on the magic
+// tone itself. Since the router failure now falls through to the answer stream
+// instead of hard-failing with 502, the surfaced error is an in-stream error
+// event on a 200 response.
 func TestToolRouterMagicToneDoesNotRetryFallback(t *testing.T) {
 	pinModelTone(t, "test-magic-model", "")
 	s, conns := newRouterFallbackTestServer(t, 5)
 	body := `{"model":"test-magic-model","stream":true,"messages":[{"role":"user","content":"list files"}],` + routerTestTools + `,"tool_choice":"auto"}`
 	w := streamChatRequest(t, s, body)
-	if w.Code != 502 {
-		t.Fatalf("status=%d, want 502", w.Code)
+	if w.Code != 200 {
+		t.Fatalf("status=%d, want 200 (router failure must fall through to the answer stream)", w.Code)
 	}
-	// Exactly the router turn + chatWithAccount's central retry; a third
-	// connection would mean the fallback fired on the magic tone itself.
-	if got := conns.Load(); got != 2 {
-		t.Fatalf("upstream connections=%d, want 2 (no magic-tone retry on magic)", got)
+	raw := w.Body.String()
+	if !strings.Contains(raw, `"error"`) {
+		t.Fatalf("expected an in-stream error event after the answer turn failed, body=%s", raw[:min(len(raw), 500)])
+	}
+	// Exactly the router turn + chatWithAccount's central retry + one answer
+	// turn; a fourth connection would mean the fallback fired on the magic
+	// tone itself.
+	if got := conns.Load(); got != 3 {
+		t.Fatalf("upstream connections=%d, want 3 (no magic-tone retry on magic)", got)
 	}
 }
