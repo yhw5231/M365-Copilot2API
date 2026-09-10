@@ -433,6 +433,73 @@ func (s *Server) rejectUserInputHit(r *http.Request, body *oaiReq, acc auth.Acco
 	s.rejectContentFilterHit(r, body, acc, scannedText, startedAt)
 }
 
+// maskFilteredKeywords masks keyword occurrences in gateway text that is
+// relayed to a downstream client (error messages, protocol failure frames).
+// The output content-filter rules apply IN PLACE — each keyword occurrence is
+// replaced by that rule's replacement text (case-insensitive; at the same
+// position the longest keyword wins) — so a configured keyword can never escape
+// through an error path while the rest of the message stays readable enough for
+// the client to act on the failure. This differs from the response filter,
+// which swaps the whole answer for the replacement: an error whose message was
+// wholly replaced would leave the client nothing to retry on. The unmasked
+// text is what the gateway's trace/error/usage records keep for
+// troubleshooting; only the client-facing copy is masked.
+func maskFilteredKeywords(text string) string {
+	rules := activeContentFilterRules()
+	if len(rules) == 0 || text == "" {
+		return text
+	}
+	type maskRule struct {
+		keyword      string
+		replacement  string
+		keywordBytes int
+	}
+	masks := make([]maskRule, 0, len(rules))
+	for _, r := range rules {
+		kw := r.Keyword
+		if strings.TrimSpace(kw) == "" {
+			continue
+		}
+		masks = append(masks, maskRule{keyword: kw, replacement: r.Replacement, keywordBytes: len(kw)})
+	}
+	if len(masks) == 0 {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	pos := 0
+	for pos < len(text) {
+		best, bestLen := -1, 0
+		for i, m := range masks {
+			if m.keywordBytes <= bestLen || pos+m.keywordBytes > len(text) {
+				continue
+			}
+			// EqualFold compares the operands as given, so the scan is immune
+			// to the byte-length drift that strings.ToLower can introduce on
+			// exotic Unicode and the slice indices always stay valid on text.
+			if strings.EqualFold(text[pos:pos+m.keywordBytes], m.keyword) {
+				best, bestLen = i, m.keywordBytes
+			}
+		}
+		if best < 0 {
+			b.WriteByte(text[pos])
+			pos++
+			continue
+		}
+		b.WriteString(masks[best].replacement)
+		pos += bestLen
+	}
+	return b.String()
+}
+
+// sanitizeDownstreamErrorText is the outbound gate for gateway-generated error
+// text that is relayed to a client: content-filter keywords are masked in place
+// first (the raw text stays in the trace/error/usage records for
+// troubleshooting), then provider identity wording is rewritten.
+func sanitizeDownstreamErrorText(text string) string {
+	return sanitizePublicInternalText(maskFilteredKeywords(text))
+}
+
 // lastUserContent returns the text of the most recent user message, or "" when
 // the request carries none. Used for the usage/trace record of an input
 // rejection so the operator sees what was scanned.

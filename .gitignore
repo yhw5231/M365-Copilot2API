@@ -31,6 +31,7 @@ __pycache__/
 /m365-copilot2api.service
 /m365-copilot2api.rollback*
 /m365-copilot2api.exe~
+/m365-copilot2api.exe.prev*
 # Keep the pre-existing empty dirs (for first-deploy permissions) but ignore runtime content.
 /data/*
 !/data/.gitkeep
@@ -70,3 +71,4 @@ _wip_backup_*
 
 # Local debug/analysis artifacts (kept locally, excluded from the repo)
 /.dsh_analysis/
+/debug_logs_tmp.json

@@ -132,10 +132,13 @@ func (r responsesRequest) validateSupportedParams() error {
 			return &unsupportedParamError{Param: "include", Value: inc}
 		}
 	}
-	tier := strings.ToLower(strings.TrimSpace(r.ServiceTier))
-	if tier != "" && tier != "auto" {
-		return &unsupportedParamError{Param: "service_tier", Value: r.ServiceTier}
-	}
+	// service_tier is accepted with any value: it is a speed/priority tier
+	// hint that cannot change the response content, Codex sends
+	// "priority" unconditionally on every request, and the chat/completions
+	// path already tolerates the field (oaiReq never decodes it). Rejecting it
+	// only here made every Codex turn fail with a 400 before the stream could
+	// open. Non-auto values are reported via m365_ignored_parameters by the
+	// Responses handler so the client still learns the tier had no effect.
 	if r.ContextManagement != nil {
 		cm := "auto"
 		switch v := r.ContextManagement.(type) {

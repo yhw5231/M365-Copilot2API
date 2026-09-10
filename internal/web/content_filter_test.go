@@ -456,3 +456,114 @@ func TestAdminSettingsContentFilterInputRoundTrip(t *testing.T) {
 		t.Fatalf("GET does not expose input filter settings: %s", gw.Body.String())
 	}
 }
+
+func TestMaskFilteredKeywordsMasksInPlace(t *testing.T) {
+	setTestContentFilterRules(t, []contentFilterRule{{Keyword: "Microsoft", Replacement: "XX"}})
+	got := maskFilteredKeywords("upstream request to Microsoft 365 failed: timeout")
+	if got != "upstream request to XX 365 failed: timeout" {
+		t.Fatalf("in-place mask broken: %q", got)
+	}
+	if maskFilteredKeywords("clean error message") != "clean error message" {
+		t.Fatalf("clean text must pass through unchanged")
+	}
+}
+
+func TestMaskFilteredKeywordsCaseInsensitiveAndLongest(t *testing.T) {
+	setTestContentFilterRules(t, []contentFilterRule{
+		{Keyword: "cop", Replacement: "A"},
+		{Keyword: "Copilot", Replacement: "B"},
+	})
+	// Case-insensitive on the text side; the longer keyword wins at the same
+	// position so "Copilot" is masked as one unit, not "A" + "ilot".
+	if got := maskFilteredKeywords("the COPILOT service errored"); got != "the B service errored" {
+		t.Fatalf("case-insensitive longest match broken: %q", got)
+	}
+	if got := maskFilteredKeywords("copyright check failed"); got != "Ayright check failed" {
+		t.Fatalf("short keyword fallback broken: %q", got)
+	}
+}
+
+func TestMaskFilteredKeywordsMultipleRules(t *testing.T) {
+	setTestContentFilterRules(t, []contentFilterRule{
+		{Keyword: "alpha", Replacement: "A"},
+		{Keyword: "beta", Replacement: "B"},
+	})
+	if got := maskFilteredKeywords("alpha then beta then alpha"); got != "A then B then A" {
+		t.Fatalf("multi-rule mask broken: %q", got)
+	}
+}
+
+func TestMaskFilteredKeywordsEmptyReplacementDeletes(t *testing.T) {
+	setTestContentFilterRules(t, []contentFilterRule{{Keyword: "秘密项目", Replacement: ""}})
+	if got := maskFilteredKeywords("quota exceeded for 秘密项目 pipeline"); got != "quota exceeded for  pipeline" {
+		t.Fatalf("empty replacement must delete the occurrence: %q", got)
+	}
+}
+
+func TestMaskFilteredKeywordsInertWhenDisabled(t *testing.T) {
+	setTestContentFilterRules(t, []contentFilterRule{{Keyword: "Microsoft", Replacement: "XX"}})
+	store := openSettingsStore()
+	store.v.ContentFilterEnabled = false
+	if got := maskFilteredKeywords("microsoft failed"); got != "microsoft failed" {
+		t.Fatalf("mask must be inert when the output filter is disabled: %q", got)
+	}
+	setTestContentFilterRules(t, nil)
+	if got := maskFilteredKeywords("microsoft failed"); got != "microsoft failed" {
+		t.Fatalf("mask must be inert without rules: %q", got)
+	}
+}
+
+func TestMaskFilteredKeywordsUTF8Safe(t *testing.T) {
+	setTestContentFilterRules(t, []contentFilterRule{{Keyword: "错误", Replacement: "[屏]"}})
+	text := "UTF-8 文本中的错误处理：error 错误 occurred"
+	if got := maskFilteredKeywords(text); got != "UTF-8 文本中的[屏]处理：error [屏] occurred" {
+		t.Fatalf("multi-byte keyword mask broken: %q", got)
+	}
+}
+
+func TestWriteOpenAIErrorMasksKeywords(t *testing.T) {
+	setTestContentFilterRules(t, []contentFilterRule{{Keyword: "Microsoft", Replacement: "某厂商"}})
+	w := httptest.NewRecorder()
+	writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "Microsoft 365 upstream refused the request")
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Error.Message != "某厂商 365 upstream refused the request" || payload.Error.Type != "upstream_error" {
+		t.Fatalf("writeOpenAIError did not mask: %q", payload.Error.Message)
+	}
+}
+
+func TestWriteAnthropicErrorMasksKeywords(t *testing.T) {
+	setTestContentFilterRules(t, []contentFilterRule{{Keyword: "upstream", Replacement: "上游"}})
+	w := httptest.NewRecorder()
+	writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream timed out")
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Error.Message != "上游 timed out" {
+		t.Fatalf("writeAnthropicError did not mask: %q", payload.Error.Message)
+	}
+}
+
+func TestSanitizeDownstreamErrorTextMasksKeywords(t *testing.T) {
+	setTestContentFilterRules(t, []contentFilterRule{{Keyword: "Copilot", Replacement: "助手"}})
+	t.Setenv("M365_PUBLIC_IDENTITY_POLICY", "1")
+	if got := sanitizeDownstreamErrorText("conversation with Copilot failed"); got != "conversation with 助手 failed" {
+		t.Fatalf("combined sanitize broken: %q", got)
+	}
+	// Identity wording still rewritten through the same gate.
+	if got := sanitizeDownstreamErrorText("I am Microsoft Copilot, an error occurred"); strings.Contains(got, "Copilot") {
+		t.Fatalf("identity wording leaked: %q", got)
+	}
+}

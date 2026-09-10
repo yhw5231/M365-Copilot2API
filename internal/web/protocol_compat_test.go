@@ -286,7 +286,6 @@ func TestResponsesTextInputAlias(t *testing.T) {
 
 func TestResponsesRejectsUnsupportedParams(t *testing.T) {
 	cases := []responsesRequest{
-		{Model: "m", Input: "hi", ServiceTier: "flex"},
 		{Model: "m", Input: "hi", ContextManagement: "ephemeral"},
 		{Model: "m", Input: "hi", Include: []string{"file_search_call.results"}},
 	}
@@ -298,6 +297,19 @@ func TestResponsesRejectsUnsupportedParams(t *testing.T) {
 		var unsupported *unsupportedParamError
 		if !errors.As(err, &unsupported) {
 			t.Fatalf("expected unsupportedParamError, got %T: %v", err, err)
+		}
+	}
+}
+
+func TestResponsesAcceptsAnyServiceTier(t *testing.T) {
+	// Codex sends service_tier:"priority" unconditionally on every request; a
+	// hard 400 there blocked the whole turn. The tier is a speed/priority hint
+	// that cannot change the response content (the chat path already tolerates
+	// it silently), so every OpenAI-standard value must pass conversion.
+	for _, tier := range []string{"auto", "default", "flex", "priority", "scale"} {
+		r := responsesRequest{Model: "m", Input: "hi", ServiceTier: tier}
+		if _, err := r.openAI(); err != nil {
+			t.Fatalf("service_tier %q rejected: %v", tier, err)
 		}
 	}
 }

@@ -393,12 +393,13 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		errMsg = errorMessage(irw.body.Bytes(), "inner chat request failed")
 		// Surface the inner request's own error message (e.g. an upstream 4xx/5xx
 		// or a chat protocol rejection) instead of an opaque placeholder, so the
-		// client can see why the response failed.
+		// client can see why the response failed. The usage row keeps the raw
+		// message; the emitted event masks content-filter keywords.
 		emit("response.failed", map[string]any{
 			"type": "response.failed",
 			"response": map[string]any{
 				"id": id, "object": "response", "status": "failed", "model": model,
-				"error": map[string]any{"code": strconv.Itoa(status), "message": errMsg},
+				"error": map[string]any{"code": strconv.Itoa(status), "message": maskFilteredKeywords(errMsg)},
 			},
 		})
 		return
@@ -414,7 +415,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 			"type": "response.failed",
 			"response": map[string]any{
 				"id": id, "object": "response", "status": "failed", "model": model,
-				"error": map[string]any{"code": innerErr.Code, "message": innerErr.Message},
+				"error": map[string]any{"code": innerErr.Code, "message": maskFilteredKeywords(innerErr.Message)},
 			},
 		})
 		return
@@ -866,7 +867,13 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	}
 	// Sampling controls are accepted for compatibility but cannot be applied by
 	// the M365 backend; surface them explicitly so nothing is silently ignored.
-	if params, ok := ignoredSamplingParams(&o); ok {
+	// A non-auto service_tier lands in the same note: Codex sends "priority"
+	// unconditionally and the tier has no effect on this backend.
+	params, _ := ignoredSamplingParams(&o)
+	if tier := strings.ToLower(strings.TrimSpace(body.ServiceTier)); tier != "" && tier != "auto" {
+		params = append(params, "service_tier")
+	}
+	if len(params) > 0 {
 		out["m365_ignored_parameters"] = params
 		out["m365_sampling_note"] = samplingNote
 	}

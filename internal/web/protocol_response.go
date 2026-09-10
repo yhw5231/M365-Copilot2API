@@ -192,7 +192,7 @@ func (s *anthropicStreamSender) stop() {
 // emitError reports a mid-stream failure as an Anthropic error event (the SSE
 // headers are already sent, so an HTTP status is no longer possible).
 func (s *anthropicStreamSender) emitError(errType, message string) {
-	_ = s.frame("error", map[string]any{"type": "error", "error": map[string]any{"type": errType, "message": sanitizePublicInternalText(message)}})
+	_ = s.frame("error", map[string]any{"type": "error", "error": map[string]any{"type": errType, "message": sanitizeDownstreamErrorText(message)}})
 }
 
 // emitMessage replays the built message as the official Anthropic event

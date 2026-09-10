@@ -2463,7 +2463,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		} else {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "tool_round_limit", "message": err.Error(), "completed_calls": len(activeLedger.Completed)}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "tool_round_limit", "message": sanitizeDownstreamErrorText(err.Error()), "completed_calls": len(activeLedger.Completed)}})
 			return
 		}
 	}
@@ -3244,7 +3244,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			} else if errors.Is(err, context.Canceled) {
 				msg = "upstream connection was interrupted"
 			}
-			msg = sanitizePublicInternalText(msg)
+			msg = sanitizeDownstreamErrorText(msg)
 			// Preserve whatever the upstream produced before failing: a long
 			// answer takes minutes to generate, and discarding the buffered text
 			// turns a retryable timeout into a user-visible total loss. The
@@ -4579,7 +4579,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				code = "queue_timeout"
 				msg = "account is at capacity; the request queued too long, please retry shortly"
 			}
-			msg = sanitizePublicInternalText(msg)
+			msg = sanitizeDownstreamErrorText(msg)
 			// Reasoning is always streamed inline; drain filter tails so the
 			// partial content reaches the client before the error event.
 			if reasoning := reasoningFilter.Flush(); reasoning != "" {

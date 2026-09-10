@@ -24,7 +24,7 @@ func errorMessage(raw []byte, fallback string) string {
 func writeOpenAIError(w http.ResponseWriter, status int, typ, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": sanitizePublicInternalText(msg), "type": typ}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": sanitizeDownstreamErrorText(msg), "type": typ}})
 }
 func writeResponsesError(w http.ResponseWriter, status int, typ, msg string) {
 	writeOpenAIError(w, status, typ, msg)
@@ -32,7 +32,7 @@ func writeResponsesError(w http.ResponseWriter, status int, typ, msg string) {
 func writeAnthropicError(w http.ResponseWriter, status int, typ, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"type": "error", "error": map[string]any{"type": typ, "message": sanitizePublicInternalText(msg)}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"type": "error", "error": map[string]any{"type": typ, "message": sanitizeDownstreamErrorText(msg)}})
 }
 
 // writeEndpointError writes an error in the dialect the request's endpoint
@@ -68,7 +68,7 @@ func writeContextOverflowError(w http.ResponseWriter, r *http.Request, estimated
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
-		"message": sanitizePublicInternalText(fmt.Sprintf(
+		"message": sanitizeDownstreamErrorText(fmt.Sprintf(
 			"This model's maximum context length is %d tokens (%d%% of the %d-token context window). However, your request resulted in approximately %d input tokens. Please compact your context and resend a smaller request.", threshold, compactRequestThresholdPercent, budget, estimated)),
 		"type": "invalid_request_error",
 		"code": "context_length_exceeded",
