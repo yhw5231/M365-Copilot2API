@@ -239,27 +239,50 @@ func defaultReasoningLevel(model string, mappings []modelMapping) (string, bool)
 	return level, level != ""
 }
 
+// commonReasoningEffortAliases maps effort values that some clients send but
+// the backend does not advertise onto the nearest supported level. Anything
+// outside this table is not guessed at: it falls back to the model route's
+// configured default level.
+var commonReasoningEffortAliases = map[string]string{
+	"max":       "xhigh",
+	"ultra":     "xhigh",
+	"highest":   "xhigh",
+	"very high": "xhigh",
+	"very_high": "xhigh",
+	"very-high": "xhigh",
+}
+
 // resolveReasoningEffort computes the effective reasoning level for a request.
-// The client's own setting wins whenever it names a real reasoning level.
-// "auto", an omitted effort, and any unrecognized value defer to the model
-// route's configured default level; a route without one keeps the historic
-// permissive tone behavior ("auto"/empty resolve to nothing). Unrecognized
-// values also stay passthrough when no default exists so the existing
-// invalid-effort validation still rejects them with a 400.
+// The client's own setting wins whenever it names a real reasoning level; a
+// common client alias ("max") maps onto its nearest supported level. "auto",
+// an omitted effort, and any unrecognized value defer to the model route's
+// configured default level; a route without one keeps the historic permissive
+// tone behavior for "auto"/empty (they resolve to nothing), while an
+// unrecognized value falls back to the catalog's advertised default level
+// ("medium") — an invalid client effort must degrade to a sane level, never
+// fail the request with a 400.
 func resolveReasoningEffort(requested, model string, mappings []modelMapping) string {
 	effort := strings.TrimSpace(requested)
 	if effort != "" && !strings.EqualFold(effort, "auto") {
 		if e, err := normalizeReasoningEffort(effort); err == nil {
 			return e
 		}
+		if e, ok := commonReasoningEffortAliases[strings.ToLower(effort)]; ok {
+			return e
+		}
 	}
 	if level, ok := defaultReasoningLevel(model, mappings); ok {
-		return level
+		// Settings validation keeps route defaults inside the supported set,
+		// but older persisted settings may not: treat such a default as
+		// absent rather than forward an invalid level downstream.
+		if e, err := normalizeReasoningEffort(level); err == nil && e != "" {
+			return e
+		}
 	}
-	if strings.EqualFold(effort, "auto") {
+	if strings.EqualFold(effort, "auto") || effort == "" {
 		return ""
 	}
-	return effort
+	return "medium"
 }
 
 func configuredModelSpecs(mappings []modelMapping) []modelSpec {

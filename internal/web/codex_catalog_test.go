@@ -248,20 +248,44 @@ func TestResolveReasoningEffort(t *testing.T) {
 	if got := resolveReasoningEffort("medium", "no-such-model", mappings); got != "medium" {
 		t.Fatalf("unknown model explicit got=%q", got)
 	}
-	// Without a configured default an unrecognized value stays passthrough so
-	// the downstream invalid-effort validation still rejects it with a 400.
-	if got := resolveReasoningEffort("extreme", "no-such-model", mappings); got != "extreme" {
-		t.Fatalf("unknown model unrecognized got=%q want passthrough", got)
+	// Common client aliases map onto the nearest supported level, ahead of the
+	// route's configured default: "max" means the highest supported level.
+	low := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"}}
+	if got := resolveReasoningEffort("max", "gpt-5.6-sol", low); got != "xhigh" {
+		t.Fatalf("alias max with low default got=%q want xhigh", got)
+	}
+	if got := resolveReasoningEffort("MAX", "no-such-model", low); got != "xhigh" {
+		t.Fatalf("alias MAX without default got=%q want xhigh", got)
+	}
+	// A plain unrecognized value still takes the route's configured default.
+	if got := resolveReasoningEffort("extreme", "gpt-5.6-sol", low); got != "low" {
+		t.Fatalf("unrecognized with low default got=%q want low", got)
+	}
+	// Without a configured default an unrecognized value resolves to the
+	// catalog's advertised default level instead of the historic passthrough
+	// (which used to reach the invalid-effort 400).
+	if got := resolveReasoningEffort("extreme", "no-such-model", mappings); got != "medium" {
+		t.Fatalf("unknown model unrecognized got=%q want medium", got)
 	}
 }
 
-func TestChatRejectsInvalidReasoningBeforeUpstream(t *testing.T) {
-	s := &Server{}
-	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.6-reasoning","reasoning_effort":"extreme","messages":[{"role":"user","content":"hello"}]}`))
-	w := httptest.NewRecorder()
-	s.openaiChat(w, r)
-	if w.Code != 400 || !strings.Contains(w.Body.String(), "unsupported reasoning effort") {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+func TestChatResolvesInvalidReasoningInsteadOfRejecting(t *testing.T) {
+	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamMapping: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"}}
+	// Every client-sent effort must resolve to a level the tone lookup
+	// accepts. The historic path where an unrecognized value reached
+	// reasoningTone unmodified and failed the request with a 400 no longer
+	// exists, whatever the model route settings say.
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-reasoning", "m365-copilot"} {
+		for _, effort := range []string{"", "auto", "none", "minimal", "low", "medium", "high", "xhigh", "max", "MAX", "ultra", "extreme", "bogus"} {
+			resolved := resolveReasoningEffort(effort, model, mappings)
+			tone, err := reasoningTone(model, resolved)
+			if err != nil {
+				t.Fatalf("model=%q effort=%q resolved=%q tone error: %v", model, effort, resolved, err)
+			}
+			if tone == "" {
+				t.Fatalf("model=%q effort=%q resolved=%q produced an empty tone", model, effort, resolved)
+			}
+		}
 	}
 }
 

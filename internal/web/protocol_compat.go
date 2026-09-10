@@ -238,15 +238,12 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 	}
 	if r.Reasoning != nil {
 		effort := strings.TrimSpace(r.Reasoning.Effort)
-		// Validate the requested reasoning effort before the stream opens. An
-		// invalid value must fail with a plain 400 (like chat/completions) rather
-		// than a streamed response.failed after response.created. "auto" is
-		// accepted here and resolved to the model's default by the chat adapter.
-		if effort != "" && !strings.EqualFold(effort, "auto") {
-			if _, err := normalizeReasoningEffort(effort); err != nil {
-				return o, err
-			}
-		}
+		// No validation here on purpose: the client's effort is resolved by
+		// resolveReasoningEffort in the chat adapter (a real level kept, a
+		// common alias like "max" mapped, anything else replaced by the model
+		// route's configured default), so an unrecognized value can neither
+		// fail fast with a 400 nor open a stream that fails after
+		// response.created.
 		o.Reasoning = r.Reasoning
 		o.ReasoningEffort = effort
 	}

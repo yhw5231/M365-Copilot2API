@@ -350,12 +350,18 @@ func TestResponsesReasoningEffortValidation(t *testing.T) {
 			t.Fatalf("auto effort %q lost: got %q", e, o.ReasoningEffort)
 		}
 	}
-	// Invalid efforts fail fast so the stream never opens.
-	for _, e := range []string{"extreme", "bogus"} {
+	// Unrecognized efforts are accepted here too: resolveReasoningEffort in
+	// the chat adapter replaces them with the model route's configured
+	// default (or a common-alias mapping like max→xhigh), so nothing fails
+	// at parse time and nothing can fail after response.created.
+	for _, e := range []string{"extreme", "bogus", "max"} {
 		r := responsesRequest{Model: "m", Input: "hi", Reasoning: &reasoningConfig{Effort: e}}
-		_, err := r.openAI()
-		if err == nil {
-			t.Fatalf("invalid effort %q must be rejected", e)
+		o, err := r.openAI()
+		if err != nil {
+			t.Fatalf("unrecognized effort %q must not be rejected: %v", e, err)
+		}
+		if o.ReasoningEffort != e {
+			t.Fatalf("unrecognized effort %q lost: got %q", e, o.ReasoningEffort)
 		}
 	}
 }
