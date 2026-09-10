@@ -27,6 +27,23 @@ import (
 // Callers must independently probe the account before marking it unhealthy.
 var ErrRateLimitNotice = errors.New("upstream rate-limit notice")
 
+// rateLimitNoticeText reports whether text is the human-readable throttling
+// notice ChatHub delivers on the text channel. Matching is substring-based so
+// wording variants classify; callers must bound it with "no real content has
+// streamed yet" (or a notice-only buffer) to avoid flagging genuine answers
+// that merely mention traffic.
+func rateLimitNoticeText(text string) bool {
+	t := strings.ToLower(text)
+	return strings.Contains(t, "temporarily unable to respond to this many requests") ||
+		strings.Contains(t, "太多请求") ||
+		strings.Contains(t, "无法响应这么多请求") ||
+		strings.Contains(t, "流量较高") ||
+		strings.Contains(t, "请稍后重试") ||
+		strings.Contains(t, "too many requests") ||
+		strings.Contains(t, "experiencing high traffic") ||
+		(strings.Contains(t, "please retry") && strings.Contains(t, "later"))
+}
+
 // ErrEmptyCompletion indicates upstream returned an empty completion because
 // the requested tone is not available for this tenant. The web layer can
 // fall back to "magic" and retry.
@@ -576,12 +593,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if streamed.Len() != 0 {
 			return false
 		}
-		t := strings.ToLower(text)
-		return strings.Contains(t, "temporarily unable to respond to this many requests") ||
-			strings.Contains(t, "太多请求") ||
-			strings.Contains(t, "无法响应这么多请求") ||
-			strings.Contains(t, "too many requests") ||
-			strings.Contains(t, "please retry") && strings.Contains(t, "later")
+		return rateLimitNoticeText(text)
 	}
 	emitSnapshot := func(snapshot string) error {
 		if snapshot == "" {
@@ -671,6 +683,17 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 		if read.err != nil {
 			returnConn = false
+			// A throttling notice can be followed by a clean close (1000)
+			// before the completion frame arrives. If everything received so
+			// far is the notice, classify it as a rate limit so the caller
+			// cools the account down and fails over instead of reporting a
+			// transport error.
+			if rateLimitNoticeText(streamed.String() + gateText.String()) {
+				if c.OnUpstream != nil {
+					c.OnUpstream(req.TraceID, "upstream_error", map[string]any{"error": ErrRateLimitNotice.Error()})
+				}
+				return Result{}, ErrRateLimitNotice
+			}
 			// Never convert a timeout or dropped WebSocket into a successful
 			// partial response. A response is complete only after SignalR type 3.
 			if c.OnUpstream != nil {
