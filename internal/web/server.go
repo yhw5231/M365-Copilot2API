@@ -285,7 +285,7 @@ func (s *Server) routeUpstreamTrace(traceID, stage string, meta map[string]any) 
 		case "upstream_request":
 			payload := fmt.Sprint(meta["payload"])
 			rec.UpstreamReq = redactBody([]byte(captureLimit(payload)))
-			rec.UpstreamError = ""
+			clearSupersededUpstreamError(rec)
 		case "upstream_first_delta":
 			if ms, ok := meta["first_delta_ms"].(int64); ok {
 				rec.TTFTMs = ms
@@ -302,6 +302,11 @@ func (s *Server) routeUpstreamTrace(traceID, stage string, meta map[string]any) 
 				"events":       meta["events"],
 				"text_preview": meta["text_preview"],
 			}
+			// The upstream answered, so any error recorded by an earlier
+			// attempt on this trace (router-probe fallthrough, same-account
+			// replay, failover sweep, tone fallback) is superseded — the
+			// request did not end with it.
+			clearSupersededUpstreamError(rec)
 			// Do NOT mark the record "success" here. This stage fires as soon
 			// as the upstream (ChatHub) response is complete, but the handler
 			// may still be streaming deltas downstream (SSE) or running
@@ -315,6 +320,22 @@ func (s *Server) routeUpstreamTrace(traceID, stage string, meta map[string]any) 
 			rec.StatusCode = http.StatusBadGateway
 		}
 	})
+}
+
+// clearSupersededUpstreamError drops the error state a previous upstream
+// attempt left on the trace record. Requests retry upstream in several places
+// (streaming router-probe fallthrough, chatWithAccount's empty-completion and
+// rate-limit replays, the account failover sweep, the magic-tone fallback);
+// each retry emits a fresh upstream_request, and when one finally succeeds the
+// record must not keep reporting the earlier attempt's failure — the finish
+// callback turns a non-empty Error into a terminal "error" status even for a
+// 200 response. Only a later upstream_error (the retry failed too) or a
+// handler-reported markTraceError can re-establish the error state after this.
+func clearSupersededUpstreamError(rec *traceRecord) {
+	rec.UpstreamError = ""
+	rec.Error = ""
+	rec.Status = "in_progress"
+	rec.StatusCode = 0
 }
 
 // markTraceError records a terminal error state on the request trace when the
@@ -2870,7 +2891,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// conversation was deleted after routing, which meant tool rounds never
 		// updated the session history and every followed request was a full
 		// replay with cache 0.
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+		// The probe gets its own bounded window instead of the full chat
+		// budget: it only decides "which tool / none", and when it cannot
+		// decide in time the fallthrough below is the designed degradation.
+		// Unbounded, a stalled probe ran to the chathub hard cap (5 minutes)
+		// before the answer stream even started — Codex turns on very large
+		// contexts waited ~10 minutes in total.
+		probeWindow := routerProbeWindow()
+		if chatTimeout := time.Duration(s.settings.get().ChatTimeoutSeconds) * time.Second; chatTimeout > 0 && chatTimeout < probeWindow {
+			probeWindow = chatTimeout
+		}
+		probeCtx, probeCancel := context.WithTimeout(r.Context(), probeWindow)
+		routeRes, routeErr := s.chatWithAccount(probeCtx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, TraceID: requestID, BindAccount: acc.ID})
+		probeCancel()
 		log.Printf("[req-trace] id=%s stage=router_return elapsed_ms=%d err=%t", requestID, time.Since(startedAt).Milliseconds(), routeErr != nil)
 		// Tone fallback for the router turn: chatWithAccount already retried the
 		// same tone once, so a persistent empty completion usually means the

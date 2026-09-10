@@ -115,3 +115,93 @@ func TestMarkTraceErrorFlipsStreamingRecordToError(t *testing.T) {
 		}
 	})
 }
+
+// TestRouteUpstreamTraceNewAttemptClearsSupersededError guards the failover
+// trace semantics: a streaming tool-router probe that dies with a deadline
+// records an upstream_error, but the answer stream that falls through and
+// succeeds must clear it. The finish callback turns a non-empty Error into a
+// terminal "error" status even for a 200 response, so the stale state would
+// make a successful request show up as failed in the console.
+func TestRouteUpstreamTraceNewAttemptClearsSupersededError(t *testing.T) {
+	withTraceEnabled(t, func() {
+		st := openTraceStore()
+		st.byID["t-probe-fallthrough"] = &traceRecord{
+			ID:     "t-probe-fallthrough",
+			At:     time.Now(),
+			Status: "in_progress",
+		}
+		s := &Server{trace: st}
+
+		s.routeUpstreamTrace("t-probe-fallthrough", "upstream_request", map[string]any{"payload": `{"probe":true}`})
+		s.routeUpstreamTrace("t-probe-fallthrough", "upstream_error", map[string]any{"error": "chathub response deadline exceeded before completion"})
+		got, _ := s.trace.get("t-probe-fallthrough")
+		if got.Status != "error" || got.Error == "" {
+			t.Fatalf("probe failure not recorded: %+v", got)
+		}
+
+		// The answer attempt starts: the superseded error must be dropped.
+		s.routeUpstreamTrace("t-probe-fallthrough", "upstream_request", map[string]any{"payload": `{"answer":true}`})
+		got, _ = s.trace.get("t-probe-fallthrough")
+		if got.Error != "" || got.UpstreamError != "" {
+			t.Fatalf("stale error survived a new upstream attempt: error=%q upstreamError=%q", got.Error, got.UpstreamError)
+		}
+		if got.Status != "in_progress" || got.StatusCode != 0 {
+			t.Fatalf("record after new attempt=%+v want in_progress/code=0", got)
+		}
+		if got.UpstreamReq == nil {
+			t.Fatal("new attempt payload was not captured")
+		}
+
+		// And the successful answer completes it.
+		s.routeUpstreamTrace("t-probe-fallthrough", "upstream_response", map[string]any{
+			"text": "done", "reasoning": "", "events": 3, "ttft_ms": int64(80), "text_preview": "done",
+		})
+		got, _ = s.trace.get("t-probe-fallthrough")
+		if got.Error != "" || got.UpstreamError != "" || got.Status != "in_progress" {
+			t.Fatalf("successful response must leave a clean record: %+v", got)
+		}
+		if got.UpstreamResp == nil {
+			t.Fatal("upstream response payload was not captured")
+		}
+	})
+}
+
+// TestRouteUpstreamTraceFailedRetryKeepsError verifies the flip side: when the
+// retry after a failed attempt also fails, the record reports the LAST error —
+// clearing must not erase a terminal failure.
+func TestRouteUpstreamTraceFailedRetryKeepsError(t *testing.T) {
+	withTraceEnabled(t, func() {
+		st := openTraceStore()
+		st.byID["t-retry-fails"] = &traceRecord{
+			ID:     "t-retry-fails",
+			At:     time.Now(),
+			Status: "in_progress",
+		}
+		s := &Server{trace: st}
+
+		s.routeUpstreamTrace("t-retry-fails", "upstream_request", map[string]any{"payload": `{}`})
+		s.routeUpstreamTrace("t-retry-fails", "upstream_error", map[string]any{"error": "first attempt failed"})
+		s.routeUpstreamTrace("t-retry-fails", "upstream_request", map[string]any{"payload": `{}`})
+		s.routeUpstreamTrace("t-retry-fails", "upstream_error", map[string]any{"error": "retry failed too"})
+
+		got, _ := s.trace.get("t-retry-fails")
+		if got.Error != "retry failed too" || got.UpstreamError != "retry failed too" {
+			t.Fatalf("last error must win: error=%q upstreamError=%q", got.Error, got.UpstreamError)
+		}
+		if got.Status != "error" || got.StatusCode != 502 {
+			t.Fatalf("record=%+v want status=error code=502", got)
+		}
+	})
+}
+
+// TestRouterProbeWindowDefaultsAndOverride covers the streaming router-probe
+// budget: 120s by default, overridable via M365_ROUTER_PROBE_TIMEOUT_SECONDS.
+func TestRouterProbeWindowDefaultsAndOverride(t *testing.T) {
+	if got := routerProbeWindow(); got != 120*time.Second {
+		t.Fatalf("default routerProbeWindow=%v want 120s", got)
+	}
+	t.Setenv("M365_ROUTER_PROBE_TIMEOUT_SECONDS", "45")
+	if got := routerProbeWindow(); got != 45*time.Second {
+		t.Fatalf("override routerProbeWindow=%v want 45s", got)
+	}
+}

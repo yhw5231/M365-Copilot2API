@@ -412,6 +412,20 @@ func reasoningGateWindow() time.Duration {
 	return 1500 * time.Millisecond
 }
 
+// routerProbeWindow bounds one streaming tool-router probe turn. The probe
+// only decides which declared tool (if any) to call; when it cannot decide in
+// time the caller falls through to the answer stream, which carries the same
+// tool definitions and detects calls through the native/tool-shaped paths.
+// M365_ROUTER_PROBE_TIMEOUT_SECONDS (integer seconds) overrides the built-in
+// default of 120s; the call site additionally caps it by the request's own
+// chat timeout.
+func routerProbeWindow() time.Duration {
+	if s := envInt("M365_ROUTER_PROBE_TIMEOUT_SECONDS", 0); s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return 120 * time.Second
+}
+
 // reasoningQuietWindow returns the trailing-quiet interval used to decide when
 // a reasoning stream has finished. When reasoning arrives, the answer text is
 // held until no new reasoning is seen within this window, so the client sees
