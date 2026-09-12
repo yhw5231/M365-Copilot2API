@@ -46,7 +46,7 @@ func TestRepairDuplicateToolCallIDsParallelGroupReplay(t *testing.T) {
 	}
 	msgs = append(msgs, oaiMsg{Role: "user", Content: "go"})
 
-	repairDuplicateToolCallIDs(msgs)
+	msgs = repairDuplicateToolCallIDs(msgs)
 	if err := validateToolConversation(msgs); err != nil {
 		t.Fatalf("replayed duplicate ids still rejected after repair: %v", err)
 	}
@@ -79,8 +79,8 @@ func TestRepairDuplicateToolCallIDsDeterministic(t *testing.T) {
 		return msgs
 	}
 	a, b := build(), build()
-	repairDuplicateToolCallIDs(a)
-	repairDuplicateToolCallIDs(b)
+	a = repairDuplicateToolCallIDs(a)
+	b = repairDuplicateToolCallIDs(b)
 	for i := range a {
 		if a[i].ToolCallID != b[i].ToolCallID {
 			t.Fatalf("message %d tool_call_id differs between runs: %q vs %q", i, a[i].ToolCallID, b[i].ToolCallID)
@@ -110,11 +110,11 @@ func TestRepairDuplicateToolCallIDsUniqueHistoryIsUntouched(t *testing.T) {
 		toolResultMsg("call_3"),
 	}
 	before := fmt.Sprintf("%#v", msgs)
-	repairDuplicateToolCallIDs(msgs)
-	if after := fmt.Sprintf("%#v", msgs); after != before {
-		t.Fatalf("unique history was modified:\nbefore: %s\nafter:  %s", before, after)
+	after := repairDuplicateToolCallIDs(msgs)
+	if afterStr := fmt.Sprintf("%#v", after); afterStr != before {
+		t.Fatalf("unique history was modified:\nbefore: %s\nafter:  %s", before, afterStr)
 	}
-	if err := validateToolConversation(msgs); err != nil {
+	if err := validateToolConversation(after); err != nil {
 		t.Fatalf("clean history rejected: %v", err)
 	}
 }
@@ -200,11 +200,73 @@ func TestRepairDuplicateToolCallIDsSameGroupTwice(t *testing.T) {
 	if len(msgs) != 5 {
 		t.Fatalf("expected 5 messages after group merge, got %d", len(msgs))
 	}
-	repairDuplicateToolCallIDs(msgs)
+	msgs = repairDuplicateToolCallIDs(msgs)
 	if err := validateToolConversation(msgs); err != nil {
 		t.Fatalf("same-group duplicate ids still rejected after repair: %v", err)
 	}
 	if got := msgs[3].ToolCallID; got != "call-dup#dup2" {
 		t.Fatalf("second result id = %q, want call-dup#dup2", got)
+	}
+}
+
+// TestRepairDuplicateToolCallIDsExtraResults reproduces the 2026-09-12 error
+// record: OpenClaw's cron replay declared one exec function_call, answered it
+// with an empty placeholder function_call_output, and later appended the REAL
+// output under the SAME call id — one declared call, two results. Aliasing the
+// second result by consumption count produced <id>#dup2 with no matching call
+// and validateToolConversation hard-rejected the turn ("unexpected tool
+// result: …#dup2"), bricking every retry of the same history behind a stream
+// that had already emitted response.created. The extra result must fold into
+// the earlier one: the real output replaces the empty placeholder in its
+// original position and the duplicate is dropped.
+func TestRepairDuplicateToolCallIDsExtraResults(t *testing.T) {
+	const realOutput = "❌ Elysiver 签到失败\nUnauthorized, invalid access token"
+	msgs := []oaiMsg{
+		{Role: "user", Content: "run checkin"},
+		assistantCallMsg("fc0817c107ab5f45a08ee1e426dc400452"),
+		{Role: "tool", ToolCallID: "fc0817c107ab5f45a08ee1e426dc400452", Content: ""},
+		assistantCallMsg("callb9bb7b1c9d5c470b987584e6c0c06f28"),
+		{Role: "tool", ToolCallID: "callb9bb7b1c9d5c470b987584e6c0c06f28", Content: ""},
+		{Role: "assistant", Content: ""},
+		{Role: "tool", ToolCallID: "fc0817c107ab5f45a08ee1e426dc400452", Content: realOutput},
+		{Role: "tool", ToolCallID: "callb9bb7b1c9d5c470b987584e6c0c06f28", Content: realOutput},
+	}
+	msgs = repairDuplicateToolCallIDs(msgs)
+	if err := validateToolConversation(msgs); err != nil {
+		t.Fatalf("extra results still rejected after repair: %v", err)
+	}
+	if len(msgs) != 6 {
+		t.Fatalf("expected 6 messages after folding extra results, got %d", len(msgs))
+	}
+	if got := msgs[2].ToolCallID; got != "fc0817c107ab5f45a08ee1e426dc400452" {
+		t.Fatalf("first result id = %q, want the unaliased original id", got)
+	}
+	if got := contentToString(msgs[2].Content); got != realOutput {
+		t.Fatalf("folded result content = %q, want the real output", got)
+	}
+	if got := contentToString(msgs[4].Content); got != realOutput {
+		t.Fatalf("second folded result content = %q, want the real output", got)
+	}
+}
+
+// TestRepairDuplicateToolCallIDsEmptyExtraResultKeepsRealOutput: the fold must
+// not let a later EMPTY replay clobber an earlier real output — the latest
+// non-empty content wins.
+func TestRepairDuplicateToolCallIDsEmptyExtraResultKeepsRealOutput(t *testing.T) {
+	msgs := []oaiMsg{
+		{Role: "user", Content: "go"},
+		assistantCallMsg("call_x"),
+		{Role: "tool", ToolCallID: "call_x", Content: "real output"},
+		{Role: "tool", ToolCallID: "call_x", Content: ""},
+	}
+	msgs = repairDuplicateToolCallIDs(msgs)
+	if err := validateToolConversation(msgs); err != nil {
+		t.Fatalf("extra empty result still rejected after repair: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages after dropping the empty duplicate, got %d", len(msgs))
+	}
+	if got := contentToString(msgs[2].Content); got != "real output" {
+		t.Fatalf("result content = %q, want the earlier real output", got)
 	}
 }

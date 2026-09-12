@@ -21,22 +21,35 @@ import (
 // results are aliased by CONSUMPTION count, not by the total declared count.
 // (Two identical results can follow two identical calls replayed inside one
 // group; aliasing by the declared count would point both results at #dup2 and
-// reject the second as unexpected.) A result can only reference a fully
-// paired replay: validateToolConversation rejects an assistant turn while
-// results are still pending, so an id that repeats is always one whose
-// earlier occurrence is already completed.
+// reject the second as unexpected.)
 //
-// The rewrite mutates the request's maps in place. That is deliberate:
-// cloneMessages shares these maps with body.ClientMessages, and anchors
-// (msgAnchor) exclude tool-call ids, so session matching is unaffected while
-// the full prompt and the session increment stay consistent with each other.
-// The alias is derived from the original id and its index — never random — so
-// identical replays produce identical prompts across turns.
+// Results can also outnumber calls without any re-declaration (observed:
+// OpenClaw's cron replay carried an empty placeholder function_call_output for
+// a call id and later the real output under the SAME id — one declared call,
+// two results). Aliasing the extra result would leave it pointing at a call
+// that does not exist and hard-reject the turn with "unexpected tool result",
+// bricking the session all over again. Instead the extra result is folded into
+// the earlier result message for that id — the latest non-empty content wins,
+// so an empty replay cannot clobber a real output — and the duplicate message
+// is dropped. A result for an id that was never declared stays in place:
+// validateToolConversation still rejects it, because genuinely missing calls
+// are the stateless continuation path's job (restoreStatelessToolCalls
+// reconstructs them from the pending registry).
+//
+// The rewrite mutates the request's call maps in place and returns a filtered
+// slice the caller must reassign. The map mutation is deliberate: cloneMessages
+// shares these maps with body.ClientMessages, and anchors (msgAnchor) exclude
+// tool-call ids, so session matching is unaffected while the full prompt and
+// the session increment stay consistent with each other. The alias is derived
+// from the original id and its index — never random — so identical replays
+// produce identical prompts across turns.
 func repairDuplicateToolCallIDs(messages []oaiMsg) []oaiMsg {
 	declared := map[string]int{} // original id -> occurrences declared so far
 	consumed := map[string]int{} // original id -> results consumed so far
+	answered := map[string]int{} // original id -> kept-index of the result message answering occurrence #1
+	kept := make([]oaiMsg, 0, len(messages))
 	for i := range messages {
-		m := &messages[i]
+		m := messages[i]
 		switch m.Role {
 		case "assistant":
 			for _, call := range m.ToolCalls {
@@ -49,17 +62,38 @@ func repairDuplicateToolCallIDs(messages []oaiMsg) []oaiMsg {
 					call["id"] = fmt.Sprintf("%s#dup%d", id, n)
 				}
 			}
+			kept = append(kept, m)
 		case "tool":
 			if m.ToolCallID == "" {
+				kept = append(kept, m)
 				continue
 			}
-			consumed[m.ToolCallID]++
-			if n := consumed[m.ToolCallID]; n > 1 {
-				m.ToolCallID = fmt.Sprintf("%s#dup%d", m.ToolCallID, n)
+			id := m.ToolCallID
+			consumed[id]++
+			n := consumed[id]
+			if declared[id] >= n {
+				// The j-th result answers the j-th replayed occurrence of the
+				// call: alias it to the same #dupN alias the call carries.
+				if n > 1 {
+					m.ToolCallID = fmt.Sprintf("%s#dup%d", id, n)
+				} else {
+					answered[id] = len(kept)
+				}
+				kept = append(kept, m)
+				continue
 			}
+			// More results than declared calls: the client answered an
+			// already-answered call again under the same id. Fold it into the
+			// earlier result message — latest non-empty content wins — and drop
+			// the duplicate so validateToolConversation accepts the turn.
+			if idx, ok := answered[id]; ok && strings.TrimSpace(contentToString(m.Content)) != "" {
+				kept[idx].Content = m.Content
+			}
+		default:
+			kept = append(kept, m)
 		}
 	}
-	return messages
+	return kept
 }
 
 // repairInterleavedAssistantText re-attaches assistant narration that a

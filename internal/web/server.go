@@ -2433,13 +2433,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Some clients replay history with the same tool-call id used more than
-	// once (retry/compaction re-emits an identical parallel-call group). Alias
-	// the repeats deterministically before validation; otherwise the 400 below
-	// bricks the session because every retry replays the same history.
+	// once (retry/compaction re-emits an identical parallel-call group), or
+	// emit several outputs for one call id (an empty placeholder plus the real
+	// result). Alias the repeats / fold the extra results before validation;
+	// otherwise the 400 below bricks the session because every retry replays
+	// the same history.
 	// Codex Desktop additionally interleaves assistant narration between a
 	// tool call and its result; merge it back so the pair validates.
 	body.Messages = repairInterleavedAssistantText(body.Messages)
-	repairDuplicateToolCallIDs(body.Messages)
+	body.Messages = repairDuplicateToolCallIDs(body.Messages)
 	if err := validateToolConversation(body.Messages); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "tool_protocol_error", err.Error())
 		return
