@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -539,5 +540,39 @@ func TestRateLimitCooldownHonorsUpstreamHint(t *testing.T) {
 	}
 	if d := time.Until(until); d < 110*time.Second || d > 125*time.Second {
 		t.Fatalf("cooldown duration=%s want ~120s (upstream hint)", d)
+	}
+}
+
+// TestIsTransportFailure pins the classification the transport retry relies
+// on: only network/protocol deaths (the 502 class) are replayable; classes
+// with dedicated recovery (rate limit, auth, empty completion, queue timeout,
+// content filter) and a spent caller context must never be replayed.
+func TestIsTransportFailure(t *testing.T) {
+	readTimeout := fmt.Errorf("ws read before completion: %w", fmt.Errorf("read tcp 172.17.0.2:49542->52.97.97.114:443: i/o timeout"))
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{readTimeout, true},
+		{fmt.Errorf("ws dial: dial tcp: connection refused"), true},
+		{fmt.Errorf("unexpected protocol frame"), true},
+		{chathub.ErrRateLimitNotice, false},
+		{&chathub.DialError{Status: 429}, false},
+		{&chathub.DialError{Status: 401}, false},
+		{&UpstreamHTTPError{Status: 429}, false},
+		{&UpstreamHTTPError{Status: 403}, false},
+		{chathub.ErrEmptyCompletion, false},
+		{errQueueTimeout, false},
+		{&UpstreamHTTPError{Status: 503, LocalCapacity: true}, false},
+		{errContentFilterHit, false},
+		{context.Canceled, false},
+		{context.DeadlineExceeded, false},
+		{fmt.Errorf("wrapped ctx: %w", context.DeadlineExceeded), false},
+	}
+	for _, c := range cases {
+		if got := isTransportFailure(c.err); got != c.want {
+			t.Errorf("isTransportFailure(%v)=%v want %v", c.err, got, c.want)
+		}
 	}
 }

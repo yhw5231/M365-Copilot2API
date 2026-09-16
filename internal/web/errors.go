@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -17,6 +18,34 @@ func logOAuthError(stage string, err error) {
 		return
 	}
 	log.Printf("oauth_error stage=%s error=%q", stage, "request_failed")
+}
+
+// isTransportFailure reports whether err is a transport-class upstream
+// failure — the request reached the WebSocket layer and died on the network
+// (dial error, silent drop, read timeout) or as an unknown protocol error;
+// the same class upstreamStatus maps to HTTP 502. Classes with dedicated
+// recovery (rate-limit failover, auth, empty-completion and rate-limit
+// replays, queue timeouts, tone fallback, content-filter termination) are
+// excluded so their own handling is not double-triggered, and so is a spent
+// caller context: replaying into an already-expired deadline is pointless.
+// These are the only errors a single same-account replay can fix, because
+// nothing was produced for them — the M365 edge occasionally accepts a
+// submit and then goes completely silent (no frames, no SignalR pings) until
+// the ws read deadline kills the turn.
+func isTransportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsRateLimited(err) || IsAuthFailure(err) || IsEmptyCompletion(err) || IsQueueTimeout(err) || IsLocalCapacity(err) {
+		return false
+	}
+	if errors.Is(err, errContentFilterHit) {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return true
 }
 
 // upstreamError keeps transport details, including URLs and credentials, out

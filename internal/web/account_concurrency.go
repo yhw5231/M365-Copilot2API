@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"m365-copilot2api/internal/chathub"
@@ -610,6 +611,20 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).Chat(ctx, account, request)
+	if isTransportFailure(err) && ctx.Err() == nil {
+		// One same-account replay for transport-class failures: the submit
+		// never produced a response, so the replay duplicates nothing and a
+		// fresh dial usually lands on a healthy edge node. Observed 2026-09-12:
+		// an answer turn after a completed router probe received no frame at
+		// all — not even SignalR pings — for the whole 90s read deadline and
+		// died with "ws read before completion: i/o timeout"; a replay is the
+		// only recovery the gateway has.
+		log.Printf("[transport-retry] account=%s replaying chat after transport failure: %v", accountID, err)
+		if s.accountPool != nil {
+			s.accountPool.MarkCall(accountID)
+		}
+		result, err = s.accountClient(accountID).Chat(ctx, account, request)
+	}
 	if IsEmptyCompletion(err) {
 		// ChatHub occasionally emits a successful completion frame without any
 		// assistant text after arbitrary model turns, including ordinary reads and
@@ -647,7 +662,11 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 }
 
 // chatWithAccountEvents runs one streaming chat request under the account's
-// concurrency slot.
+// concurrency slot. A transport-class failure is replayed once on the same
+// account, but only while the handler has not seen a single event: anything
+// already delivered may have reached the downstream client or buffered state,
+// and a replay would duplicate it. A stream that died before its first frame
+// (silent ws drop / read timeout) is indistinguishable from a fresh request.
 func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, account chathub.Account, request chathub.Request, onEvent func(chathub.StreamEvent) error) (chathub.Result, error) {
 	release, err := s.accountConcurrency.Acquire(ctx, accountID, request.SessionID)
 	if err != nil {
@@ -657,7 +676,18 @@ func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, ac
 	if s.accountPool != nil {
 		s.accountPool.MarkCall(accountID)
 	}
-	result, err := s.accountClient(accountID).ChatWithEvents(ctx, account, request, onEvent)
+	var delivered atomic.Bool
+	result, err := s.accountClient(accountID).ChatWithEvents(ctx, account, request, func(ev chathub.StreamEvent) error {
+		delivered.Store(true)
+		return onEvent(ev)
+	})
+	if isTransportFailure(err) && !delivered.Load() && ctx.Err() == nil {
+		log.Printf("[transport-retry] account=%s replaying event stream after transport failure: %v", accountID, err)
+		if s.accountPool != nil {
+			s.accountPool.MarkCall(accountID)
+		}
+		result, err = s.accountClient(accountID).ChatWithEvents(ctx, account, request, onEvent)
+	}
 	// A content-filter hit is a deliberate local termination of a healthy
 	// upstream; it must not count against the account's health.
 	if !errors.Is(err, errContentFilterHit) {
@@ -684,7 +714,10 @@ func (s *Server) chatWithAccountRawEvents(ctx context.Context, accountID string,
 }
 
 // chatWithAccountReasoning runs one reasoning-stream chat request under the
-// account's concurrency slot.
+// account's concurrency slot. Like the events stream, a transport-class
+// failure is replayed once — but only when onDelta has never fired, since the
+// reasoning transcript is buffered server-side and dropped downstream while
+// answer deltas go straight to the client.
 func (s *Server) chatWithAccountReasoning(ctx context.Context, accountID string, account chathub.Account, request chathub.Request, onDelta, onReasoning func(string) error) (chathub.Result, error) {
 	release, err := s.accountConcurrency.Acquire(ctx, accountID, request.SessionID)
 	if err != nil {
@@ -694,7 +727,18 @@ func (s *Server) chatWithAccountReasoning(ctx context.Context, accountID string,
 	if s.accountPool != nil {
 		s.accountPool.MarkCall(accountID)
 	}
-	result, err := s.accountClient(accountID).ChatWithReasoning(ctx, account, request, onDelta, onReasoning)
+	var delivered atomic.Bool
+	result, err := s.accountClient(accountID).ChatWithReasoning(ctx, account, request, func(content string) error {
+		delivered.Store(true)
+		return onDelta(content)
+	}, onReasoning)
+	if isTransportFailure(err) && !delivered.Load() && ctx.Err() == nil {
+		log.Printf("[transport-retry] account=%s replaying reasoning stream after transport failure: %v", accountID, err)
+		if s.accountPool != nil {
+			s.accountPool.MarkCall(accountID)
+		}
+		result, err = s.accountClient(accountID).ChatWithReasoning(ctx, account, request, onDelta, onReasoning)
+	}
 	// A content-filter hit is a deliberate local termination of a healthy
 	// upstream; it must not count against the account's health.
 	if !errors.Is(err, errContentFilterHit) {
