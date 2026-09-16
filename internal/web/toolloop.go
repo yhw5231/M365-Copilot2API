@@ -414,6 +414,25 @@ var workspaceToolMisjudgmentRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`无法(安全)?修改.{0,25}` + "`?" + `[a-zA-Z]:`),
 	// 可执行环境 scope phrase: "当前可执行环境中没有/未发现/不存在 ... 项目"
 	regexp.MustCompile(`(当前|本|本次)?可执行环境中(没有|未发现|未找到|找不到|不存在|缺少).{0,40}(项目|工作区|文件|目录)`),
+	// Files claimed "not obtained" instead of "not found": the model asserts it
+	// never received the caller's workspace/project files ("没有取得
+	// `D:\NET\ai\ythh-1` 工作区文件，因此不能安全地继续修改") while the declared
+	// file tools are the only legitimate way to obtain them. The object anchor
+	// (workspace/project files/directory) keeps ordinary narration ("没有获取到
+	// git 变更", "无法读取配置文件") out.
+	regexp.MustCompile(`(没有取得|未取得|没有拿到|未拿到|没有获取到|未获取|获取不到|无法获取|没有读到|未读到|读取不到|无法读取|没有加载|未加载).{0,40}(工作区|项目).{0,6}(文件|目录)`),
+	// EN variant of the same claim ("did not obtain the workspace files").
+	regexp.MustCompile(`(?i)(did not|didn'?t|could not|couldn'?t|cannot|can'?t|unable to|failed to) ?(obtain|get|read|fetch|load|access|retrieve) .{0,40}(workspace|project) (files|directory|contents)`),
+	// Refusal to touch the workspace framed as an environment limitation rather
+	// than a denial ("不能安全地继续修改或提交代码"). "安全" is mandatory and the
+	// trailing object anchor is workspace/project/code only — bare 文件 would
+	// catch ordinary narration like "无法安全地写入配置文件".
+	regexp.MustCompile(`(无法|不能) ?安全地? ?(继续|直接)? ?(修改|编辑|改动|写入|提交).{0,30}(工作区|项目|代码)`),
+	// EN: access-to-files denial phrasing ("the current session doesn't provide
+	// access to the necessary workspace files for execution") — observed in the
+	// reasoning of a constrained-retry refusal while the final text used a
+	// different wording entirely.
+	regexp.MustCompile(`(?i)(doesn'?t provide|does not provide|don'?t have|do not have|no|without) .{0,30}access to .{0,40}(necessary |required |actual )?(workspace|project) (files|directory)`),
 }
 
 // containsAnyTerm reports whether s contains any of the given terms.

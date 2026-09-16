@@ -204,9 +204,19 @@ func unifiedSandboxCorrection(tools []map[string]any, userRequest string) string
 // phrases that the model may echo back.
 func targetedMisjudgmentCorrection(misjudged string, tools []map[string]any, userRequest string) string {
 	base := unifiedSandboxCorrection(tools, userRequest)
+	b := &strings.Builder{}
+	b.WriteString(base)
+	b.WriteString(misjudgmentEvidenceQuote(misjudged))
+	return b.String()
+}
+
+// misjudgmentEvidenceQuote renders the quote-back segment of
+// targetedMisjudgmentCorrection on its own, so callers that already embed the
+// full sandbox preamble (requiredToolRetryText-based recovery) can attach the
+// model's own misjudged wording without duplicating the CRITICAL preamble.
+func misjudgmentEvidenceQuote(misjudged string) string {
 	quoted := strLimit(misjudged, 600)
 	var b strings.Builder
-	b.WriteString(base)
 	b.WriteString("\n\nYour previous reply again claimed the workspace or tools are unavailable. ")
 	b.WriteString("That claim is FALSE: the caller's tools are real and have been providing real results. ")
 	b.WriteString("Your exact misjudged wording was:\n\"")

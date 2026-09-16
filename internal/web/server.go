@@ -1844,6 +1844,10 @@ func workspaceToolCorrectionPublicMessage(err error) string {
 // failing because the model believes no tool can work. This cleans the misjudgment
 // claims from the request history, re-grounds the environment with
 // unifiedSandboxCorrection, and asks for a required tool call once more.
+// routeReasoning/retryReasoning carry the attempts' chain-of-thought: the
+// misjudgment is sometimes stated plainly there ("the current session doesn't
+// provide access to the necessary workspace files") while the visible text uses
+// entirely different wording, so the gate must see both.
 // Returns the corrected tool calls, the chat result, and ok=true, or (nil, _, false)
 // when the model still refuses (the caller should keep the 502).
 func (s *Server) recoverRequiredToolMisjudgment(
@@ -1852,11 +1856,12 @@ func (s *Server) recoverRequiredToolMisjudgment(
 	account chathub.Account,
 	body *oaiReq,
 	routeText, retryText string,
+	routeReasoning, retryReasoning string,
 	toolMaps []map[string]any,
 	tone, requestID, prompt string,
 	ledger agentLedger,
 ) ([]detectedToolCall, chathub.Result, bool) {
-	combined := routeText + "\n" + retryText
+	combined := routeText + "\n" + routeReasoning + "\n" + retryText + "\n" + retryReasoning
 	if !isWorkspaceToolMisjudgmentForTools(combined, toolMaps) && !misjudgmentInRecentHistory(body.Messages, toolMaps) {
 		return nil, chathub.Result{}, false
 	}
@@ -1867,6 +1872,13 @@ func (s *Server) recoverRequiredToolMisjudgment(
 		cleanPrompt = prompt
 	}
 	recoveryText := requiredToolRetryText(toolMaps, cleanPrompt, ledger)
+	// By the time recovery runs, the plain must-call replay has already failed
+	// twice, so a third identical prompt is pointless. Attach the model's own
+	// misjudged wording (the targetedMisjudgmentCorrection lever) so this
+	// attempt actually differs from the retries that preceded it.
+	if claim := strings.TrimSpace(combined); claim != "" {
+		recoveryText += misjudgmentEvidenceQuote(claim)
+	}
 	req := chathub.Request{
 		Text:        recoveryText,
 		Tone:        tone,
@@ -3016,9 +3028,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// Before failing with 502, check whether the model's refusal came from a
 			// workspace/tool misjudgment (e.g. "项目路径未挂载/NOT_FOUND"). Clean the
 			// misjudgment from history, re-ground the environment, and retry the
-			// required tool call once more.
-			if retryErr == nil && (isWorkspaceToolMisjudgmentForTools(routeRes.Text+"\n"+retryRes.Text, toolMaps) || misjudgmentInRecentHistory(body.Messages, toolMaps)) {
-				calls, recoveryRes, ok := s.recoverRequiredToolMisjudgment(ctx, acc, account, &body, routeRes.Text, retryRes.Text, toolMaps, tone, requestID, prompt, ledger)
+			// required tool call once more. The attempts' reasoning is part of the
+			// claim surface: the refusal is sometimes stated only there.
+			if retryErr == nil && (isWorkspaceToolMisjudgmentForTools(routeRes.Text+"\n"+routeRes.Reasoning+"\n"+retryRes.Text+"\n"+retryRes.Reasoning, toolMaps) || misjudgmentInRecentHistory(body.Messages, toolMaps)) {
+				calls, recoveryRes, ok := s.recoverRequiredToolMisjudgment(ctx, acc, account, &body, routeRes.Text, retryRes.Text, routeRes.Reasoning, retryRes.Reasoning, toolMaps, tone, requestID, prompt, ledger)
 				if ok {
 					scope := fmt.Sprintf("%d:%v:required-misjudgment-recovery", len(body.Messages), completedCallIDs(ledger))
 					for i := range calls {
@@ -3709,9 +3722,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// Before failing with 502, check whether the model's refusal came from a
 			// workspace/tool misjudgment (e.g. "项目路径未挂载/NOT_FOUND"). Clean the
 			// misjudgment from history, re-ground the environment, and retry the
-			// required tool call once more.
-			if retryErr == nil && (isWorkspaceToolMisjudgmentForTools(routeRes.Text+"\n"+retryRes.Text, toolMaps) || misjudgmentInRecentHistory(body.Messages, toolMaps)) {
-				calls, recoveryRes, ok := s.recoverRequiredToolMisjudgment(ctx, acc, account, &body, routeRes.Text, retryRes.Text, toolMaps, tone, requestID, prompt, ledger)
+			// required tool call once more. The attempts' reasoning is part of the
+			// claim surface: the refusal is sometimes stated only there.
+			if retryErr == nil && (isWorkspaceToolMisjudgmentForTools(routeRes.Text+"\n"+routeRes.Reasoning+"\n"+retryRes.Text+"\n"+retryRes.Reasoning, toolMaps) || misjudgmentInRecentHistory(body.Messages, toolMaps)) {
+				calls, recoveryRes, ok := s.recoverRequiredToolMisjudgment(ctx, acc, account, &body, routeRes.Text, retryRes.Text, routeRes.Reasoning, retryRes.Reasoning, toolMaps, tone, requestID, prompt, ledger)
 				if ok {
 					scope := fmt.Sprintf("%d:%v:required-misjudgment-recovery", len(body.Messages), completedCallIDs(ledger))
 					for i := range calls {
@@ -4358,8 +4372,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					// workspace/tool misjudgment (e.g. "项目路径未挂载/NOT_FOUND").
 					// Clean the misjudgment from history, re-ground the
 					// environment, and retry the required tool call once more.
-					if isWorkspaceToolMisjudgmentForTools(res.Text+"\n"+retryRes.Text, toolMaps) || misjudgmentInRecentHistory(body.Messages, toolMaps) {
-						recCalls, recRes, ok := s.recoverRequiredToolMisjudgment(ctx, acc, account, &body, res.Text, retryRes.Text, toolMaps, tone, requestID, prompt, ledger)
+					// The attempts' reasoning is part of the claim surface: the
+					// refusal is sometimes stated only there.
+					if isWorkspaceToolMisjudgmentForTools(res.Text+"\n"+res.Reasoning+"\n"+retryRes.Text+"\n"+retryRes.Reasoning, toolMaps) || misjudgmentInRecentHistory(body.Messages, toolMaps) {
+						recCalls, recRes, ok := s.recoverRequiredToolMisjudgment(ctx, acc, account, &body, res.Text, retryRes.Text, res.Reasoning, retryRes.Reasoning, toolMaps, tone, requestID, prompt, ledger)
 						if ok {
 							recCalls = limitToolCalls(recCalls, adaptiveToolCallLimit(recCalls, configuredToolCallLimit(s.settings)))
 							if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(recCalls) > 1 {
