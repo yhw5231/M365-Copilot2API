@@ -25,12 +25,18 @@ type ConnPool struct {
 }
 
 func NewConnPool(dialer *websocket.Dialer, header http.Header) *ConnPool {
-	return &ConnPool{
+	p := &ConnPool{
 		conns:  make(map[string]*pooledConn),
 		dialer: dialer,
 		header: header,
 		stop:   make(chan struct{}),
 	}
+	// Without this loop a pooled connection whose session never comes back
+	// stays in the map forever: an open TCP/TLS socket plus its buffers leak
+	// per expired session until the process restarts, and a Take on that key
+	// is the only other removal path.
+	go p.gcLoop()
+	return p
 }
 
 func (p *ConnPool) key(oid, tid, sessionID string) string {

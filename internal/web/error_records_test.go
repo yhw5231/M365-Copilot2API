@@ -39,6 +39,11 @@ func TestErrorStorePersistsAcrossReopen(t *testing.T) {
 	t.Setenv("M365_ERROR_FILE", path)
 	e := openErrorStore()
 	e.record(&traceRecord{ID: "err-1", Endpoint: "/v1/chat/completions", Error: "upstream boom"})
+	// record() persists through the background persister; force the flush so
+	// the reopen below observes the record on disk.
+	if err := e.persist.flushNowBlocking(); err != nil {
+		t.Fatal(err)
+	}
 	reopened := openErrorStore()
 	rec, ok := reopened.get("err-1")
 	if !ok || rec.Error != "upstream boom" {

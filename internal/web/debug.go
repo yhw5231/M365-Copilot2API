@@ -144,12 +144,35 @@ func (d *debugStore) add(r debugRecord) {
 // long-running server cannot fill the data directory.
 const maxDebugLogBytes = 10 << 20
 
+// maxRotatedLogAge bounds how long rotated log files stay on disk. Rotation
+// itself only renames the active file — without this prune, every rotated
+// segment (each up to maxDebugLogBytes) accumulates forever and a long-running
+// server slowly fills the data directory.
+const maxRotatedLogAge = 7 * 24 * time.Hour
+
+// pruneRotatedLogs deletes rotated segments of the given log path older than
+// maxRotatedLogAge. Rotated names are "<path>.<timestamp>"; the mtime of a
+// rotated file is when it was last appended, which is the right age signal.
+func pruneRotatedLogs(path string) {
+	entries, err := filepath.Glob(path + ".*")
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxRotatedLogAge)
+	for _, entry := range entries {
+		if st, err := os.Stat(entry); err == nil && st.ModTime().Before(cutoff) {
+			_ = os.Remove(entry)
+		}
+	}
+}
+
 func (d *debugStore) rotateIfNeededLocked() {
 	st, err := os.Stat(d.path)
 	if err != nil || st.Size() < maxDebugLogBytes {
 		return
 	}
 	_ = os.Rename(d.path, d.path+"."+time.Now().Format("20060102-150405"))
+	pruneRotatedLogs(d.path)
 }
 func (d *debugStore) list() []debugRecord {
 	records, _ := d.listPage(1, 0)

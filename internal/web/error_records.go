@@ -24,9 +24,10 @@ const defaultErrorMaxRecords = 50
 // (downstream request / upstream exchange / downstream response) as the debug
 // console.
 type errorStore struct {
-	mu   sync.RWMutex
-	path string
-	byID map[string]*traceRecord
+	mu      sync.RWMutex
+	path    string
+	byID    map[string]*traceRecord
+	persist *persistStore
 }
 
 func errorStorePath() string {
@@ -55,6 +56,16 @@ func openErrorStore() *errorStore {
 	}
 	e.trimToLocked(errorMaxRecords())
 	_ = e.persistLocked()
+	// Recording an error re-serializes the whole retained ring. A failure storm
+	// (every account throttled, clients retrying) would otherwise turn each
+	// failed request into a full-store MarshalIndent + disk write on the request
+	// path; batch it through the shared background persister instead. Tests that
+	// need on-disk state synchronously call persist.flushNowBlocking().
+	e.persist = &persistStore{flush: func() error {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.persistLocked()
+	}}
 	return e
 }
 
@@ -90,8 +101,8 @@ func (e *errorStore) record(rec *traceRecord) {
 	e.mu.Lock()
 	e.byID[rec.ID] = rec
 	e.trimToLocked(errorMaxRecords())
-	_ = e.persistLocked()
 	e.mu.Unlock()
+	e.persist.markDirty()
 }
 
 func (e *errorStore) trimToLocked(max int) {
@@ -112,8 +123,8 @@ func (e *errorStore) trimToLocked(max int) {
 func (e *errorStore) trimTo(max int) {
 	e.mu.Lock()
 	e.trimToLocked(max)
-	_ = e.persistLocked()
 	e.mu.Unlock()
+	e.persist.markDirty()
 }
 
 func (e *errorStore) get(id string) (traceRecord, bool) {
@@ -155,8 +166,8 @@ func (e *errorStore) page(limit, offset int) ([]traceRecord, int) {
 func (e *errorStore) clear() {
 	e.mu.Lock()
 	e.byID = map[string]*traceRecord{}
-	_ = e.persistLocked()
 	e.mu.Unlock()
+	e.persist.markDirty()
 }
 
 // errorMaxNorm clamps the configured bound; 0 or negative falls back to the

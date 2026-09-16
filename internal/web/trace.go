@@ -84,10 +84,11 @@ type traceRecord struct {
 // without a restart. Old entries are dropped automatically once the bound is
 // exceeded.
 type traceStore struct {
-	mu     sync.RWMutex
-	path   string
-	byID   map[string]*traceRecord
-	active map[string]*traceRecord
+	mu      sync.RWMutex
+	path    string
+	byID    map[string]*traceRecord
+	active  map[string]*traceRecord
+	persist *persistStore
 }
 
 func traceStorePath() string {
@@ -123,6 +124,18 @@ func openTraceStore() *traceStore {
 	}
 	t.trimLocked()
 	_ = t.persistLocked()
+	// The store is a bounded ring, but persisting it means re-serializing every
+	// retained record. With the debug console on and large captures that is a
+	// multi-MB MarshalIndent + disk write, and doing it synchronously on every
+	// /v1/ request completion put that cost directly on the hot path (requests
+	// serialized behind t.mu grew steadily slower over server uptime). Batch it
+	// through the shared background persister instead; StopPersistLoop flushes
+	// on graceful shutdown so at most the last few records are lost on a crash.
+	t.persist = &persistStore{flush: func() error {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		return t.persistLocked()
+	}}
 	return t
 }
 
@@ -209,8 +222,8 @@ func (t *traceStore) finish(id string, fn func(*traceRecord)) {
 		}
 	}
 	t.trimLocked()
-	_ = t.persistLocked()
 	t.mu.Unlock()
+	t.persist.markDirty()
 }
 
 func (t *traceStore) activeCount() int {
@@ -357,8 +370,16 @@ func (t *traceStore) clear() {
 	t.mu.Lock()
 	t.byID = map[string]*traceRecord{}
 	t.active = map[string]*traceRecord{}
-	_ = t.persistLocked()
 	t.mu.Unlock()
+	t.persist.markDirty()
+}
+
+// trimTo reclaims records immediately when the operator lowers the bound.
+func (t *traceStore) trimTo(max int) {
+	t.mu.Lock()
+	t.trimToLocked(max)
+	t.mu.Unlock()
+	t.persist.markDirty()
 }
 
 func (s *Server) adminTraceStatus(w http.ResponseWriter, r *http.Request) {
@@ -419,8 +440,10 @@ func (s *Server) adminTrace(w http.ResponseWriter, r *http.Request) {
 		if !cur.TraceEnabled {
 			s.trace.clear()
 		} else {
-			// Reclaim records immediately when the bound was reduced.
-			s.trace.trimToLocked(traceMaxNorm(cur.TraceMaxRecords))
+			// Reclaim records immediately when the bound was reduced. trimTo
+			// takes the store lock itself — the old code called trimToLocked
+			// without it and raced concurrent trace updates.
+			s.trace.trimTo(traceMaxNorm(cur.TraceMaxRecords))
 		}
 		jsonOut(w, map[string]any{"ok": true, "enabled": cur.TraceEnabled, "max": cur.TraceMaxRecords})
 	default:

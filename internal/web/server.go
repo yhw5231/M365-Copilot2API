@@ -1014,6 +1014,23 @@ func (s *Server) prunePKCELocked(now time.Time) {
 			delete(s.pkce, state)
 		}
 	}
+	// Also drop per-IP start attempts whose newest attempt has left the rate
+	// window: without this, every IP that ever called /api/auth/start keeps a
+	// key (with its slice header) in s.pkceStarts for the process lifetime.
+	cutoff := now.Add(-pkceStartWindow)
+	for ip, starts := range s.pkceStarts {
+		recent := starts[:0]
+		for _, t := range starts {
+			if t.After(cutoff) {
+				recent = append(recent, t)
+			}
+		}
+		if len(recent) == 0 {
+			delete(s.pkceStarts, ip)
+		} else {
+			s.pkceStarts[ip] = recent
+		}
+	}
 }
 
 // pkceStartAllowedLocked enforces the per-client start rate limit and records

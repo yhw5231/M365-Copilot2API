@@ -119,6 +119,24 @@ func (s *usageLog) record(rec UsageRecord) {
 	s.persist.markDirty()
 }
 
+// maxUsageLogBytes bounds the active usage.jsonl file; when exceeded it is
+// rotated (renamed with a timestamp) before the next append so a long-running
+// server cannot grow the file without limit. Rotated segments are pruned by
+// pruneRotatedLogs after maxRotatedLogAge.
+const maxUsageLogBytes = 10 << 20
+
+// rotateIfNeeded renames the active usage log to a timestamped segment when it
+// has grown past maxUsageLogBytes. Safe to call before each append: the persist
+// loop serializes flushes, so no concurrent writer can observe the rename.
+func (s *usageLog) rotateIfNeeded() {
+	st, err := os.Stat(s.Path)
+	if err != nil || st.Size() < maxUsageLogBytes {
+		return
+	}
+	_ = os.Rename(s.Path, s.Path+"."+time.Now().Format("20060102-150405"))
+	pruneRotatedLogs(s.Path)
+}
+
 // flush 批量追加本次累积的记录，锁外写盘。
 func (s *usageLog) flush() error {
 	s.mu.Lock()
@@ -135,6 +153,7 @@ func (s *usageLog) flush() error {
 			buf = append(buf, '\n')
 		}
 	}
+	s.rotateIfNeeded()
 	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return err
