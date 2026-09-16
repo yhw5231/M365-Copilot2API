@@ -3091,6 +3091,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		noTools := len(toolMaps) == 0
 		identityFilter := newPublicIdentityStreamFilter(model)
 		contentReview := newContentStreamFilter()
+		citeFilter := newCitationStreamFilter()
 		writeContentDelta := func(part string) error {
 			if part == "" {
 				return nil
@@ -3130,6 +3131,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// Push-only: the identity filter holds partial identity boundaries
 			// until a safe boundary is reached. The final Flush is called in
 			// flushText at the end of the stream.
+			// The citation filter strips upstream citation tokens before the
+			// identity pass so both filters see the settled text.
+			part = citeFilter.Push(part)
 			part = identityFilter.Push(part)
 			return writeContentDelta(part)
 		}
@@ -3139,7 +3143,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				if hit {
 					return errContentFilterHit
 				}
-				if err := writeContentDelta(identityFilter.Push(out)); err != nil {
+				if out != "" {
+					if err := writeContentDelta(identityFilter.Push(citeFilter.Push(out))); err != nil {
+						return err
+					}
+				}
+			}
+			if part := citeFilter.Flush(); part != "" {
+				if err := writeContentDelta(identityFilter.Push(part)); err != nil {
 					return err
 				}
 			}
@@ -3320,6 +3331,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				_ = flushText()
 			} else if text.Len() > 0 {
 				_ = emitText(text.String())
+				_ = flushText()
 			}
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "type": "upstream_error", "code": code}})+"\n\n")
 			_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
@@ -3537,26 +3549,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		} else {
 			// The buffered tools path pushes the whole answer in one emit, so
-			// the content-review holdback tail (and the identity filter tail)
-			// must be drained here or the answer would lose its final chars.
-			if contentReview != nil {
-				out, hit, _ := contentReview.flush()
-				if hit {
+			// the content-review holdback tail (and the citation / identity
+			// filter tails) must be drained here or the answer would lose its
+			// final chars.
+			if err := flushText(); err != nil {
+				// A keyword inside the drained tail still ends in a replaced
+				// response, not a dropped stream.
+				if errors.Is(err, errContentFilterHit) {
 					finishContentReview()
 					return
 				}
-				if part := identityFilter.Push(out); part != "" {
-					if err := writeContentDelta(part); err != nil {
-						log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
-						return
-					}
-				}
-			}
-			if part := identityFilter.Flush(); part != "" {
-				if err := writeContentDelta(part); err != nil {
-					log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
-					return
-				}
+				log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+				return
 			}
 		}
 		// Last-resort content guarantee (same rationale as the reasoning

@@ -245,6 +245,11 @@ func sanitizePublicAssistantTextWithStateForModel(text string, identityWritten *
 	if text == "" {
 		return ""
 	}
+	// Upstream citation tokens (citationMarkerOpen "cite" …) are channel
+	// protocol, never deliverable text: strip them first so the identity
+	// passes below work on settled content. The publicInternalCitationPattern
+	// below only covers the turn-id form under the opt-in policy.
+	text = sanitizeCitationMarkers(text)
 	text = publicInternalCitationPattern.ReplaceAllString(text, "")
 	var out strings.Builder
 	written := identityWritten != nil && *identityWritten
