@@ -48,6 +48,32 @@ func isTransportFailure(err error) bool {
 	return true
 }
 
+// isRouterProbeTransportFailure reports whether a tool-router probe failed in
+// the transport layer before the model produced any decision (dial error,
+// silent drop, read timeout, spent probe window, no healthy proxy node).
+// These failures never yielded a model answer, so a required tool_choice must
+// not hard-fail on them: the answer stream below carries the same tool
+// definitions and can still surface calls through the native/tool-shaped
+// detection paths. Unlike isTransportFailure, a spent context counts as
+// transport here — the probe runs on its own bounded window (routerProbeWindow),
+// and the router fall-through re-derives a fresh deadline from the client
+// connection, so a probe-window expiry is precisely the transient network
+// stall the answer stream can recover from. Model-level failures (empty
+// completion, rate limit, auth, queue, capacity) keep their dedicated
+// handling and still hard-fail a required round.
+func isRouterProbeTransportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsRateLimited(err) || IsAuthFailure(err) || IsEmptyCompletion(err) || IsQueueTimeout(err) || IsLocalCapacity(err) {
+		return false
+	}
+	if errors.Is(err, errContentFilterHit) {
+		return false
+	}
+	return true
+}
+
 // upstreamError keeps transport details, including URLs and credentials, out
 // of client-visible responses while retaining a server-side diagnostic.
 func upstreamError(err error) string {

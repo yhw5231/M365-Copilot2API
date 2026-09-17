@@ -223,9 +223,36 @@ func (p *Pool) HTTPClientFor(account string) *http.Client {
 	}
 	return directClients().HTTP
 }
+// dialAttemptTimeout bounds ONE proxy-node dial attempt. Without it a dead
+// node whose TCP connect hangs (SYN dropped by a firewall, unresponsive
+// proxy) consumes the caller's whole context: the router probe window or
+// request timeout expires while still inside the dial, and the surfaced error
+// is the misleading "ws dial: context deadline exceeded" instead of a node
+// failure the pool can mark down and fail over. 30s matches the direct
+// transport's TCP dial timeout; two attempts stay under the 120s probe window.
+// Var (not const) so tests can shrink the window.
+var dialAttemptTimeout = 30 * time.Second
+
+// attemptContext derives a fresh per-attempt window from the caller context.
+// Each node attempt must get its own budget: reusing the same ctx across
+// attempts means a hung first dial leaves the second attempt an already-spent
+// context, so failover never actually gets to dial. When the caller carries a
+// deadline, the window is capped at half the remaining budget so a slow first
+// dial cannot starve the second (failover) attempt entirely.
+func attemptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	window := dialAttemptTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if half := remaining / 2; half > 0 && half < window {
+			window = half
+		}
+	}
+	return context.WithTimeout(ctx, window)
+}
+
 func (p *Pool) WebSocketDialer() *websocket.Dialer {
 	base := directClients().WebSocket
-	baseDialer := &net.Dialer{}
+	baseDialer := &net.Dialer{Timeout: dialAttemptTimeout}
 	var mu sync.Mutex
 	var sticky *poolEntry
 	base.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -243,7 +270,9 @@ func (p *Pool) WebSocketDialer() *websocket.Dialer {
 		if dial == nil {
 			dial = baseDialer.DialContext
 		}
-		conn, err := dial(ctx, network, address)
+		attemptCtx, cancel := attemptContext(ctx)
+		conn, err := dial(attemptCtx, network, address)
+		cancel()
 		p.mark(e.raw, err)
 		if err != nil {
 			mu.Lock()
@@ -269,7 +298,7 @@ func (p *Pool) WebSocketDialerFor(account string) *websocket.Dialer {
 		return &d
 	}
 	base := directClients().WebSocket
-	baseDialer := &net.Dialer{}
+	baseDialer := &net.Dialer{Timeout: dialAttemptTimeout}
 	base.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		for attempt := 0; attempt < 2; attempt++ {
 			e := p.pickFor(account)
@@ -283,7 +312,13 @@ func (p *Pool) WebSocketDialerFor(account string) *websocket.Dialer {
 			if dial == nil {
 				dial = baseDialer.DialContext
 			}
-			conn, err := dial(ctx, network, address)
+			// Each attempt gets its own bounded window: a hung node consumes
+			// only its own budget, the cooldown below makes the next pickFor
+			// move the account to a healthy node, and the request's context
+			// deadline is no longer burned inside a single dead dial.
+			attemptCtx, cancel := attemptContext(ctx)
+			conn, err := dial(attemptCtx, network, address)
+			cancel()
 			p.mark(e.raw, err)
 			if err == nil {
 				return conn, nil

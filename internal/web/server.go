@@ -2961,14 +2961,20 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		parsed := false
 		if routeErr != nil {
 			// Transient router failure (deadline, empty completion, network).
-			// Only tool_choice=required hard-fails here: falling through with
-			// a forced call would let a text-only status report be treated as
-			// a completed turn. Otherwise fall through to the normal answer
-			// stream below — it carries the same tool definitions, so the
-			// model can still call tools through the native/tool-shaped
-			// detection paths. One router deadline used to 502 the whole
-			// agent turn even though the answer path would have served it.
-			if fmt.Sprint(body.ToolChoice) == "required" {
+			// tool_choice=required hard-fails here ONLY on model-level failures
+			// (empty completion, rate limit, auth, queue, capacity): those mean
+			// the model did answer and chose not to call a tool, and falling
+			// through with a forced call would let a text-only status report be
+			// treated as a completed turn. A pure transport failure (ws dial
+			// timeout, silent drop, read timeout, spent probe window, no healthy
+			// proxy node) means the probe never reached the model — there is no
+			// decision to protect, so it degrades into the answer stream below
+			// exactly like a non-required round: the answer stream carries the
+			// same tool definitions, so the model can still call tools through
+			// the native/tool-shaped detection paths. One router deadline used
+			// to 502 the whole agent turn even though the answer path would
+			// have served it.
+			if fmt.Sprint(body.ToolChoice) == "required" && !isRouterProbeTransportFailure(routeErr) {
 				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "tool router: "+routeErr.Error())
 				return
 			}
