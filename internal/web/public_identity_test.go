@@ -48,8 +48,11 @@ func TestPublicIdentityPolicyCanBeDisabledForRawUpstreamResponses(t *testing.T) 
 		t.Fatalf("reasoning text was sanitized while disabled: %q", got)
 	}
 	fragment := "<cite>turn4search6</cite>"
-	if got := (&publicIdentityStreamFilter{}).Push(fragment); got != fragment {
-		t.Fatalf("stream fragment was changed while disabled: %q", got)
+	if got := (&publicIdentityStreamFilter{}).Push(fragment); got != "" {
+		t.Fatalf("protocol citation marker survived while policy disabled: %q", got)
+	}
+	if plain := (&publicIdentityStreamFilter{}).Push("普通答案。"); plain != "普通答案。" {
+		t.Fatalf("plain fragment was changed while disabled: %q", plain)
 	}
 }
 

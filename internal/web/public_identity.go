@@ -213,6 +213,11 @@ func sanitizePublicAssistantText(text string) string {
 }
 
 func sanitizePublicAssistantTextForModel(text, model string) string {
+	// Upstream channel markers (cite tokens, <File> reference tags) are never
+	// deliverable text and are stripped unconditionally — this must not depend
+	// on the opt-in identity policy, or every delivery path that skips the
+	// policy leaks the raw tokens. The identity pass below stays opt-in.
+	text = sanitizeUpstreamMarkers(text)
 	if !publicIdentityPolicyEnabled() {
 		return text
 	}
@@ -228,6 +233,7 @@ func sanitizePublicInternalText(text string) string {
 }
 
 func sanitizePublicReasoningText(text string) string {
+	text = sanitizeUpstreamMarkers(text)
 	if !publicIdentityPolicyEnabled() {
 		return text
 	}
@@ -245,11 +251,12 @@ func sanitizePublicAssistantTextWithStateForModel(text string, identityWritten *
 	if text == "" {
 		return ""
 	}
-	// Upstream citation tokens (citationMarkerOpen "cite" …) are channel
-	// protocol, never deliverable text: strip them first so the identity
-	// passes below work on settled content. The publicInternalCitationPattern
-	// below only covers the turn-id form under the opt-in policy.
-	text = sanitizeCitationMarkers(text)
+	// Upstream citation tokens (citationMarkerOpen "cite" …) and <File>
+	// reference tags are channel protocol, never deliverable text: strip them
+	// first so the identity passes below work on settled content. The
+	// publicInternalCitationPattern below only covers the turn-id form under
+	// the opt-in policy.
+	text = sanitizeUpstreamMarkers(text)
 	text = publicInternalCitationPattern.ReplaceAllString(text, "")
 	var out strings.Builder
 	written := identityWritten != nil && *identityWritten
@@ -409,6 +416,10 @@ func (f *publicIdentityStreamFilter) Push(fragment string) string {
 	if f == nil {
 		return sanitizePublicAssistantText(fragment)
 	}
+	// Channel markers are stripped unconditionally, independent of the
+	// opt-in identity policy, so streams that bypass the dedicated citation
+	// filter never leak raw tokens either.
+	fragment = sanitizeUpstreamMarkers(fragment)
 	if !publicIdentityPolicyEnabled() {
 		return fragment
 	}
@@ -421,7 +432,7 @@ func (f *publicIdentityStreamFilter) Flush() string {
 		return ""
 	}
 	if !publicIdentityPolicyEnabled() {
-		out := f.pending
+		out := sanitizeUpstreamMarkers(f.pending)
 		f.pending = ""
 		return out
 	}
@@ -470,6 +481,7 @@ func (f *publicReasoningStreamFilter) Push(fragment string) string {
 	if f == nil {
 		return sanitizePublicReasoningText(fragment)
 	}
+	fragment = sanitizeUpstreamMarkers(fragment)
 	if !publicIdentityPolicyEnabled() {
 		return fragment
 	}
@@ -482,7 +494,7 @@ func (f *publicReasoningStreamFilter) Flush() string {
 		return ""
 	}
 	if !publicIdentityPolicyEnabled() {
-		out := f.pending
+		out := sanitizeUpstreamMarkers(f.pending)
 		f.pending = ""
 		return out
 	}

@@ -3861,6 +3861,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		contentFilter := newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
 		reasoningFilter := newPublicReasoningStreamFilter()
 		contentReview := newContentStreamFilter()
+		citeFilter := newCitationStreamFilter()
 		var bufferedContent strings.Builder
 		var bufferedReasoning strings.Builder
 
@@ -3930,7 +3931,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if c, err := reviewContent(textGateBuf.String()); err != nil {
 						return err
 					} else if c != "" {
-						if c = contentFilter.Push(c); c != "" {
+						if c = contentFilter.Push(citeFilter.Push(c)); c != "" {
 							return writeChunk(map[string]any{"content": c})
 						}
 					}
@@ -3943,7 +3944,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			if c != "" {
-				if c = contentFilter.Push(c); c != "" {
+				if c = contentFilter.Push(citeFilter.Push(c)); c != "" {
 					return writeChunk(map[string]any{"content": c})
 				}
 			}
@@ -4084,7 +4085,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if c, err := reviewContent(content); err != nil {
 						return err
 					} else if c != "" {
-						if c = contentFilter.Push(c); c != "" {
+						if c = contentFilter.Push(citeFilter.Push(c)); c != "" {
 							return writeChunk(map[string]any{"content": c})
 						}
 					}
@@ -4327,7 +4328,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						if c, err := reviewContent(content); err != nil {
 							return err
 						} else if c != "" {
-							if c = contentFilter.Push(c); c != "" {
+							if c = contentFilter.Push(citeFilter.Push(c)); c != "" {
 								return writeChunk(map[string]any{"content": c})
 							}
 						}
@@ -4490,6 +4491,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						if reasoning := reasoningFilter.Flush(); reasoning != "" {
 							_ = writeChunk(map[string]any{"reasoning_content": reasoning})
 						}
+						if tail := citeFilter.Flush(); tail != "" {
+							if c := contentFilter.Push(tail); c != "" {
+								_ = writeChunk(map[string]any{"content": c})
+							}
+						}
 						if content := contentFilter.Flush(); content != "" {
 							_ = writeChunk(map[string]any{"content": content})
 						}
@@ -4576,7 +4582,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						closeReviewHit()
 						return
 					} else if c != "" {
-						if c = contentFilter.Push(c); c != "" {
+						if c = contentFilter.Push(citeFilter.Push(c)); c != "" {
 							if writeErr := writeChunk(map[string]any{"content": c}); writeErr != nil {
 								return
 							}
@@ -4601,9 +4607,21 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					closeReviewHit()
 					return
 				} else if c != "" {
-					if c = contentFilter.Push(c); c != "" {
+					if c = contentFilter.Push(citeFilter.Push(c)); c != "" {
 						if writeErr := writeChunk(map[string]any{"content": c}); writeErr != nil {
 							return
+						}
+					}
+				}
+				if tail := citeFilter.Flush(); tail != "" {
+					if c := contentFilter.Push(tail); c != "" {
+						if c2, err := reviewContent(c); err != nil {
+							closeReviewHit()
+							return
+						} else if c2 != "" {
+							if writeErr := writeChunk(map[string]any{"content": c2}); writeErr != nil {
+								return
+							}
 						}
 					}
 				}
@@ -4622,7 +4640,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			} else if textGateActive && !textGateReleased {
-				content := contentFilter.Push(res.Text) + contentFilter.Flush()
+				content := contentFilter.Push(citeFilter.Push(res.Text)+citeFilter.Flush()) + contentFilter.Flush()
 				if c, err := reviewContent(content); err != nil {
 					closeReviewHit()
 					return
@@ -4648,8 +4666,20 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						closeReviewHit()
 						return
 					} else if c != "" {
-						if c = contentFilter.Push(c); c != "" {
+						if c = contentFilter.Push(citeFilter.Push(c)); c != "" {
 							if writeErr := writeChunk(map[string]any{"content": c}); writeErr != nil {
+								return
+							}
+						}
+					}
+				}
+				if tail := citeFilter.Flush(); tail != "" {
+					if c := contentFilter.Push(tail); c != "" {
+						if c2, err := reviewContent(c); err != nil {
+							closeReviewHit()
+							return
+						} else if c2 != "" {
+							if writeErr := writeChunk(map[string]any{"content": c2}); writeErr != nil {
 								return
 							}
 						}
@@ -4681,7 +4711,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// as a successful blank answer.
 			if !contentEmitted && strings.TrimSpace(res.Text) != "" {
 				log.Printf("[req-trace] id=%s stage=reasoning_stream_tail_recovery text_len=%d", requestID, len(res.Text))
-				if c := contentFilter.Push(res.Text); c != "" {
+				if c := contentFilter.Push(citeFilter.Push(res.Text) + citeFilter.Flush()); c != "" {
 					_ = writeChunk(map[string]any{"content": c})
 				}
 				if c := contentFilter.Flush(); c != "" {
@@ -4725,6 +4755,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// partial content reaches the client before the error event.
 			if reasoning := reasoningFilter.Flush(); reasoning != "" {
 				_ = writeChunk(map[string]any{"reasoning_content": reasoning})
+			}
+			if tail := citeFilter.Flush(); tail != "" {
+				if c := contentFilter.Push(tail); c != "" {
+					_ = writeChunk(map[string]any{"content": c})
+				}
 			}
 			if content := contentFilter.Flush(); content != "" {
 				_ = writeChunk(map[string]any{"content": content})
