@@ -39,11 +39,15 @@ func TestForceGoalRoundToolChoice(t *testing.T) {
 			[]oaiMsg{mkAssistant("目标尚未完成，现有证据确认...", 0), goalRound}, true},
 		{"previous reply with tool call is not forced",
 			[]oaiMsg{mkAssistant("", 1), goalRound}, false},
-		{"no goal round structure is not forced",
-			[]oaiMsg{mkAssistant("普通问题", 0), {Role: "user", Content: "请继续"}}, false},
-		{"empty assistant text is skipped (no text-only stall to break)",
-			[]oaiMsg{mkAssistant("", 0), mkAssistant("", 0), goalRound}, false},
-	}
+{"no goal round structure is not forced",
+		[]oaiMsg{mkAssistant("普通问题", 0), {Role: "user", Content: "请继续"}}, false},
+	{"empty assistant text is skipped (no text-only stall to break)",
+		[]oaiMsg{mkAssistant("", 0), mkAssistant("", 0), goalRound}, false},
+	{"reasoning fragment followed by its tool call is not a status report",
+		[]oaiMsg{mkAssistant("<thinking>need to run the full regression</thinking>", 0), mkAssistant("", 1), goalRound}, false},
+	{"a real text-only report after a tool round still forces required",
+		[]oaiMsg{mkAssistant("", 1), mkAssistant("目标尚未完成，现有证据确认...", 0), goalRound}, true},
+}
 	for _, c := range cases {
 		got := forceGoalRoundToolChoice(c.messages, task, tools)
 		if got != c.want {

@@ -3046,8 +3046,22 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
-			return
+			// Both constrained attempts still answered text-only. When that text
+			// is the goal's actual deliverable (a final wrap-up — the objective
+			// can legitimately be text, e.g. an analysis request), the
+			// required-tool gate must not destroy it: close the ledger
+			// server-side and let the answer path below stream the text, so the
+			// completed deliverable reaches the client and the next round
+			// receives the GOAL_STATUS complete context instead of a fresh 502.
+			if retryErr == nil && requiredRetryDeliverable(retryRes.Text+"\n"+retryRes.Reasoning) {
+				log.Printf("[goal-loop] id=%s required round answered with the final deliverable; closing goal server-side and streaming the answer (text_len=%d)", requestID, len(retryRes.Text))
+				if task != nil && !task.IsComplete() {
+					task.markComplete("server-side correction: required round answered with the final deliverable")
+				}
+			} else {
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
+				return
+			}
 		}
 	}
 	if body.Stream && !isReasoningTone(tone) {
@@ -3744,8 +3758,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
-			return
+			// Same deliverable escape as the streaming router: when the
+			// forced-required round answered with the goal's final deliverable
+			// as text, close the ledger server-side and fall through to the
+			// non-streaming answer path instead of failing with 502.
+			if retryErr == nil && requiredRetryDeliverable(retryRes.Text+"\n"+retryRes.Reasoning) {
+				log.Printf("[goal-loop] id=%s required round answered with the final deliverable; closing goal server-side and answering with text (text_len=%d)", requestID, len(retryRes.Text))
+				if task != nil && !task.IsComplete() {
+					task.markComplete("server-side correction: required round answered with the final deliverable")
+				}
+			} else {
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
+				return
+			}
 		}
 	}
 	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL)
@@ -4434,6 +4459,34 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 							s.bindConversation(acc, &body, r, recRes, answerPrompt, startedAt, task, cachedTokens(), fullInput(), false)
 							return
 						}
+					}
+					// Both constrained attempts still answered text-only. When
+					// that text is the goal's actual deliverable (a final
+					// wrap-up — the objective can legitimately be text), the
+					// reasoning and content already streamed inline; close the
+					// goal server-side and finish the stream as a successful
+					// answer instead of failing it.
+					if requiredRetryDeliverable(retryRes.Text + "\n" + bufferedContent.String() + "\n" + bufferedReasoning.String()) {
+						log.Printf("[goal-loop] id=%s required round answered with the final deliverable; closing goal server-side and completing the stream (text_len=%d)", requestID, len(retryRes.Text))
+						if task != nil && !task.IsComplete() {
+							task.markComplete("server-side correction: required round answered with the final deliverable")
+						}
+						if reasoning := reasoningFilter.Flush(); reasoning != "" {
+							_ = writeChunk(map[string]any{"reasoning_content": reasoning})
+						}
+						if content := contentFilter.Flush(); content != "" {
+							_ = writeChunk(map[string]any{"content": content})
+						}
+						pt := EstimateTokens(prompt) + EstimateTokens(storedContextPrompt)
+						ct := EstimateTokens(retryRes.Text)
+						_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}})+"\n\n")
+						if body.shouldSendStreamUsage() {
+							usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{}, "usage": usageWithCache(pt, ct, cachedTokens())}
+							_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(usageChunk)+"\n\n")
+						}
+						_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+						s.bindConversation(acc, &body, r, retryRes, answerPrompt, startedAt, task, cachedTokens(), fullInput(), true)
+						return
 					}
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "model did not select a required tool after constrained retry", "type": "upstream_error", "code": "upstream_error"}})+"\n\n")
 					_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")

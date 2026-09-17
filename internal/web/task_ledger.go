@@ -702,6 +702,12 @@ func forceGoalRoundToolChoice(messages []oaiMsg, task *taskLedger, tools []chath
 	}
 	// Walk backwards to the most recent assistant reply (the turn before the
 	// current goal round). If it carried no tool call, it was a status report.
+	//
+	// The harness replays a tool round's reasoning transcript as its own
+	// text-only assistant message immediately followed by the round's separate
+	// function_call items (which the conversion groups into an assistant
+	// message carrying ToolCalls). Such a fragment is the reasoning OF a tool
+	// call, not a status report — skip it before judging the turn.
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		if m.Role != "assistant" {
@@ -709,6 +715,9 @@ func forceGoalRoundToolChoice(messages []oaiMsg, task *taskLedger, tools []chath
 		}
 		text := strings.TrimSpace(contentToString(m.Content))
 		if text == "" {
+			continue
+		}
+		if len(m.ToolCalls) == 0 && i+1 < len(messages) && messages[i+1].Role == "assistant" && len(messages[i+1].ToolCalls) > 0 {
 			continue
 		}
 		return len(m.ToolCalls) == 0
@@ -881,11 +890,8 @@ func goalCompletionSignal(answer string, l agentLedger) bool {
 			}
 		}
 	}
-
-	for _, w := range goalStrongCompletionPatterns {
-		if strings.Contains(low, strings.ToLower(w)) {
-			return true
-		}
+	if hasGoalStrongCompletion(low) {
+		return true
 	}
 
 	// processRecordOnly without a strong completion word: the answer says "the
@@ -893,4 +899,77 @@ func goalCompletionSignal(answer string, l agentLedger) bool {
 	// completion phrase. Close anyway — the model is reporting the bookkeeping
 	// gap, which is exactly the loop condition we're breaking.
 	return processRecordOnly
+}
+
+// hasGoalStrongCompletion reports whether the (lowercased) answer carries one
+// of the holistic whole-goal completion phrasings. Bare "已完成" stays
+// excluded because it also appears in mid-task progress reports ("第一步已完
+// 成"); the phrases in goalStrongCompletionPatterns are holistic enough to be
+// safe.
+func hasGoalStrongCompletion(low string) bool {
+	for _, w := range goalStrongCompletionPatterns {
+		if strings.Contains(low, strings.ToLower(w)) {
+			return true
+		}
+	}
+	return false
+}
+
+// requiredRetryContinuationPatterns are commitments to keep working in a later
+// round. A forced-required answer containing any of these is still mid-task and
+// must not be treated as the goal's final deliverable. The phrases are narrow
+// on purpose: final reports legitimately mention "下一步" or "后续" as planning
+// words ("必须作为下一步第一项处理"), so a bare word cannot disqualify them.
+var requiredRetryContinuationPatterns = []string{
+	"我会继续", "我将继续", "我继续推进", "我继续处理", "我继续分析", "我继续工作",
+	"继续推进", "继续处理", "继续分析", "继续工作", "继续执行", "继续尝试",
+	"下一步我会", "下一步我将", "下一步继续", "下一轮", "下轮", "后续轮次",
+	"之后再继续", "稍后继续", "接着继续", "待我继续", "先继续",
+	"更完整地分析", "再做进一步", "进一步分析",
+	"will continue", "i'll continue", "i will continue", "will keep working",
+	"keep working", "still working", "continue working", "continue on",
+	"next round", "in the next round", "continuing to work",
+}
+
+// goalHeadingLinePattern matches markdown heading lines ("# 一、", "### 1.").
+var goalHeadingLinePattern = regexp.MustCompile(`^\s*#{1,6}\s+\S`)
+
+// requiredRetryDeliverable reports whether a text-only answer given to a
+// forced-required round is the goal's actual final deliverable rather than a
+// mid-task status report. A forced round demands a tool call because text-only
+// answers were stalling the goal loop — but the goal's deliverable can
+// legitimately BE text (an analysis, a review, a report). Destroying such an
+// answer with a 502 also destroys the completed work and keeps the goal loop
+// alive forever. Only substantial, structured wrap-ups qualify; a short
+// "still working" report never is one.
+func requiredRetryDeliverable(answer string) bool {
+	low := strings.ToLower(answer)
+	for _, p := range requiredRetryContinuationPatterns {
+		if strings.Contains(low, p) {
+			return false
+		}
+	}
+	runes := len([]rune(answer))
+	// An explicit wrap-up: the model states the whole goal as done and backs
+	// the claim with real content.
+	if runes >= 200 && hasGoalStrongCompletion(low) {
+		return true
+	}
+	// Structured final report: substantial length (≈a page of prose) with at
+	// least two markdown headings. A stall long and structured enough to pass
+	// this bar would carry a continuation commitment and is already
+	// disqualified above.
+	if runes < 600 {
+		return false
+	}
+	headings := 0
+	for _, line := range strings.Split(answer, "\n") {
+		if goalHeadingLinePattern.MatchString(line) {
+			headings++
+			if headings >= 2 {
+				return true
+			}
+		}
+	}
+	return false
 }
