@@ -52,8 +52,14 @@ func toolNamesFrom(tools []chathub.Tool) []string {
 // the context budget ran, so the reminder is never trimmed away, and it is the
 // only system message the gateway adds: the client's own history never carries
 // it back, so each request receives exactly one copy.
-func injectToolReminder(messages []oaiMsg, tools []chathub.Tool) []oaiMsg {
-	if !toolReminderEnabled() || len(tools) == 0 {
+//
+// A completed-goal round is exempt: there the client has injected
+// <goal_complete> ("do not call any more tools; write the closing message"),
+// and this reminder's "end this round with at least one verified tool call"
+// pressure would contradict it, driving the model into an unbounded loop of
+// harmless echo calls (Write-Output ...) instead of the final answer.
+func injectToolReminder(messages []oaiMsg, tools []chathub.Tool, task *taskLedger) []oaiMsg {
+	if !toolReminderEnabled() || len(tools) == 0 || goalCompleteRound(messages, task) {
 		return messages
 	}
 	names := toolNamesFrom(tools)

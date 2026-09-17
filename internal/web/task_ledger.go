@@ -686,6 +686,36 @@ func goalRoundRequest(messages []oaiMsg, task *taskLedger, tools []chathub.Tool)
 // Examples: "Round: 1/256", "Round: 3/256".
 var roundCounterPattern = regexp.MustCompile(`Round:\s*\d+\s*/\s*\d+`)
 
+// messagesDeclareGoalComplete reports whether the client already declared the
+// goal complete by injecting the harness's <goal_complete> terminal block into
+// the round. Once that block is in the history, the client-side goal is closed
+// and further "call get_goal / update_goal" instructions would be wrong.
+func messagesDeclareGoalComplete(messages []oaiMsg) bool {
+	for _, m := range messages {
+		if strings.Contains(contentToString(m.Content), "<goal_complete>") {
+			return true
+		}
+	}
+	return false
+}
+
+// goalCompleteRound reports whether the current request is a completed-goal
+// round: the server-side ledger is closed, or the client already declared the
+// goal complete with the harness's <goal_complete> terminal block. In both
+// cases the model's only remaining job is to deliver the closing message, and
+// the round must end with that text. Any tool pressure applied here — the
+// per-request TOOL_REMINDER's "end this round with a verified tool call", or
+// forced tool_choice=required on a text-only reply — directly contradicts the
+// client's "do not call any more tools" instruction and makes the model loop
+// on harmless echo calls (Write-Output ...) instead of producing the final
+// answer.
+func goalCompleteRound(messages []oaiMsg, task *taskLedger) bool {
+	if task != nil && task.IsComplete() {
+		return true
+	}
+	return messagesDeclareGoalComplete(messages)
+}
+
 // forceGoalRoundToolChoice reports whether the current request is a
 // goal-protocol continuation round whose most recent assistant reply was a
 // text-only status report (no tool call). In that state the agent loop would
@@ -693,8 +723,12 @@ var roundCounterPattern = regexp.MustCompile(`Round:\s*\d+\s*/\s*\d+`)
 // the classic "stuck in a loop of status reports" failure. The caller forces
 // tool_choice=required so the model must emit a tool call instead of another
 // "goal is still incomplete" text-only turn.
+//
+// A completed goal is exempt: there the text-only reply IS the deliverable —
+// the terminal closing message the harness demands — not a status report, so
+// forcing a tool call would recreate the closure loop this detector breaks.
 func forceGoalRoundToolChoice(messages []oaiMsg, task *taskLedger, tools []chathub.Tool) bool {
-	if task == nil || len(tools) == 0 {
+	if task == nil || len(tools) == 0 || goalCompleteRound(messages, task) {
 		return false
 	}
 	if !goalRoundRequest(messages, task, tools) {
@@ -762,7 +796,14 @@ func (t *taskLedger) goalRoundInjectedContext(messages []oaiMsg) string {
 	}
 	var b strings.Builder
 	b.WriteString("\n\n[TASK_LEDGER] GOAL_STATUS: complete — the work is verified done and the server-side goal is closed. ")
-	if strings.Contains(t.CompletedReason, "server-side correction") {
+	// The "close the client goal" dance is only needed while the client-side
+	// goal is still active. When the harness already injected its
+	// <goal_complete> terminal block (or the ledger was closed by explicit
+	// update_goal(action=complete) evidence), the client goal is done and the
+	// model must simply state the outcome — asking it to call get_goal /
+	// update_goal again would contradict <goal_complete>'s explicit "do not
+	// call any more tools" and restart the closure deadlock.
+	if strings.Contains(t.CompletedReason, "server-side correction") && !messagesDeclareGoalComplete(messages) {
 		// The server closed its ledger from the model's final answer, but the
 		// client-side goal may still be active. Ask the model to close it so the
 		// goal round loop terminates instead of repeating status reports. The

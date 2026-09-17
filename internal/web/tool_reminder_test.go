@@ -36,7 +36,7 @@ func TestInjectToolReminderAppendsOnce(t *testing.T) {
 	os.Setenv("M365_INJECT_TOOL_REMINDER", "1")
 	defer os.Unsetenv("M365_INJECT_TOOL_REMINDER")
 	msgs := []oaiMsg{{Role: "user", Content: "hello"}}
-	out := injectToolReminder(msgs, reminderTools())
+	out := injectToolReminder(msgs, reminderTools(), nil)
 	if len(out) != len(msgs)+1 {
 		t.Fatalf("len=%d want %d", len(out), len(msgs)+1)
 	}
@@ -52,9 +52,38 @@ func TestInjectToolReminderAppendsOnce(t *testing.T) {
 	}
 	// Injecting again over the ORIGINAL msgs (which never contain the reminder)
 	// must add exactly one more copy — simulating the next round.
-	out2 := injectToolReminder(msgs, reminderTools())
+	out2 := injectToolReminder(msgs, reminderTools(), nil)
 	if len(out2) != len(msgs)+1 {
 		t.Fatalf("second round len=%d want %d", len(out2), len(msgs)+1)
+	}
+}
+
+func TestInjectToolReminderGoalCompleteRound(t *testing.T) {
+	os.Setenv("M365_INJECT_TOOL_REMINDER", "1")
+	defer os.Unsetenv("M365_INJECT_TOOL_REMINDER")
+	msgs := []oaiMsg{{Role: "user", Content: "hello"}}
+
+	// An active (or nil-ledger) goal round still gets the reminder.
+	if out := injectToolReminder(msgs, reminderTools(), nil); len(out) != len(msgs)+1 {
+		t.Fatalf("active round: len=%d want %d", len(out), len(msgs)+1)
+	}
+	if out := injectToolReminder(msgs, reminderTools(), &taskLedger{GoalID: "g1"}); len(out) != len(msgs)+1 {
+		t.Fatalf("active ledger round: len=%d want %d", len(out), len(msgs)+1)
+	}
+
+	// A server-side completed ledger must NOT receive the reminder: its
+	// "end this round with a verified tool call" pressure would loop the model
+	// on harmless echo calls instead of the closing message.
+	done := &taskLedger{GoalID: "g1", Status: taskStatusComplete}
+	if out := injectToolReminder(msgs, reminderTools(), done); len(out) != len(msgs) {
+		t.Fatalf("completed ledger: len=%d want %d (no tool pressure in a closed goal)", len(out), len(msgs))
+	}
+
+	// The client's own <goal_complete> block exempts the round even when the
+	// server-side ledger is not complete yet.
+	completeMsgs := []oaiMsg{{Role: "user", Content: "<goal_complete>\nObjective: \"x\"\nWrite the closing message now. Do not call any more tools."}}
+	if out := injectToolReminder(completeMsgs, reminderTools(), &taskLedger{GoalID: "g1"}); len(out) != len(completeMsgs) {
+		t.Fatalf("client-declared complete: len=%d want %d", len(out), len(completeMsgs))
 	}
 }
 
@@ -62,7 +91,7 @@ func TestInjectToolReminderDisabled(t *testing.T) {
 	os.Setenv("M365_INJECT_TOOL_REMINDER", "0")
 	defer os.Unsetenv("M365_INJECT_TOOL_REMINDER")
 	msgs := []oaiMsg{{Role: "user", Content: "hello"}}
-	out := injectToolReminder(msgs, reminderTools())
+	out := injectToolReminder(msgs, reminderTools(), nil)
 	if len(out) != len(msgs) {
 		t.Fatalf("disabled: len=%d want %d", len(out), len(msgs))
 	}
@@ -72,12 +101,12 @@ func TestInjectToolReminderNoTools(t *testing.T) {
 	os.Setenv("M365_INJECT_TOOL_REMINDER", "1")
 	defer os.Unsetenv("M365_INJECT_TOOL_REMINDER")
 	msgs := []oaiMsg{{Role: "user", Content: "hello"}}
-	if out := injectToolReminder(msgs, nil); len(out) != len(msgs) {
+	if out := injectToolReminder(msgs, nil, nil); len(out) != len(msgs) {
 		t.Fatalf("nil tools: len=%d want %d", len(out), len(msgs))
 	}
 	// tools that all fail to parse produce no injection
 	bad := []chathub.Tool{{Type: "function", Function: json.RawMessage(`garbage`)}}
-	if out := injectToolReminder(msgs, bad); len(out) != len(msgs) {
+	if out := injectToolReminder(msgs, bad, nil); len(out) != len(msgs) {
 		t.Fatalf("bad tools: len=%d want %d", len(out), len(msgs))
 	}
 }
