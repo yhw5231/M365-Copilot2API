@@ -3445,6 +3445,27 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// The buffered answer may itself be a workspace/tool misjudgment — the
+		// model now states the false claim after a progress preamble, and this
+		// path holds the whole answer for tool-bearing requests — so run the
+		// same repair the non-streaming path uses while the text can still be
+		// replaced, before anything reaches the client. Without it a refusal on
+		// a non-reasoning tone would be delivered as the round's answer and the
+		// goal loop would stall exactly as it does on the reasoning stream.
+		if len(toolMaps) > 0 && strings.TrimSpace(text.String()) != "" &&
+			needsWorkspaceToolMisjudgmentCorrection(text.String(), toolMaps, echoPrompt, activeLedger) {
+			corrected, cErr := s.recoverWorkspaceToolMisjudgment(ctx, acc, account, &body, res, answerReq, toolMaps, tone, requestID, echoPrompt, activeLedger)
+			if cErr != nil {
+				log.Printf("[workspace-tool-eject] id=%s stream correction failed: %v", requestID, cErr)
+				_ = keepalive.lockedWriteCtx(r.Context(), "data: "+mustJSON(map[string]any{"error": map[string]any{"message": workspaceToolCorrectionPublicMessage(cErr), "type": "upstream_error", "code": workspaceToolCorrectionErrorCode(cErr)}})+"\n\n")
+				_ = keepalive.lockedWriteCtx(r.Context(), "data: [DONE]\n\n")
+				s.markTraceError(r, cErr, http.StatusBadGateway)
+				return
+			}
+			res = corrected
+			text.Reset()
+			text.WriteString(res.Text)
+		}
 		rawCalls := streamedTools
 		if len(rawCalls) == 0 {
 			rawCalls = fencedToolCalls(text.String(), toolMaps, body.ToolChoice)
@@ -3873,6 +3894,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// text stream inline. When no correction is possible, text flows inline
 		// immediately with zero buffering.
 		const textGateWindow = 300
+		// A status-report-shaped reply keeps its false availability claim past
+		// the opening window (measured at byte offsets 314–936 in the DSH
+		// sessions: the model states the progress first and the false claim
+		// last), and text that has been released can no longer be replaced by a
+		// correction. Hold such a reply until it completes or exceeds
+		// textGateStatusHoldMax — no observed refusal approaches that size, and
+		// the hold only costs latency, never content.
+		const textGateStatusHoldMax = 4096
 		textGateActive := workspaceToolMisjudgmentPossible(toolMaps, echoPrompt, activeLedger)
 		var textGateBuf strings.Builder
 		textGateReleased := !textGateActive
@@ -3925,6 +3954,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if needsWorkspaceToolMisjudgmentCorrection(textGateBuf.String(), toolMaps, echoPrompt, activeLedger) {
 						textGateMisjudged = true
 						textGateBuf.Reset()
+						return nil
+					}
+					// A status-report-shaped reply can still turn into a
+					// misjudgment: the false claim arrives after the progress
+					// summary, past this window, and once text has streamed to
+					// the client it can no longer be replaced by a correction.
+					// Keep holding while the reply still reads as a report, up
+					// to the cap; the completion-time check then sees the whole
+					// text. A reply that has already committed to an answer
+					// releases immediately, so ordinary streaming is unchanged.
+					if textGateBuf.Len() < textGateStatusHoldMax && statusReportShaped(textGateBuf.String()) {
 						return nil
 					}
 					textGateReleased = true

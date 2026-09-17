@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -336,6 +337,244 @@ var workspaceToolAvailabilityDenials = []string{
 	"未挂载", "没有挂载", "未被挂载",
 }
 
+// workspaceToolEnumerationDenials are availability claims that matter only for
+// the enumeration layer (see toolEnumerationDenialMisjudgment). They are kept
+// out of workspaceToolAvailabilityDenials on purpose: these phrases name the
+// *act of declaring/providing* a tool rather than a channel capability, so the
+// windowed semantic layer must not treat them as channel denials on their own.
+// The real replies phrase the claim as "本会话未声明/未暴露/未出现 … 工具" —
+// vocabulary that no earlier list covered, which is why a whole class of
+// refusals was invisible to every layer.
+var workspaceToolEnumerationDenials = []string{
+	"未声明", "没有声明", "未暴露", "没有暴露", "未出现", "没有出现",
+	"未启用", "没有启用", "未包含", "不包含", "未列出", "没有列出",
+	"未注入", "没有注入", "未纳入", "没有纳入",
+	// callers' tool set described as absent from the declared list
+	"中没有", "里没有", "内没有", "不存在于", "未出现在",
+}
+
+// workspaceToolUsageSuppressors suppress the enumeration layer when the denial
+// is about *usage* rather than availability. "本轮没有使用 read、write 工具"
+// reports what the agent did; "本轮没有提供 read、write 工具" claims an
+// environment fact. Only the latter is a misjudgment, so usage phrasing must
+// veto the match even though a weak denial and a channel noun are both present.
+var workspaceToolUsageSuppressors = []string{
+	"没有使用", "未使用", "没使用", "没有用过", "未用过", "不使用",
+	"未采用", "没有采用", "没有用到", "未用到", "没有调用过", "未调用过",
+}
+
+// workspaceToolBlockerPhrases are inability-to-proceed statements. They are the
+// discriminator between a misjudgment and a passing background note: every real
+// refusal pairs the false availability claim with a blocker ("本轮实际可用工具
+// 中没有 … 因此无法继续修改"), while a reply that only mentions the limitation
+// mid-way and states the work is done ("…这只是环境背景，不影响结论") carries
+// none. Requiring both is what keeps the whole-text enumeration layer from
+// flagging legitimate narration that happens to name two tools.
+var workspaceToolBlockerPhrases = []string{
+	// Chinese — inability to act on the work
+	"无法继续", "不能继续", "无法修改", "不能修改", "无法验证", "不能验证",
+	"无法访问", "不能访问", "无法执行", "不能执行", "无法完成", "不能完成",
+	"无法操作", "不能操作", "无法进行", "不能进行", "无法实施", "无法推进",
+	"无法按", "无法在", "无法对", "无法安全", "不能安全", "无法读取", "无法写入",
+	"无法运行", "无法交付", "无法落地", "无法恢复", "无法复检", "无法确保",
+	"无法标记", "不能标记", "无法将其", "无法将该", "未能完成",
+	// English
+	"cannot continue", "can't continue", "cannot proceed", "unable to proceed",
+	"cannot modify", "cannot verify", "cannot complete", "unable to complete",
+	"cannot access", "unable to access", "fail to proceed",
+}
+
+// Enumeration layer geometry. Two or more actually-declared tool names must sit
+// within enumerationSpanBytes of each other (the replies list them as
+// "`pwsh`、`read`、`write`、`edit`、`glob`、`grep`"), and the denial must appear
+// within contextBytes on either side of that cluster. The span requirement is
+// what keeps the layer precise now that it scans the WHOLE reply: a legitimate
+// answer that merely mentions two tools far apart never forms a cluster.
+const (
+	toolEnumerationSpanBytes = 120
+	toolEnumerationContext   = 160
+	toolEnumerationMinNames  = 2
+)
+
+// toolEnumerationDenialMisjudgment detects the refusal shape that dominates the
+// real DSH sessions: the reply enumerates several of the caller's
+// ACTUALLY-DECLARED tools and asserts they are not declared/provided/exposed in
+// this session ("本轮实际可用工具中没有调用方要求的 `pwsh`、`read`、`write` 或
+// `edit` 桥接工具"). The wording rotates every few weeks, so the detector keys
+// on the shape instead of the phrase:
+//
+//  1. at least two distinct declared tool names sit within
+//     toolEnumerationSpanBytes of each other (the replies list them in one
+//     breath, separated by 、 ` / 或), and
+//  2. an availability denial ends in the SAME CLAUSE immediately before the
+//     first name of that cluster, and
+//  3. a blocker phrase states the work cannot proceed, and
+//  4. no permission context or usage phrasing anywhere in the surrounding
+//     window.
+//
+// Unlike the opening-window layers this scans the WHOLE text: the claim moved
+// from the first sentence to the tail of a status-report preamble (measured at
+// offsets 314–936 bytes in the failing sessions), so a 150-byte window sees
+// nothing. Precision is held by (1) — a legitimate answer that merely mentions
+// two tools far apart never forms a cluster — by the clause boundary in (2),
+// which stops a denial from a neighbouring sentence from attaching to an
+// unrelated tool list, and by (3), which separates a refusal from a passing
+// background note.
+func toolEnumerationDenialMisjudgment(text string, toolMaps []map[string]any) bool {
+	declared := extractToolNames(toolMaps)
+	if len(declared) == 0 {
+		return false
+	}
+	low := strings.ToLower(strings.TrimSpace(text))
+	if low == "" {
+		return false
+	}
+	if !containsAnyTerm(low, workspaceToolBlockerPhrases) {
+		return false
+	}
+	type occurrence struct {
+		pos  int
+		name string
+	}
+	var occs []occurrence
+	for name := range declared {
+		lname := strings.ToLower(name)
+		for _, idx := range wordIndexes(low, lname) {
+			occs = append(occs, occurrence{pos: idx, name: lname})
+		}
+	}
+	if len(occs) < toolEnumerationMinNames {
+		return false
+	}
+	sort.Slice(occs, func(i, j int) bool { return occs[i].pos < occs[j].pos })
+	for i := 0; i < len(occs); i++ {
+		seen := map[string]bool{occs[i].name: true}
+		last := i
+		for j := i + 1; j < len(occs); j++ {
+			if occs[j].pos-occs[i].pos > toolEnumerationSpanBytes {
+				break
+			}
+			seen[occs[j].name] = true
+			last = j
+		}
+		if len(seen) < toolEnumerationMinNames {
+			continue
+		}
+		clusterStart := occs[i].pos
+		clusterEnd := occs[last].pos + len(occs[last].name)
+		// Denial window: the whole span may not carry permission or usage
+		// phrasing, which would make the claim legitimate.
+		wideStart := clusterStart - toolEnumerationContext
+		if wideStart < 0 {
+			wideStart = 0
+		}
+		wideEnd := clusterEnd + toolEnumerationContext
+		if wideEnd > len(low) {
+			wideEnd = len(low)
+		}
+		wide := low[wideStart:wideEnd]
+		if containsAnyTerm(wide, workspaceToolPermissionContext) ||
+			containsAnyTerm(wide, workspaceToolUsageSuppressors) {
+			continue
+		}
+		if clauseDenialBefore(low, clusterStart) {
+			return true
+		}
+	}
+	return false
+}
+
+// workspaceStatusReportMarkers identify a progress/status report — the reply
+// shape whose false availability claim arrives AFTER the summary, past the
+// opening window the streaming gate buffers. They are deliberately about the
+// work's state ("尚未完成", "保持 active"), not about tools: the detector still
+// decides whether the claim is a misjudgment; these only decide whether to keep
+// buffering long enough to find out.
+var workspaceStatusReportMarkers = []string{
+	"尚未完成", "仍未完成", "尚未确认", "仍未确认", "尚未验证", "仍未验证",
+	"尚未执行", "尚未创建", "尚未修改", "尚未实现", "尚未看到", "尚未挂载",
+	"保持 active", "保持active", "当前目标", "目标仍", "目标尚未",
+	"目前仅完成", "目前只完成", "未完成", "未确认", "未验证",
+}
+
+// statusReportShaped reports whether text still reads as a progress report
+// rather than a final answer. The streaming gate uses it to decide whether to
+// keep buffering: a status report's false availability claim lands after the
+// summary (measured at byte offsets 314–936), so releasing at the opening
+// window would deliver it unchecked, while a genuine answer is released on
+// schedule.
+func statusReportShaped(text string) bool {
+	low := strings.ToLower(stripEmphasisMarkers(text))
+	if containsAnyTerm(low, workspaceToolBlockerPhrases) {
+		return true
+	}
+	return containsAnyTerm(low, workspaceStatusReportMarkers)
+}
+
+// clauseDenialBefore reports whether an availability denial ends within the
+// same clause as position pos. The search walks back at most
+// toolEnumerationDenialGapBytes and stops at the first clause boundary, so a
+// denial belonging to an earlier sentence can never attach to a later tool
+// list. Every observed refusal states the denial immediately before the list
+// ("本轮实际可用工具中没有调用方要求的 `pwsh`、…"); a denial placed after the
+// list is deliberately not accepted, because it cannot be told apart from a
+// following clause that denies something else entirely (measured: dropping that
+// direction loses no real refusal).
+func clauseDenialBefore(text string, pos int) bool {
+	start := pos - toolEnumerationDenialGapBytes
+	if start < 0 {
+		start = 0
+	}
+	clause := stripEmphasisMarkers(text[start:pos])
+	if idx := lastClauseBoundary(clause); idx >= 0 {
+		clause = clause[idx:]
+	}
+	return containsAnyTerm(clause, workspaceToolEnumerationDenials) ||
+		containsAnyTerm(clause, workspaceToolAvailabilityDenials)
+}
+
+// stripEmphasisMarkers removes markdown emphasis markers so a denial wrapped in
+// them still reads as one phrase. Real replies bold the claim's object
+// ("工具中**没有 `pwsh`…**"), and the asterisks would otherwise split "中没有"
+// into "中**没有", hiding the denial from every clause scan.
+func stripEmphasisMarkers(s string) string {
+	if !strings.ContainsAny(s, "*_`") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '*', '_', '`':
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// clauseBoundaries are the sentence/clause separators that stop a denial from
+// bleeding across into a neighbouring statement. ASCII '.', '!' and '?' are
+// deliberately absent: version numbers, file extensions and abbreviations
+// would otherwise cut legitimate clauses apart.
+const clauseBoundaries = "。；！？\n\r"
+
+func lastClauseBoundary(s string) int {
+	idx := -1
+	for _, r := range []rune(clauseBoundaries) {
+		if i := strings.LastIndex(s, string(r)); i > idx {
+			idx = i
+		}
+	}
+	return idx
+}
+
+// toolEnumerationDenialGapBytes bounds how far a denial may sit from the tool
+// cluster it governs. Real claims put it right next to the list ("本轮实际可用
+// 工具中没有调用方要求的本地 `pwsh`、…"), so a generous 96 bytes (~32 汉字)
+// covers every observed phrasing while keeping unrelated sentences out.
+const toolEnumerationDenialGapBytes = 96
+
 // workspaceToolChannelNouns are unambiguous execution/tool-channel nouns (EN+ZH).
 // English file-tool names (read/write/edit/glob/grep) are intentionally absent:
 // they are ordinary English words, so a generic layer using them would
@@ -560,6 +799,14 @@ func toolAwareMisjudgment(text string, toolMaps []map[string]any) bool {
 	declared := extractToolNames(toolMaps)
 	if len(declared) == 0 {
 		return false
+	}
+	// The tool-enumeration layer scans the whole reply, because the claim has
+	// moved out of the opening: the model now writes a status-report preamble
+	// ("当前目标尚未完成，且现有证据仅能确认：…") and only states the false
+	// availability claim at the end, measured at byte offsets 314–936 in the
+	// failing sessions — far past the opening window the layers below use.
+	if toolEnumerationDenialMisjudgment(text, toolMaps) {
+		return true
 	}
 	low := strings.ToLower(strings.TrimSpace(text))
 	if low == "" {
