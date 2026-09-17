@@ -71,12 +71,14 @@ func TestInjectToolReminderGoalCompleteRound(t *testing.T) {
 		t.Fatalf("active ledger round: len=%d want %d", len(out), len(msgs)+1)
 	}
 
-	// A server-side completed ledger must NOT receive the reminder: its
-	// "end this round with a verified tool call" pressure would loop the model
-	// on harmless echo calls instead of the closing message.
+	// A complete server-side ledger with the CLIENT goal still open KEEPS the
+	// reminder: that goal is closed only by the client's update_goal call, and
+	// dropping the "end this round with a verified tool call" pressure there is
+	// what let the model answer with the same text-only closing summary round
+	// after round until the budget ran out.
 	done := &taskLedger{GoalID: "g1", Status: taskStatusComplete}
-	if out := injectToolReminder(msgs, reminderTools(), done); len(out) != len(msgs) {
-		t.Fatalf("completed ledger: len=%d want %d (no tool pressure in a closed goal)", len(out), len(msgs))
+	if out := injectToolReminder(msgs, reminderTools(), done); len(out) != len(msgs)+1 {
+		t.Fatalf("open client goal: len=%d want %d (the closure call is still needed)", len(out), len(msgs)+1)
 	}
 
 	// The client's own <goal_complete> block exempts the round even when the
@@ -84,6 +86,17 @@ func TestInjectToolReminderGoalCompleteRound(t *testing.T) {
 	completeMsgs := []oaiMsg{{Role: "user", Content: "<goal_complete>\nObjective: \"x\"\nWrite the closing message now. Do not call any more tools."}}
 	if out := injectToolReminder(completeMsgs, reminderTools(), &taskLedger{GoalID: "g1"}); len(out) != len(completeMsgs) {
 		t.Fatalf("client-declared complete: len=%d want %d", len(out), len(completeMsgs))
+	}
+	// So does the client's own update_goal(action=complete) call once it is in
+	// the replayed history.
+	closedByCall := []oaiMsg{
+		{Role: "assistant", ToolCalls: []map[string]any{{"id": "c1", "type": "function",
+			"function": map[string]any{"name": "update_goal", "arguments": `{"action":"complete","goal_id":"g1","revision":2}`}}}},
+		{Role: "tool", ToolCallID: "c1", Content: `{"goal":{"id":"g1","phase":"complete"}}`},
+		{Role: "user", Content: "已关闭"},
+	}
+	if out := injectToolReminder(closedByCall, reminderTools(), done); len(out) != len(closedByCall) {
+		t.Fatalf("closed-by-call: len=%d want %d", len(out), len(closedByCall))
 	}
 }
 

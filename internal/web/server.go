@@ -2547,12 +2547,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// identical old/new edit strings. Injected after the budget so it is never
 	// trimmed, and only into this request's flattened prompt (the client's own
 	// history never carries it back, so every round gets exactly one copy).
-	// The goal ledger is not resolved yet at this point, so the completion
-	// exemption relies on the request-side <goal_complete> block: once the
-	// harness marks the goal complete it injects that terminal block (and stops
-	// wanting tool calls), so the reminder's "end this round with a verified
-	// tool call" pressure must not leak into those rounds.
-	body.Messages = injectToolReminder(body.Messages, body.Tools, nil)
+	// The completion exemption is the CLIENT goal's closure, resolved from the
+	// request history plus the session's ledger: once the client goal is closed
+	// (<goal_complete> block, or the client's own update_goal(complete) call)
+	// this reminder's "end this round with a verified tool call" pressure must
+	// not leak in — it would contradict "do not call any more tools" and drive
+	// the model into a loop of harmless echo calls. A merely complete
+	// server-side ledger whose client goal is still open keeps the reminder: the
+	// client goal can only be closed by that update_goal call.
+	body.Messages = injectToolReminder(body.Messages, body.Tools, s.sessionTaskLedger(r, &body))
 	// After CanContinue, check for edit calls that failed with old==new and
 	// for pwsh commands that write a line back to the value they just asserted
 	// (identity write — the pwsh analogue of an edit with old_string==new_string).
@@ -2836,11 +2839,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// any injection; the finished goal id is retired so its replayed evidence
 	// cannot resurrect the closed state.
 	task.maybeRotateGoal(body.Messages)
-	answerPrompt = withTaskLedger(answerPrompt, task)
-	prompt = withTaskLedger(prompt, task)
+	// The ledger's terminal rule depends on the CLIENT goal's state, not on the
+	// ledger's own: a closed ledger whose client goal is still armed must not be
+	// described as "the goal is complete — restate the outcome and stop", or the
+	// model answers with a text-only closing summary while the harness keeps
+	// re-injecting the same goal round (the closure spin).
+	clientGoalOpen := task != nil && task.IsComplete() && !clientGoalClosed(body.Messages, task)
+	answerPrompt = withTaskLedgerFor(answerPrompt, task, clientGoalOpen)
+	prompt = withTaskLedgerFor(prompt, task, clientGoalOpen)
 	// When the goal is already complete and the client sends a continuation
-	// round, inject the server-side completion context so the model reports
-	// the recorded outcome instead of claiming it cannot close the goal.
+	// round, inject the state-specific completion context: either close the
+	// still-open client goal, or (client goal already closed) report the
+	// recorded outcome.
 	if task != nil && task.IsComplete() && goalRoundRequest(body.Messages, task, body.Tools) {
 		suffix := task.goalRoundInjectedContext(body.Messages)
 		answerPrompt += suffix
@@ -2850,14 +2860,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// goal can never make further progress. Inject the structured fact so the
 	// model wraps up with the honest status instead of re-attempting the work
 	// every round. This is a precise signal (Round: N/M from the protocol),
-	// not a keyword match.
+	// not a keyword match. A closed ledger whose client goal is still open
+	// still needs it: the client goal has to be closed before the round budget
+	// runs out, otherwise the harness ends the goal as blocked(round-limit).
 	if task != nil {
 		cur, max, ok := goalRoundCounter(body.Messages)
-		if ok && cur >= max && !task.IsComplete() && (task.GoalID != "" || goalRoundRequest(body.Messages, task, body.Tools)) {
-			note := fmt.Sprintf("\n\n[TASK_LEDGER] ROUND_BUDGET_EXHAUSTED: %d/%d rounds used. "+
-				"Stop continuing the goal, report the current status and any unverified steps, and close the goal with update_goal(action=complete) if the work is done.", cur, max)
-			answerPrompt += note
-			prompt += note
+		if ok && cur >= max && (task.GoalID != "" || goalRoundRequest(body.Messages, task, body.Tools)) {
+			if !task.IsComplete() || clientGoalOpen {
+				note := roundBudgetNote(cur, max, clientGoalOpen)
+				answerPrompt += note
+				prompt += note
+			}
 		}
 	}
 
@@ -3069,7 +3082,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// server-side and let the answer path below stream the text, so the
 			// completed deliverable reaches the client and the next round
 			// receives the GOAL_STATUS complete context instead of a fresh 502.
-			if retryErr == nil && requiredRetryDeliverable(retryRes.Text+"\n"+retryRes.Reasoning) {
+			if retryErr == nil && requiredRoundTextIsDeliverable(retryRes.Text+"\n"+retryRes.Reasoning, task) {
 				log.Printf("[goal-loop] id=%s required round answered with the final deliverable; closing goal server-side and streaming the answer (text_len=%d)", requestID, len(retryRes.Text))
 				if task != nil && !task.IsComplete() {
 					task.markComplete("server-side correction: required round answered with the final deliverable")
@@ -3799,7 +3812,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// forced-required round answered with the goal's final deliverable
 			// as text, close the ledger server-side and fall through to the
 			// non-streaming answer path instead of failing with 502.
-			if retryErr == nil && requiredRetryDeliverable(retryRes.Text+"\n"+retryRes.Reasoning) {
+			if retryErr == nil && requiredRoundTextIsDeliverable(retryRes.Text+"\n"+retryRes.Reasoning, task) {
 				log.Printf("[goal-loop] id=%s required round answered with the final deliverable; closing goal server-side and answering with text (text_len=%d)", requestID, len(retryRes.Text))
 				if task != nil && !task.IsComplete() {
 					task.markComplete("server-side correction: required round answered with the final deliverable")
@@ -4523,7 +4536,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					// reasoning and content already streamed inline; close the
 					// goal server-side and finish the stream as a successful
 					// answer instead of failing it.
-					if requiredRetryDeliverable(retryRes.Text + "\n" + bufferedContent.String() + "\n" + bufferedReasoning.String()) {
+					if requiredRoundTextIsDeliverable(retryRes.Text+"\n"+bufferedContent.String()+"\n"+bufferedReasoning.String(), task) {
 						log.Printf("[goal-loop] id=%s required round answered with the final deliverable; closing goal server-side and completing the stream (text_len=%d)", requestID, len(retryRes.Text))
 						if task != nil && !task.IsComplete() {
 							task.markComplete("server-side correction: required round answered with the final deliverable")

@@ -274,16 +274,28 @@ func TestGoalRoundContextOnComplete(t *testing.T) {
 	if !goalRoundRequest(structured, &taskLedger{OriginalGoal: "x"}, nil) {
 		t.Fatal("Round: N/M counter must be detected as a goal round even without tool/GoalID")
 	}
-	suffix := task.goalRoundInjectedContext(nil)
-	if suffix == "" || !strings.Contains(suffix, "no further update_goal call is required") {
-		t.Fatalf("completion context missing: %s", suffix)
+	suffix := task.goalRoundInjectedContext(msgs)
+	if suffix == "" || !strings.Contains(suffix, "update_goal(action=complete)") {
+		t.Fatalf("open client goal must receive the closure instruction: %s", suffix)
 	}
-	// Server-side correction branch: the reason starts with "server-side
-	// correction" → the injected context must tell the model to call
-	// update_goal(complete) to close the client-side goal.
+	if strings.Contains(suffix, "no further update_goal call is required") {
+		t.Fatalf("open client goal must not be told no call is needed: %s", suffix)
+	}
+	// Once the CLIENT goal is closed — the harness's <goal_complete> terminal
+	// block, or the client's own update_goal(action=complete) call — the round
+	// only needs the recorded outcome restated.
+	closedMsgs := append(append([]oaiMsg{}, msgs...),
+		oaiMsg{Role: "user", Content: "<goal_complete>\nObjective: \"x\"\nDo not call any more tools; write the closing message."})
+	closedSuffix := task.goalRoundInjectedContext(closedMsgs)
+	if closedSuffix == "" || !strings.Contains(closedSuffix, "no further update_goal call is required") {
+		t.Fatalf("closed client goal context missing: %s", closedSuffix)
+	}
+	// Server-side correction branch: a ledger closed from the model's completion
+	// wording while the client goal is still armed must ask for the update_goal
+	// call — that call is the only thing that closes it.
 	scTask := &taskLedger{OriginalGoal: "x", GoalID: "goal-sc-1"}
 	scTask.markComplete("server-side correction: final answer states completion with tool evidence")
-	scSuffix := scTask.goalRoundInjectedContext(nil)
+	scSuffix := scTask.goalRoundInjectedContext(msgs)
 	if !strings.Contains(scSuffix, "update_goal(action=complete)") {
 		t.Fatalf("server-side correction context must ask for update_goal call: %s", scSuffix)
 	}

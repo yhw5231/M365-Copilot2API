@@ -140,7 +140,22 @@ func buildTaskLedger(body *oaiReq) *taskLedger {
 // Context renders the ledger for prompt injection. It is always emitted above
 // the current turn so the model re-anchors on the original goal even after a
 // fresh upstream conversation or an account switch.
+//
+// It assumes the terminal case (client goal closed). Callers that know whether
+// the client goal is still open must use contextForClientGoal, which states the
+// remaining closure action instead of "the goal is complete, stop".
 func (t *taskLedger) Context() string {
+	return t.contextForClientGoal(false)
+}
+
+// contextForClientGoal renders the ledger for prompt injection. clientGoalOpen
+// marks the split state the server-side ledger alone cannot express: the ledger
+// is complete, but the client goal is still armed and only the client's
+// update_goal(action=complete) call closes it. In that state the terminal
+// "the goal is complete … restate the outcome and stop" rule is exactly the
+// wrong instruction — the model obeys it, restates the outcome as text, the
+// goal stays open and the harness re-injects another round of the same.
+func (t *taskLedger) contextForClientGoal(clientGoalOpen bool) string {
 	if t == nil || t.OriginalGoal == "" && len(t.Executed) == 0 && len(t.ToolResults) == 0 {
 		return ""
 	}
@@ -157,7 +172,11 @@ func (t *taskLedger) Context() string {
 		if t.CompletedReason != "" {
 			fmt.Fprintf(&b, "COMPLETION_REASON: %s\n", compactTaskText(t.CompletedReason, 300))
 		}
-		b.WriteString("TASK_COMPLETE_RULE: The goal is complete. Do not continue working on it, do not repeat executed steps, and do not report outstanding work. Restate the outcome and stop.")
+		if clientGoalOpen {
+			b.WriteString("CLIENT_GOAL: open\nTASK_COMPLETE_RULE: The work is verified done: do not repeat executed steps, do not restart it, and do not report it as outstanding. The client-side goal is nevertheless still OPEN — it is closed only by the client's update_goal tool, and a text-only summary leaves it open, so the harness starts another round with the same objective. End this round by closing it: call get_goal for the current goal_id and revision, then update_goal(action=complete).")
+		} else {
+			b.WriteString("TASK_COMPLETE_RULE: The goal is complete. Do not continue working on it, do not repeat executed steps, and do not report outstanding work. Restate the outcome and stop.")
+		}
 		return strings.TrimSpace(b.String())
 	}
 	// Only goal-protocol sessions (a goal id was actually created) receive the
@@ -515,9 +534,15 @@ func appendStringLimited(dst []string, v string, limit int) []string {
 
 // withTaskLedger prefixes a prompt with the persistent task context.
 func withTaskLedger(prompt string, task *taskLedger) string {
+	return withTaskLedgerFor(prompt, task, false)
+}
+
+// withTaskLedgerFor prepends the ledger block, telling the renderer whether the
+// client goal is still open (see contextForClientGoal).
+func withTaskLedgerFor(prompt string, task *taskLedger, clientGoalOpen bool) string {
 	ctx := ""
 	if task != nil {
-		ctx = task.Context()
+		ctx = task.contextForClientGoal(clientGoalOpen)
 	}
 	if ctx == "" {
 		return prompt
@@ -699,21 +724,131 @@ func messagesDeclareGoalComplete(messages []oaiMsg) bool {
 	return false
 }
 
-// goalCompleteRound reports whether the current request is a completed-goal
-// round: the server-side ledger is closed, or the client already declared the
-// goal complete with the harness's <goal_complete> terminal block. In both
-// cases the model's only remaining job is to deliver the closing message, and
-// the round must end with that text. Any tool pressure applied here — the
-// per-request TOOL_REMINDER's "end this round with a verified tool call", or
-// forced tool_choice=required on a text-only reply — directly contradicts the
-// client's "do not call any more tools" instruction and makes the model loop
-// on harmless echo calls (Write-Output ...) instead of producing the final
-// answer.
-func goalCompleteRound(messages []oaiMsg, task *taskLedger) bool {
-	if task != nil && task.IsComplete() {
+// clientGoalClosed reports whether the CLIENT-side goal is already closed,
+// judged from the replayed request history alone.
+//
+// The server-side ledger and the client goal are two different objects, and
+// only the client can close the latter: DSH closes its goal when the model
+// calls the client's own update_goal tool (the harness then injects its
+// <goal_complete> terminal block on the following round). A completed server
+// ledger therefore does NOT imply a closed client goal. Conflating the two is
+// what produced the closure spin: the gateway auto-closed its ledger from the
+// model's completion wording, then told the model "the server-side goal is
+// closed — restate the outcome and stop" while the harness kept re-injecting
+// goal rounds. Every round the model restated a text-only "goal complete and
+// closed" summary, never called update_goal, and the client goal stayed open
+// until the round budget was exhausted (blocked: round-limit).
+func clientGoalClosed(messages []oaiMsg, task *taskLedger) bool {
+	if messagesDeclareGoalComplete(messages) {
 		return true
 	}
-	return messagesDeclareGoalComplete(messages)
+	return historyClosedGoal(messages, task)
+}
+
+// historyClosedGoal reports whether the request history carries the client's
+// own goal-closure call: an update_goal(action=complete) tool call for the
+// tracked goal. Evidence for a retired goal id is ignored — after a goal
+// rotation the finished goal's closure keeps replaying in the history and must
+// not mark the new goal closed.
+func historyClosedGoal(messages []oaiMsg, task *taskLedger) bool {
+	// A goal chained onto the session carries a different objective, and the
+	// ledger still describes the previous one until the caller rotates it
+	// (maybeRotateGoal). The previous goal's closure must not suppress the
+	// pressure the new goal's round needs.
+	if task != nil && task.Status != "" {
+		if objective := latestGoalRoundObjective(messages); objective != "" && !sameGoalObjective(objective, task.OriginalGoal) {
+			return false
+		}
+	}
+	for _, m := range messages {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, raw := range m.ToolCalls {
+			fn, _ := raw["function"].(map[string]any)
+			if name, _ := fn["name"].(string); name != "update_goal" {
+				continue
+			}
+			args := fmt.Sprint(fn["arguments"])
+			if strings.ToLower(goalArgString(args, "action")) != "complete" {
+				continue
+			}
+			id := goalArgString(args, "goal_id")
+			if id == "" {
+				if tid := extractGoalID(args, ""); tid != "" {
+					id = tid
+				}
+			}
+			if id != "" && task != nil && task.RetiredGoalIDs[id] {
+				continue
+			}
+			if id != "" && task != nil && task.GoalID != "" && id != task.GoalID {
+				// A different goal's closure is not this goal's closure.
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// goalCompleteRound reports whether the current request is a terminal-goal
+// round: the CLIENT goal is closed, either by the harness's <goal_complete>
+// terminal block or by the client's own update_goal(action=complete) call. Only
+// then is the model's remaining job to deliver the closing message, and only
+// then must no tool pressure be applied: the per-request TOOL_REMINDER's "end
+// this round with a verified tool call", or forced tool_choice=required on a
+// text-only reply, would contradict the client's "do not call any more tools"
+// instruction and make the model loop on harmless echo calls (Write-Output ...)
+// instead of producing the final answer.
+//
+// A merely complete server-side ledger is deliberately NOT terminal: while the
+// client goal is still open the only action that ends the loop is the client's
+// update_goal call, so that round needs the pressure rather than the exemption.
+func goalCompleteRound(messages []oaiMsg, task *taskLedger) bool {
+	return clientGoalClosed(messages, task)
+}
+
+// textOnlyGoalRounds counts the completed goal rounds whose assistant reply was
+// text-only (the "goal complete and closed" summary that never closes the
+// client goal). One occurrence is enough to report the stall; the count is used
+// to state how many rounds have already been spent that way.
+func textOnlyGoalRounds(messages []oaiMsg) int {
+	count := 0
+	for i, m := range messages {
+		if m.Role != "user" {
+			continue
+		}
+		c := contentToString(m.Content)
+		if !strings.Contains(c, "<goal_round>") || !roundCounterPattern.MatchString(c) {
+			continue
+		}
+		if idx := effectiveAssistantReplyIndex(messages, i+1); idx >= 0 && len(messages[idx].ToolCalls) == 0 {
+			count++
+		}
+	}
+	return count
+}
+
+// effectiveAssistantReplyIndex returns the index of the assistant reply that
+// ends the round starting at 'from': the first assistant message carrying text
+// that is not a reasoning fragment replayed immediately before its own tool
+// call. Returns -1 when the round has no such reply yet.
+func effectiveAssistantReplyIndex(messages []oaiMsg, from int) int {
+	for i := from; i < len(messages); i++ {
+		m := messages[i]
+		if m.Role != "assistant" {
+			continue
+		}
+		if strings.TrimSpace(contentToString(m.Content)) == "" {
+			continue
+		}
+		if len(m.ToolCalls) == 0 && i+1 < len(messages) && messages[i+1].Role == "assistant" && len(messages[i+1].ToolCalls) > 0 {
+			continue
+		}
+		return i
+	}
+	return -1
 }
 
 // forceGoalRoundToolChoice reports whether the current request is a
@@ -759,12 +894,33 @@ func forceGoalRoundToolChoice(messages []oaiMsg, task *taskLedger, tools []chath
 	return false
 }
 
-// goalRoundCounter extracts the current and max round numbers from a message
-// containing the round counter. Returns (current, max, ok). When the current
+// roundBudgetNote renders the round-ceiling state signal. The goal can make no
+// further progress once the counter reaches its ceiling, so the model must stop
+// re-attempting the work and wrap up honestly. When the server-side ledger is
+// complete but the client goal is still open, wrapping up means closing it: the
+// harness ends an unclosed goal as blocked(round-limit), which is exactly the
+// state the client cannot recover from.
+func roundBudgetNote(cur, max int, clientGoalOpen bool) string {
+	if clientGoalOpen {
+		return fmt.Sprintf("\n\n[TASK_LEDGER] ROUND_BUDGET_EXHAUSTED: %d/%d rounds used. The server-side work is already verified done; do not start new work. "+
+			"The client-side goal is still open and must be closed now: call get_goal for the current goal_id and revision, then update_goal(action=complete). "+
+			"Without that call the harness ends the goal as blocked(round-limit).", cur, max)
+	}
+	return fmt.Sprintf("\n\n[TASK_LEDGER] ROUND_BUDGET_EXHAUSTED: %d/%d rounds used. "+
+		"Stop continuing the goal, report the current status and any unverified steps, and close the goal with update_goal(action=complete) if the work is done.", cur, max)
+}
+
+// goalRoundCounter extracts the current and max round numbers from the NEWEST
+// round counter in the history. Returns (current, max, ok). When the current
 // round reaches or exceeds max, the round budget is exhausted.
+//
+// The newest counter matters: a goal session replays every earlier round, so
+// taking the first match reported round 1/20 forever and the exhausted-budget
+// signal never fired (a session that spun to 18/20 was still described as
+// 1/20).
 func goalRoundCounter(messages []oaiMsg) (int, int, bool) {
-	for _, m := range messages {
-		c := contentToString(m.Content)
+	for i := len(messages) - 1; i >= 0; i-- {
+		c := contentToString(messages[i].Content)
 		match := roundCounterPattern.FindString(c)
 		if match == "" {
 			continue
@@ -787,6 +943,13 @@ func goalRoundCounter(messages []oaiMsg) (int, int, bool) {
 // is a new goal chained onto the session — the caller rotates the ledger
 // (maybeRotateGoal) before injection, so the completion context never
 // suppresses work on the new goal.
+//
+// The suffix is state-aware, because a complete server ledger does not mean the
+// client goal is closed: while the client goal is still open the round has
+// exactly one allowed outcome — the client's update_goal(action=complete) call.
+// Saying "the goal is closed, restate the outcome and stop" in that state is
+// what makes the model answer with a text-only "goal complete and closed"
+// summary forever while the harness re-injects goal rounds.
 func (t *taskLedger) goalRoundInjectedContext(messages []oaiMsg) string {
 	if t == nil || !t.IsComplete() {
 		return ""
@@ -794,32 +957,54 @@ func (t *taskLedger) goalRoundInjectedContext(messages []oaiMsg) string {
 	if objective := latestGoalRoundObjective(messages); objective != "" && !sameGoalObjective(objective, t.OriginalGoal) {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString("\n\n[TASK_LEDGER] GOAL_STATUS: complete — the work is verified done and the server-side goal is closed. ")
-	// The "close the client goal" dance is only needed while the client-side
-	// goal is still active. When the harness already injected its
-	// <goal_complete> terminal block (or the ledger was closed by explicit
-	// update_goal(action=complete) evidence), the client goal is done and the
-	// model must simply state the outcome — asking it to call get_goal /
-	// update_goal again would contradict <goal_complete>'s explicit "do not
-	// call any more tools" and restart the closure deadlock.
-	if strings.Contains(t.CompletedReason, "server-side correction") && !messagesDeclareGoalComplete(messages) {
-		// The server closed its ledger from the model's final answer, but the
-		// client-side goal may still be active. Ask the model to close it so the
-		// goal round loop terminates instead of repeating status reports. The
-		// client-side goal carries an optimistic-revision guard: an earlier
-		// round that failed to close it (e.g. a 502 that aborted the turn) has
-		// advanced the revision, so the model MUST re-read the goal with
-		// get_goal first and pass the returned goal_id/revision to
-		// update_goal(action=complete). Closing with a stale revision raises
-		// GOAL_STALE_REVISION and keeps the loop alive forever.
-		b.WriteString("If the client-side goal is still active, close it now: first call get_goal to read the current goal state (its revision may have advanced since the last round), then call update_goal(action=complete) with the goal_id and revision returned by get_goal. Do not start new work.")
-	} else {
-		// Closed by explicit update_goal(action=complete) tool evidence, so the
-		// client-side goal is already done; only the outcome needs restating.
-		b.WriteString("State the recorded outcome and do not start new work. The goal state has been persisted; no further update_goal call is required.")
+	if clientGoalClosed(messages, t) {
+		// Closed by the client itself (<goal_complete> terminal block or an
+		// update_goal(action=complete) call), so the client goal is done and only
+		// the outcome needs restating — asking for another update_goal would
+		// contradict <goal_complete>'s explicit "do not call any more tools" and
+		// restart the closure deadlock.
+		return "\n\n[TASK_LEDGER] GOAL_STATUS: complete — the work is verified done and the goal is closed. State the recorded outcome and do not start new work. The goal state has been persisted; no further update_goal call is required."
 	}
+	// The server ledger is closed but the CLIENT goal is still open. The
+	// client-side goal carries an optimistic-revision guard: an earlier round
+	// that failed to close it has advanced the revision, so the model MUST
+	// re-read the goal with get_goal first and pass the returned goal_id /
+	// revision to update_goal(action=complete). Closing with a stale revision
+	// raises GOAL_STALE_REVISION and keeps the loop alive forever.
+	var b strings.Builder
+	b.WriteString("\n\n[TASK_LEDGER] GOAL_STATUS: complete (server-side ledger) — the work is verified done, it must not be repeated or restarted, and it must not be reported as outstanding. ")
+	fmt.Fprintf(&b, "CLIENT_GOAL: OPEN — the client-side goal has NOT been closed. It is closed ONLY by the client's update_goal tool; a text-only summary does not close it and makes the harness start another goal round with the same objective. ")
+	if stall := textOnlyGoalRounds(messages); stall > 0 {
+		fmt.Fprintf(&b, "%s already ended without closing the goal (the same summary restated each time); do not repeat that summary again. ", pluralRounds(stall))
+	}
+	b.WriteString("Required this round: call get_goal to read the current goal_id and revision (it may have advanced since the last round), then call update_goal(action=complete) with that goal_id and revision. Do not start new work.")
 	return b.String()
+}
+
+// pluralRounds renders "N goal round(s)" for the stall counter.
+func pluralRounds(n int) string {
+	if n == 1 {
+		return "1 goal round"
+	}
+	return fmt.Sprintf("%d goal rounds", n)
+}
+
+// requiredRoundTextIsDeliverable reports whether a text-only reply to a
+// forced-required round may be delivered to the client instead of failing the
+// round with 502. Two states qualify:
+//
+//   - the text is the goal's final deliverable (see requiredRetryDeliverable),
+//     which is legitimate because the objective itself can be text;
+//   - the server-side ledger is already complete. The work is verified done, so
+//     the text cannot be a mid-task stall that the agent loop would mistake for
+//     a completed round — it is the outcome statement. Destroying it loses the
+//     client's closing message and burns a goal round, and while the client
+//     goal is still open the round that must close it is worth keeping.
+func requiredRoundTextIsDeliverable(text string, task *taskLedger) bool {
+	if task != nil && task.IsComplete() {
+		return true
+	}
+	return requiredRetryDeliverable(text)
 }
 
 // goalDenialPatterns match an answer that explicitly refuses to claim completion
