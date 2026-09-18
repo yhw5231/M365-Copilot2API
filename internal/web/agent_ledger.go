@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -45,7 +46,22 @@ func compactToolResult(s string, limit int) string {
 	if tail < 80 {
 		tail = 80
 	}
-	return s[:head] + fmt.Sprintf("\n... [truncated %d bytes] ...\n", len(s)-head-tail) + s[len(s)-tail:]
+	// Both cuts are rune-aligned: a fixed-byte cut inside a Chinese character
+	// would leave invalid UTF-8 at the head/tail edges, and the JSON layer
+	// (keyboard evidence / router prompt) turns it into U+FFFD.
+	headEnd := head
+	for headEnd > 0 && !utf8.RuneStart(s[headEnd]) {
+		headEnd--
+	}
+	tailStart := len(s) - tail
+	for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
+		tailStart++
+	}
+	trimmed := len(s) - headEnd - (len(s) - tailStart)
+	if trimmed <= 0 {
+		return s
+	}
+	return s[:headEnd] + fmt.Sprintf("\n... [truncated %d bytes] ...\n", trimmed) + s[tailStart:]
 }
 
 // scopedCallID returns a globally unique tool call id. The scope parameters
@@ -126,7 +142,7 @@ func normalizeFailure(s string) string {
 	s = strings.ToLower(s)
 	s = regexp.MustCompile(`\d+`).ReplaceAllString(s, "#")
 	if len(s) > 500 {
-		s = s[:500]
+		s = runeSafeTruncate(s, 500)
 	}
 	return s
 }
@@ -386,10 +402,10 @@ func (l agentLedger) identityFailureDetail() identityFailureDetail {
 		}
 	}
 	if len(d.OldText) > 400 {
-		d.OldText = d.OldText[:400]
+		d.OldText = runeSafeTruncate(d.OldText, 400)
 	}
 	if len(d.SyntaxError) > 400 {
-		d.SyntaxError = d.SyntaxError[:400]
+		d.SyntaxError = runeSafeTruncate(d.SyntaxError, 400)
 	}
 	return d
 }

@@ -137,13 +137,13 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		// Debug: log the response to understand what the model returned
 		textPreview := res.Text
 		if len(textPreview) > 500 {
-			textPreview = textPreview[:500]
+			textPreview = runeSafeTruncate(textPreview, 500)
 		}
 		rawPreview := ""
 		if len(res.RawResult) > 0 {
 			rawPreview = res.RawResult
 			if len(rawPreview) > 500 {
-				rawPreview = rawPreview[:500]
+				rawPreview = runeSafeTruncate(rawPreview, 500)
 			}
 		}
 		debug := map[string]any{"text": textPreview, "raw_len": len(res.RawResult), "events": len(res.Events), "images": res.Images, "raw_preview": rawPreview}
@@ -556,7 +556,7 @@ func downloadImageAsDataURIWithToken(url, token string) (string, error) {
 	b64, ct, err := downloadImageAsBase64WithToken(url, token)
 	urlPreview := url
 	if len(urlPreview) > 80 {
-		urlPreview = urlPreview[:80]
+		urlPreview = runeSafeTruncate(urlPreview, 80)
 	}
 	if err != nil {
 		log.Printf("[image-download] failed url=%s token_len=%d err=%v", urlPreview, len(token), err)

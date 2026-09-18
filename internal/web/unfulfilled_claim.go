@@ -69,7 +69,7 @@ func makePattern(terms []string) *regexp.Regexp {
 // is unaffected by lowercasing.
 func unfulfilledToolClaimed(text string) bool {
 	if len(text) > 8192 {
-		text = text[:8192]
+		text = runeSafeTruncate(text, 8192)
 	}
 	low := strings.ToLower(text)
 	if !completionClaimRe.MatchString(low) {

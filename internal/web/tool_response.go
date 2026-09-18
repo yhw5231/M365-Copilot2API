@@ -7,6 +7,52 @@ import (
 	"unicode/utf8"
 )
 
+// toolArgsChunks splits tool-call arguments into stream-sized fragments with
+// every cut on a UTF-8 rune boundary. The byte-window loop it replaces
+// advanced by a fixed offset (off += size) while pushing each window's end
+// forward to the next rune start, so the following fragment began inside a
+// multibyte character; the orphan continuation bytes were invalid UTF-8, and
+// every JSON encode/decode step (server mustJSON, client reassembly) replaces
+// them with U+FFFD — goal/todo text permanently read "验�证". Reusing the
+// previous window's rune-aligned end as the next start keeps every fragment
+// (and their concatenation) valid UTF-8.
+func toolArgsChunks(args string, size int) []string {
+	if size <= 0 {
+		size = 512
+	}
+	var chunks []string
+	for off := 0; off < len(args); {
+		end := off + size
+		if end > len(args) {
+			end = len(args)
+		}
+		for end < len(args) && !utf8.RuneStart(args[end]) {
+			end++
+		}
+		chunks = append(chunks, args[off:end])
+		off = end
+	}
+	return chunks
+}
+
+// runeSafeTruncate cuts s to at most n bytes at a UTF-8 rune boundary.
+// Byte-level truncation inside a Chinese character leaves invalid trailing
+// bytes that every JSON serializer turns into U+FFFD, so logs, evidence and
+// previews would show a visible "�" at the cut point.
+func runeSafeTruncate(s string, n int) string {
+	if n < 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	end := n
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end]
+}
+
 func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sendUsage bool, promptTokens, cachedTokens int64, calls []detectedToolCall, res chathub.Result) error {
 	toolCalls := toolCallMaps(calls)
 	msg := map[string]any{"role": "assistant", "content": nil, "tool_calls": toolCalls}
@@ -51,16 +97,9 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, sen
 			isLast := i == len(calls)-1
 			emit(base(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil))
 			args := string(tc.Arguments)
-			for off := 0; off < len(args); off += chunkSize {
-				end := off + chunkSize
-				if end > len(args) {
-					end = len(args)
-				}
-				for end < len(args) && !utf8.RuneStart(args[end]) {
-					end++
-				}
-				argChunk := args[off:end]
-				isLastArgChunk := off+chunkSize >= len(args)
+			argChunks := toolArgsChunks(args, chunkSize)
+			for ci, argChunk := range argChunks {
+				isLastArgChunk := ci == len(argChunks)-1
 				var finish any
 				if isLast && isLastArgChunk {
 					finish = "tool_calls"

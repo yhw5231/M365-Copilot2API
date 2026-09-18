@@ -23,7 +23,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -2494,7 +2493,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// Detect the specific failure pattern and give a targeted message.
 			sig := err.Error()
 			if len(sig) > 400 {
-				sig = sig[:400] + "…"
+				sig = runeSafeTruncate(sig, 400) + "…"
 			}
 			var correctionMsg string
 			if strings.Contains(sig, "old_string and new_string must differ") {
@@ -4287,17 +4286,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 								isLast := i == len(repaired)-1
 								_ = writeToolChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil)
 								args := string(tc.Arguments)
-								const argChunkSize = 512
-								for off := 0; off < len(args); off += argChunkSize {
-									end := off + argChunkSize
-									if end > len(args) {
-										end = len(args)
-									}
-									for end < len(args) && !utf8.RuneStart(args[end]) {
-										end++
-									}
-									argChunk := args[off:end]
-									isLastArgChunk := off+argChunkSize >= len(args)
+								argChunks := toolArgsChunks(args, 512)
+								for ci, argChunk := range argChunks {
+									isLastArgChunk := ci == len(argChunks)-1
 									var finish any
 									if isLast && isLastArgChunk {
 										finish = "tool_calls"
@@ -4346,17 +4337,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						isLast := i == len(calls)-1
 						_ = writeToolChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil)
 						args := string(tc.Arguments)
-						const argChunkSize = 512
-						for off := 0; off < len(args); off += argChunkSize {
-							end := off + argChunkSize
-							if end > len(args) {
-								end = len(args)
-							}
-							for end < len(args) && !utf8.RuneStart(args[end]) {
-								end++
-							}
-							argChunk := args[off:end]
-							isLastArgChunk := off+argChunkSize >= len(args)
+						argChunks := toolArgsChunks(args, 512)
+						for ci, argChunk := range argChunks {
+							isLastArgChunk := ci == len(argChunks)-1
 							var finish any
 							if isLast && isLastArgChunk {
 								finish = "tool_calls"
@@ -4446,17 +4429,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 							isLast := i == len(retryCalls)-1
 							_ = writeToolChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil)
 							args := string(tc.Arguments)
-							const argChunkSize = 512
-							for off := 0; off < len(args); off += argChunkSize {
-								end := off + argChunkSize
-								if end > len(args) {
-									end = len(args)
-								}
-								for end < len(args) && !utf8.RuneStart(args[end]) {
-									end++
-								}
-								argChunk := args[off:end]
-								isLastArgChunk := off+argChunkSize >= len(args)
+							argChunks := toolArgsChunks(args, 512)
+							for ci, argChunk := range argChunks {
+								isLastArgChunk := ci == len(argChunks)-1
 								var finish any
 								if isLast && isLastArgChunk {
 									finish = "tool_calls"
@@ -4508,24 +4483,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 								}
 								isLast := i == len(recCalls)-1
 								_ = writeRecChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": ""}}}}, nil)
-								args := string(tc.Arguments)
-								const recArgChunkSize = 512
-								for off := 0; off < len(args); off += recArgChunkSize {
-									end := off + recArgChunkSize
-									if end > len(args) {
-										end = len(args)
-									}
-									for end < len(args) && !utf8.RuneStart(args[end]) {
-										end++
-									}
-									argChunk := args[off:end]
-									isLastArgChunk := off+recArgChunkSize >= len(args)
-									var finish any
-									if isLast && isLastArgChunk {
-										finish = "tool_calls"
-									}
-									_ = writeRecChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "function": map[string]any{"arguments": argChunk}}}}, finish)
+							args := string(tc.Arguments)
+							argChunks := toolArgsChunks(args, 512)
+							for ci, argChunk := range argChunks {
+								isLastArgChunk := ci == len(argChunks)-1
+								var finish any
+								if isLast && isLastArgChunk {
+									finish = "tool_calls"
 								}
+								_ = writeRecChunk(map[string]any{"tool_calls": []any{map[string]any{"index": i, "function": map[string]any{"arguments": argChunk}}}}, finish)
+							}
 								if len(args) == 0 && isLast {
 									_ = writeRecChunk(map[string]any{}, "tool_calls")
 								}
@@ -5507,7 +5474,7 @@ func truncatedError(err error) string {
 	}
 	s := err.Error()
 	if len(s) > 400 {
-		s = s[:400]
+		s = runeSafeTruncate(s, 400)
 	}
 	return s
 }
