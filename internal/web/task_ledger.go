@@ -29,22 +29,29 @@ import (
 //	retired_goal_ids — finished goal ids whose replayed evidence must be ignored
 //	status           — lifecycle state (empty = active, complete/blocked/paused)
 type taskLedger struct {
-	OriginalGoal    string          `json:"original_goal,omitempty"`
-	Constraints     []string        `json:"constraints,omitempty"`
-	Executed        []string        `json:"executed,omitempty"`
-	ToolResults     []toolEvidence  `json:"tool_results,omitempty"`
-	Remaining       []string        `json:"remaining,omitempty"`
-	AccountID       string          `json:"account_id,omitempty"`
-	ConversationID  string          `json:"conversation_id,omitempty"`
-	SessionID       string          `json:"session_id,omitempty"`
-	Failures        []string        `json:"failures,omitempty"`
-	Switches        []string        `json:"switches,omitempty"`
-	GoalID          string          `json:"goal_id,omitempty"`
-	RetiredGoalIDs  map[string]bool `json:"retired_goal_ids,omitempty"`
-	Status          string          `json:"status,omitempty"`
-	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
-	CompletedReason string          `json:"completed_reason,omitempty"`
-	UpdatedAt       time.Time       `json:"updated_at,omitempty"`
+	OriginalGoal   string          `json:"original_goal,omitempty"`
+	Constraints    []string        `json:"constraints,omitempty"`
+	Executed       []string        `json:"executed,omitempty"`
+	ToolResults    []toolEvidence  `json:"tool_results,omitempty"`
+	Remaining      []string        `json:"remaining,omitempty"`
+	AccountID      string          `json:"account_id,omitempty"`
+	ConversationID string          `json:"conversation_id,omitempty"`
+	SessionID      string          `json:"session_id,omitempty"`
+	Failures       []string        `json:"failures,omitempty"`
+	Switches       []string        `json:"switches,omitempty"`
+	GoalID         string          `json:"goal_id,omitempty"`
+	RetiredGoalIDs map[string]bool `json:"retired_goal_ids,omitempty"`
+	// ContentCleared marks a completed ledger whose transient content was wiped
+	// after the CLIENT goal closed (see clearAfterClientGoalClosed). The
+	// completed objective is deliberately KEPT: maybeRotateGoal compares round
+	// objectives against it, and without it a replay of the finished goal's own
+	// rounds would re-open the ledger as a "new" objective. Only the prompt
+	// injections honor the flag — a cleared ledger renders no context.
+	ContentCleared  bool       `json:"content_cleared,omitempty"`
+	Status          string     `json:"status,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	CompletedReason string     `json:"completed_reason,omitempty"`
+	UpdatedAt       time.Time  `json:"updated_at,omitempty"`
 }
 
 // Goal lifecycle states. The empty status means "active" (an open goal); the
@@ -156,7 +163,7 @@ func (t *taskLedger) Context() string {
 // wrong instruction — the model obeys it, restates the outcome as text, the
 // goal stays open and the harness re-injects another round of the same.
 func (t *taskLedger) contextForClientGoal(clientGoalOpen bool) string {
-	if t == nil || t.OriginalGoal == "" && len(t.Executed) == 0 && len(t.ToolResults) == 0 {
+	if t == nil || t.ContentCleared || t.hasNoLedgerContent() {
 		return ""
 	}
 	var b strings.Builder
@@ -337,6 +344,51 @@ func (t *taskLedger) IsComplete() bool {
 	return t != nil && t.Status == taskStatusComplete
 }
 
+// hasNoLedgerContent reports whether the ledger carries no prompt-injectable
+// content (goal text, executed steps or tool evidence). A completed ledger
+// reaches this state only through clearAfterClientGoalClosed; a fresh active
+// ledger is also empty until the first goal round records evidence.
+func (t *taskLedger) hasNoLedgerContent() bool {
+	return t.OriginalGoal == "" && len(t.Executed) == 0 && len(t.ToolResults) == 0
+}
+
+// clearAfterClientGoalClosed wipes the transient task content once the CLIENT
+// goal is closed (the harness's <goal_complete> block or the client's own
+// update_goal(action=complete) call) and the server ledger is complete. From
+// then on no remaining flow needs the constraints, execution history or
+// evidence: the closure rounds are over, so injecting the completed ledger
+// into later requests ("state the recorded outcome and stop") only made the
+// model open its answer to a NEW task in the same conversation with the
+// previous goal's closing summary. After the clear, contextForClientGoal and
+// goalRoundInjectedContext render nothing and later requests carry no trace of
+// the finished goal.
+//
+// The terminal fields stay — OriginalGoal (the completed objective, kept so
+// maybeRotateGoal still tells a replay of this goal's own rounds apart from a
+// genuinely new chained objective), status, goal id, retired goal ids,
+// completion reason and timestamp — together with the account / conversation /
+// session bindings. The ContentCleared flag, not the missing objective, is
+// what suppresses the injections.
+//
+// It must NEVER be called while the client goal is still open: the closure
+// rounds need the full content, because the CLIENT_GOAL: OPEN injection drives
+// the client's get_goal + update_goal(action=complete) call. Clearing there
+// would recreate the closure spin (text-only summaries, harness re-injection,
+// blocked(round-limit)).
+func (t *taskLedger) clearAfterClientGoalClosed() {
+	if t == nil || t.Status != taskStatusComplete {
+		return
+	}
+	t.ContentCleared = true
+	t.Constraints = nil
+	t.Executed = nil
+	t.ToolResults = nil
+	t.Remaining = nil
+	t.Failures = nil
+	t.Switches = nil
+	t.UpdatedAt = time.Now().UTC()
+}
+
 // adoptNewGoal registers a goal id that differs from the tracked one — either
 // the first registration of this session's goal or a second goal chained into
 // the session. The ledger is re-opened and the create_goal objective (when the
@@ -359,6 +411,7 @@ func (t *taskLedger) adoptNewGoal(goalID, objective string) {
 	t.Status = ""
 	t.CompletedAt = nil
 	t.CompletedReason = ""
+	t.ContentCleared = false
 	t.Remaining = nil
 	t.UpdatedAt = time.Now().UTC()
 }
@@ -440,6 +493,7 @@ func (t *taskLedger) rotateToGoal(objective string) {
 	t.Status = ""
 	t.CompletedAt = nil
 	t.CompletedReason = ""
+	t.ContentCleared = false
 	t.Remaining = nil
 	t.UpdatedAt = time.Now().UTC()
 }
@@ -951,7 +1005,7 @@ func goalRoundCounter(messages []oaiMsg) (int, int, bool) {
 // what makes the model answer with a text-only "goal complete and closed"
 // summary forever while the harness re-injects goal rounds.
 func (t *taskLedger) goalRoundInjectedContext(messages []oaiMsg) string {
-	if t == nil || !t.IsComplete() {
+	if t == nil || !t.IsComplete() || t.ContentCleared || t.hasNoLedgerContent() {
 		return ""
 	}
 	if objective := latestGoalRoundObjective(messages); objective != "" && !sameGoalObjective(objective, t.OriginalGoal) {

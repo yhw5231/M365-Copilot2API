@@ -2845,6 +2845,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// model answers with a text-only closing summary while the harness keeps
 	// re-injecting the same goal round (the closure spin).
 	clientGoalOpen := task != nil && task.IsComplete() && !clientGoalClosed(body.Messages, task)
+	// The completed ledger's only remaining job is steering the closure rounds
+	// while the CLIENT goal is still open (that context drives get_goal +
+	// update_goal(action=complete)). Once the client itself closed the goal —
+	// the harness's <goal_complete> block or its own update_goal(complete)
+	// call — the old objective and evidence must not keep riding along: the
+	// ledger is injected into every request of the session, so a plain
+	// continuation message made the model open its answer to a NEW task with
+	// the previous goal's closing summary. Clear now; the injections below
+	// render nothing for an empty ledger.
+	if task != nil && task.IsComplete() && !clientGoalOpen {
+		task.clearAfterClientGoalClosed()
+	}
 	answerPrompt = withTaskLedgerFor(answerPrompt, task, clientGoalOpen)
 	prompt = withTaskLedgerFor(prompt, task, clientGoalOpen)
 	// When the goal is already complete and the client sends a continuation
