@@ -4,12 +4,7 @@ package web
 
 import (
 	"fmt"
-	"io"
-	"log"
-	"net/http"
 	"os"
-	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -111,18 +106,18 @@ var (
 	dynamicAt    time.Time
 )
 
+// knownUpstreamTones is the built-in fallback set, offered until a refresh
+// reads the live list from the upstream app (see fetchUpstreamModels).
 func knownUpstreamTones() []string {
 	return []string{"Gpt_5_2_Chat", "Gpt_5_2_Reasoning", "Gpt_5_3_Chat", "Gpt_5_3_Reasoning", "Gpt_5_4_Chat", "Gpt_5_4_Reasoning", "Gpt_5_5_Chat", "Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning", "Claude_Sonnet", "Claude_Sonnet_Reasoning"}
 }
 
+// liveUpstreamTones returns the upstream model list from the last successful
+// refresh, falling back to the built-in set. Refreshing is explicit (the
+// routing console button calls it), so this never touches the network.
 func liveUpstreamTones() []string {
 	dynamicMu.RLock()
-	if dynamicAt.IsZero() || time.Since(dynamicAt) > 24*time.Hour {
-		dynamicMu.RUnlock()
-		go syncUpstreamTones()
-		dynamicMu.RLock()
-	}
-	t := dynamicTones
+	t := append([]string(nil), dynamicTones...)
 	dynamicMu.RUnlock()
 	if len(t) > 0 {
 		return t
@@ -130,51 +125,23 @@ func liveUpstreamTones() []string {
 	return knownUpstreamTones()
 }
 
-func syncUpstreamTones() {
-	tones := fetchUpstreamTones()
+// cacheUpstreamTones records the outcome of a successful refresh.
+func cacheUpstreamTones(tones []string) {
 	if len(tones) == 0 {
 		return
 	}
 	dynamicMu.Lock()
-	dynamicTones = tones
+	dynamicTones = append([]string(nil), tones...)
 	dynamicAt = time.Now()
 	dynamicMu.Unlock()
-	log.Printf("synced %d upstream tones from CDN bundle", len(tones))
 }
 
-func fetchUpstreamTones() []string {
-	client := &http.Client{Timeout: 30 * time.Second}
-	pageURL := "https://m365.cloud.microsoft/"
-	resp, err := client.Get(pageURL)
-	if err != nil {
-		return nil
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	re := regexp.MustCompile(`main\.[a-f0-9]{8}\.js`)
-	m := re.FindString(string(body))
-	if m == "" {
-		return nil
-	}
-	bundleURL := "https://res.public.onecdn.static.microsoft/midgard/versionless-v2/" + m
-	resp2, err := client.Get(bundleURL)
-	if err != nil {
-		return nil
-	}
-	bundle, _ := io.ReadAll(resp2.Body)
-	resp2.Body.Close()
-	toneRe := regexp.MustCompile(`(?:Gpt_[0-9]_[0-9]_[A-Za-z_]+|Claude_[A-Za-z0-9_]+|Magic)`)
-	matches := toneRe.FindAllString(string(bundle), -1)
-	seen := map[string]bool{}
-	for _, t := range matches {
-		seen[t] = true
-	}
-	result := make([]string, 0, len(seen))
-	for t := range seen {
-		result = append(result, t)
-	}
-	sort.Strings(result)
-	return result
+// upstreamTonesSyncedAt reports when the list was last refreshed; the zero time
+// means it never was.
+func upstreamTonesSyncedAt() time.Time {
+	dynamicMu.RLock()
+	defer dynamicMu.RUnlock()
+	return dynamicAt
 }
 
 func configuredModelMapping(model string, mappings []modelMapping) (modelMapping, bool) {

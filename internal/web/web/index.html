@@ -852,8 +852,11 @@ if (response.output_text) {
         </div>
         <div class="tab-pane" id="pane-settings-routing" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <div><h2 style="font-size:18px;font-weight:700">Model routing</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Enable or disable model routes and set each model's default reasoning level. Disabled models are hidden from the model list and rejected at request time.</p></div>
+          <div><h2 style="font-size:18px;font-weight:700">Model routing</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Enable or disable model routes and set each model's default reasoning level. Disabled models are hidden from the model list and rejected at request time.</p><p style="font-size:12px;color:var(--muted);margin-top:2px">Refresh upstream models re-reads the upstream model list, adds new models and removes models the upstream no longer offers.</p></div>
+          <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn" data-action="refresh-upstream-models" title="Refresh upstream models re-reads the upstream model list, adds new models and removes models the upstream no longer offers."><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> Refresh upstream models</button>
           <button class="btn primary" data-action="save-model-routes"><i data-lucide="save" style="width:14px;height:14px"></i> Save model routing</button>
+          </div>
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Model routes</span><span style="font-size:11px;color:var(--muted)">Models route by mapping name; the mapping's tone is sent to the upstream (ChatHub).</span><button class="btn btn-sm" data-action="add-model-route-row"><i data-lucide="plus" style="width:13px;height:13px"></i> Add model</button></div>
@@ -1180,6 +1183,10 @@ const localeText={
   'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
   'Save model routing': {'zh-CN':'保存模型路由','zh-TW':'儲存模型路由','ja':'モデルルーティングを保存','ko':'모델 라우팅 저장','es':'Guardar enrutamiento','fr':'Enregistrer le routage','de':'Routing speichern','pt-BR':'Salvar roteamento','ru':'Сохранить маршрутизацию','ar':'حفظ التوجيه'},
   'Model routing saved': {'zh-CN':'模型路由已保存','zh-TW':'模型路由已儲存','ja':'モデルルーティングを保存しました','ko':'모델 라우팅이 저장되었습니다','es':'Enrutamiento guardado','fr':'Routage enregistré','de':'Routing gespeichert','pt-BR':'Roteamento salvo','ru':'Маршрутизация сохранена','ar':'تم حفظ التوجيه'},
+  'Refresh upstream models': {'zh-CN':'重新拉取上游模型','zh-TW':'重新拉取上游模型','ja':'アップストリームモデルを再取得','ko':'업스트림 모델 다시 가져오기','es':'Actualizar modelos del proveedor','fr':'Actualiser les modèles du fournisseur','de':'Upstream-Modelle aktualisieren','pt-BR':'Atualizar modelos do provedor','ru':'Обновить модели провайдера','ar':'تحديث نماذج المنبع'},
+  'Refresh upstream models re-reads the upstream model list, adds new models and removes models the upstream no longer offers.': {'zh-CN':'重新拉取上游模型会重新读取上游模型列表，新增上游推出的新模型，并移除上游已不再提供的模型。','zh-TW':'重新拉取上游模型會重新讀取上游模型清單，新增上游推出的新模型，並移除上游已不再提供的模型。','ja':'アップストリームモデルの再取得では、上流のモデル一覧を読み直し、新しいモデルを追加し、上流が提供しなくなったモデルを削除します。','ko':'업스트림 모델 다시 가져오기는 업스트림 모델 목록을 다시 읽어 새 모델을 추가하고 업스트림이 더 이상 제공하지 않는 모델을 제거합니다.','es':'Actualizar modelos del proveedor vuelve a leer la lista, añade los modelos nuevos y elimina los que el proveedor ya no ofrece.','fr':'Actualiser les modèles du fournisseur relit la liste, ajoute les nouveaux modèles et supprime ceux que le fournisseur ne propose plus.','de':'Upstream-Modelle aktualisieren liest die Liste neu ein, ergänzt neue Modelle und entfernt Modelle, die der Upstream nicht mehr anbietet.','pt-BR':'Atualizar modelos do provedor relê a lista, adiciona os novos modelos e remove os que o provedor não oferece mais.','ru':'Обновить модели провайдера заново читает список, добавляет новые модели и удаляет те, которые провайдер больше не предлагает.','ar':'تحديث نماذج المنبع يعيد قراءة القائمة ويضيف النماذج الجديدة ويحذف النماذج التي لم يعد المنبع يوفرها.'},
+  'Refreshing…': {'zh-CN':'正在拉取…','zh-TW':'正在拉取…','ja':'再取得中…','ko':'가져오는 중…','es':'Actualizando…','fr':'Actualisation…','de':'Aktualisiere…','pt-BR':'Atualizando…','ru':'Обновление…','ar':'جارٍ التحديث…'},
+  'Failed to refresh the upstream model list': {'zh-CN':'拉取上游模型列表失败','zh-TW':'拉取上游模型清單失敗','ja':'上流モデル一覧の再取得に失敗しました','ko':'업스트림 모델 목록을 가져오지 못했습니다','es':'No se pudo actualizar la lista de modelos del proveedor','fr':'Échec de l’actualisation de la liste des modèles du fournisseur','de':'Upstream-Modellliste konnte nicht aktualisiert werden','pt-BR':'Falha ao atualizar a lista de modelos do provedor','ru':'Не удалось обновить список моделей провайдера','ar':'فشل تحديث قائمة نماذج المنبع'},
   'No models available': {'zh-CN':'没有可用模型','zh-TW':'沒有可用模型','ja':'利用可能なモデルがありません','ko':'사용 가능한 모델이 없습니다','es':'No hay modelos disponibles','fr':'Aucun modèle disponible','de':'Keine Modelle verfügbar','pt-BR':'Nenhum modelo disponível','ru':'Нет доступных моделей','ar':'لا توجد نماذج متاحة'},
   '创建 API 密钥': {'zh-CN':'创建 API 密钥','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
   'You can view or copy this key again from the key list. Store it securely.': {'zh-CN':'完整密钥可在密钥列表中随时查看或复制，请妥善保存','zh-TW':'完整金鑰可在金鑰清單中隨時檢視或複製，請妥善保存','ja':'完全なキーはキー一覧からいつでも表示・コピーできます。安全に保管してください。','ko':'전체 키는 키 목록에서 언제든지 확인하거나 복사할 수 있습니다. 안전하게 보관하세요.','es':'Puede volver a ver o copiar esta clave desde la lista de claves. Guárdela de forma segura.','fr':'Vous pouvez réafficher ou copier cette clé depuis la liste des clés. Conservez-la en lieu sûr.','de':'Sie können diesen Schlüssel jederzeit aus der Schlüsselliste erneut anzeigen oder kopieren. Bewahren Sie ihn sicher auf.','pt-BR':'Você pode ver ou copiar esta chave novamente na lista de chaves. Guarde-a com segurança.','ru':'Вы можете снова просмотреть или скопировать этот ключ из списка ключей. Храните его безопасно.','ar':'يمكنك عرض هذا المفتاح أو نسخه مرة أخرى من قائمة المفاتيح. احفظه بأمان.'},
@@ -1345,6 +1352,9 @@ function translateDynamic(value,locale){
     m=value.match(/^in(\d+)\/out(\d+)\/cache(\d+)$/);if(m)return '入'+m[1]+'/出'+m[2]+'/缓'+m[3];
     m=value.match(/^Page (\d+) \/ (\d+) · (\d+) total$/);if(m)return '第 '+m[1]+' / '+m[2]+' 页 · 共 '+m[3]+' 条';
     m=value.match(/^Added (\d+) proxies$/);if(m)return '已添加 '+m[1]+' 个代理';
+    m=value.match(/^Upstream model list refreshed: (\d+) available models, (\d+) added, (\d+) removed$/);if(m)return '已强制更新上游模型列表：可用模型 '+m[1]+' 个，新增 '+m[2]+' 个，移除 '+m[3]+' 个';
+    m=value.match(/^Upstream model list refreshed: (\d+) available models, (\d+) added, (\d+) removed, (\d+) kept but unavailable$/);if(m)return '已强制更新上游模型列表：可用模型 '+m[1]+' 个，新增 '+m[2]+' 个，移除 '+m[3]+' 个；另有 '+m[4]+' 个已失效但仍被路由引用，已保留';
+    m=value.match(/^Failed to refresh the upstream model list: (.+)$/);if(m)return '拉取上游模型列表失败：'+m[1];
     m=value.match(/^Connection healthy: (\d+(?:\.\d+)?) ms$/);if(m)return '连通正常：'+m[1]+' 毫秒';
     m=value.match(/^Connection healthy: (.+)$/);if(m)return '连通正常：'+m[1];
     m=value.match(/^(\d+) ms$/);if(m)return m[1]+' 毫秒';
@@ -1378,6 +1388,9 @@ function translateDynamic(value,locale){
     m=value.match(/^入(\d+)\/出(\d+)\/缓(\d+)$/);if(m)return 'in'+m[1]+'/out'+m[2]+'/cache'+m[3];
     m=value.match(/^第 (\d+) \/ (\d+) 页 · 共 (\d+) 条$/);if(m)return 'Page '+m[1]+' / '+m[2]+' · '+m[3]+' total';
     m=value.match(/^已添加 (\d+) 个代理$/);if(m)return 'Added '+m[1]+' proxies';
+    m=value.match(/^已强制更新上游模型列表：可用模型 (\d+) 个，新增 (\d+) 个，移除 (\d+) 个$/);if(m)return 'Upstream model list refreshed: '+m[1]+' available models, '+m[2]+' added, '+m[3]+' removed';
+    m=value.match(/^已强制更新上游模型列表：可用模型 (\d+) 个，新增 (\d+) 个，移除 (\d+) 个；另有 (\d+) 个已失效但仍被路由引用，已保留$/);if(m)return 'Upstream model list refreshed: '+m[1]+' available models, '+m[2]+' added, '+m[3]+' removed, '+m[4]+' kept but unavailable';
+    m=value.match(/^拉取上游模型列表失败：(.+)$/);if(m)return 'Failed to refresh the upstream model list: '+m[1];
     m=value.match(/^连通正常：(\d+(?:\.\d+)?) 毫秒$/);if(m)return 'Connection healthy: '+m[1]+' ms';
     m=value.match(/^连通正常：(.+)$/);if(m)return 'Connection healthy: '+m[1];
     m=value.match(/^(\d+) 毫秒$/);if(m)return m[1]+' ms';
@@ -1509,6 +1522,7 @@ document.addEventListener('click',e=>{
     case 'toggle-admin-password': toggleAdminPassword(target); break;
     case 'open-auth-url': openAuthUrl(); break;
     case 'save-model-routes': saveModelRoutes(); break;
+    case 'refresh-upstream-models': refreshUpstreamModels(target); break;
     case 'add-model-route-row': addModelRouteRow(); break;
     case 'save-content-filter': saveContentFilter(); break;
     case 'add-content-filter-row': addContentFilterRow(); break;
@@ -3470,6 +3484,10 @@ function toggleAdminPassword(btn){
 }
 
 let routeMappings=[],routeLevels=[],routeCodexModels=[];
+// Mapping names added from the console in this session. A refresh force-updates
+// the mapping set from the upstream list, which does not know about them yet —
+// they are kept in the picker until the route table is saved.
+let pendingMappingNames=new Set();
 function escAttr(s){return esc(String(s==null?'':s)).replace(/"/g,'&quot;');}
 // The upstream-mapping picker is a real <select> fed from the full upstream
 // list the server returns. A text input + <datalist> is unusable here: the
@@ -3478,14 +3496,26 @@ function escAttr(s){return esc(String(s==null?'':s)).replace(/"/g,'&quot;');}
 // whole upstream set. The select keeps the row's current value visible even
 // when it is not (yet) part of the persisted mapping list.
 function upstreamMapSelect(current){
+  return '<select class="form-input" style="min-width:150px" data-f="upstreamMapping" data-action="create-new-mapping">'+upstreamMapOptions(current)+'</select>';
+}
+// Rebuilds the option list of every row's picker from routeMappings while
+// keeping each row's current selection, so refreshing the upstream list never
+// discards unsaved edits in the routing table.
+function refreshUpstreamMapSelects(){
+  document.querySelectorAll('#modelRouteRows select[data-f="upstreamMapping"]').forEach(sel=>{
+    const cur=sel.value;
+    sel.innerHTML=upstreamMapOptions(cur);
+    sel.value=cur;
+  });
+}
+function upstreamMapOptions(current){
   const cur=current||'';
-  let html='<select class="form-input" style="min-width:150px" data-f="upstreamMapping" data-action="create-new-mapping">';
+  let html='';
   if(!routeMappings.some(m=>m.name===cur)){
     html+='<option value="'+escAttr(cur)+'" selected>'+(cur?esc(cur):'— Select mapping —')+'</option>';
   }
   html+=routeMappings.map(m=>'<option value="'+escAttr(m.name)+'"'+(cur===m.name?' selected':'')+'>'+esc(m.name)+'</option>').join('');
   html+='<option value="__new__">+ New mapping…</option>';
-  html+='</select>';
   return html;
 }
 // The select above carries a "+ New mapping…" entry so new upstream targets
@@ -3499,6 +3529,7 @@ function createNewMapping(sel){
   if(!/^[A-Za-z0-9._ -]{1,128}$/.test(name)){showNotice('Invalid mapping name: only letters, digits, dots, underscores, spaces and hyphens, max 128 characters','error');sel.value='';return;}
   if(routeMappings.some(m=>m.name.toLowerCase()===name.toLowerCase())){sel.value=name;return;}
   routeMappings.push({name,tone:name,enabled:true});
+  pendingMappingNames.add(name);
   sel.insertAdjacentHTML('beforeend','<option value="'+escAttr(name)+'" selected>'+esc(name)+'</option>');
   sel.value=name;
 }
@@ -3524,6 +3555,7 @@ async function loadSettings(){
     }
     routeCodexModels=d.codexModels||[];
     routeMappings=(d.upstreamMappings&&d.upstreamMappings.length)?d.upstreamMappings:((d.upstreamTones||[]).map(t=>({name:t,tone:t,enabled:true})));
+    pendingMappingNames=new Set();
     routeLevels=(d.reasoningLevels||[]).map(x=>x&&x.effort).filter(Boolean);
     renderModelRoutes(d.catalogModels||[]);
     renderContentFilter(s.contentFilterEnabled,s.contentFilterOpeningBuffer,s.contentFilterRules||[]);
@@ -3690,6 +3722,58 @@ async function saveModelRoutes(){
     showNotice('Model routing saved','success');
     loadSettings();
   }catch(e){showNotice(e.message,'error');}
+}
+// Names the refresh found that the picker does not offer yet are appended with
+// tone = name (the mapping name is what the gateway sends upstream); existing
+// entries keep their tone, enabled switch and order.
+function mergeUpstreamMappingNames(list,names){
+  const out=(list||[]).slice();
+  const seen=new Set(out.map(m=>String(m.name||'').toLowerCase()));
+  (names||[]).forEach(n=>{
+    const name=String(n||'').trim();
+    if(!name)return;
+    const key=name.toLowerCase();
+    if(seen.has(key))return;
+    seen.add(key);
+    out.push({name,tone:name,enabled:true});
+  });
+  return out;
+}
+// Force-updates the upstream model list: the server re-reads what the upstream
+// currently offers and rewrites the mapping set from it (new models added,
+// vanished ones deleted, mappings a route still uses kept and reported). The
+// picker then shows exactly that list, plus mapping names added in this console
+// session that are not saved yet.
+async function refreshUpstreamModels(btn){
+  if(btn&&btn.disabled)return;
+  const label=btn?btn.innerHTML:'';
+  if(btn){
+    btn.disabled=true;
+    btn.innerHTML='<i data-lucide="loader-circle" style="width:14px;height:14px"></i> Refreshing…';
+    try{lucide.createIcons();}catch(e){}
+  }
+  try{
+    const d=await api('/api/admin/models/sync',{method:'POST'});
+    const models=(d.upstream_tones||[]).filter(Boolean);
+    const added=(d.added||[]).length, removed=(d.removed||[]).length, unavailable=(d.unavailable||[]).length;
+    const remote=(d.upstreamMappings&&d.upstreamMappings.length)?d.upstreamMappings:null;
+    if(remote){
+      const keep=[...pendingMappingNames].filter(n=>!remote.some(m=>String(m.name).toLowerCase()===n.toLowerCase()));
+      routeMappings=mergeUpstreamMappingNames(remote,keep);
+    }else{
+      routeMappings=mergeUpstreamMappingNames(routeMappings,models);
+    }
+    refreshUpstreamMapSelects();
+    const base=`Upstream model list refreshed: ${models.length} available models, ${added} added, ${removed} removed`;
+    showNotice(unavailable?`${base}, ${unavailable} kept but unavailable`:base,unavailable?'info':'success');
+  }catch(e){showNotice(e.message||'Failed to refresh the upstream model list','error');}
+  finally{
+    if(btn){
+      btn.disabled=false;
+      btn.innerHTML=label;
+      try{lucide.createIcons();}catch(e){}
+    }
+  }
 }
 async function loadVersion(){
   const el=$('versionStatus');

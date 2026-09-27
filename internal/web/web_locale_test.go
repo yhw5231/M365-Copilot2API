@@ -103,3 +103,31 @@ func TestWebIndexIncludesEnhancedAccountManagement(t *testing.T) {
 		}
 	}
 }
+
+// 路由页的“重新拉取上游模型列表”：按钮 → /api/admin/models/sync → 用服务端强制更新后的
+// 映射清单刷新每行的上游映射下拉（保留本次会话里新增但尚未保存的映射名）。
+func TestWebIndexIncludesUpstreamModelRefresh(t *testing.T) {
+	body, err := os.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(body)
+	for _, needle := range []string{
+		`data-action="refresh-upstream-models"`,
+		`case 'refresh-upstream-models': refreshUpstreamModels(target); break;`,
+		`async function refreshUpstreamModels(btn)`,
+		`/api/admin/models/sync`,
+		`function refreshUpstreamMapSelects()`,
+		`function mergeUpstreamMappingNames(list,names)`,
+		`let pendingMappingNames=new Set();`,
+		`pendingMappingNames.add(name);`,
+		`const keep=[...pendingMappingNames].filter(`,
+		`const added=(d.added||[]).length, removed=(d.removed||[]).length, unavailable=(d.unavailable||[]).length;`,
+		`'Refresh upstream models': {'zh-CN':'重新拉取上游模型',`,
+		`Upstream model list refreshed: `,
+	} {
+		if !strings.Contains(page, needle) {
+			t.Fatalf("web index missing upstream model refresh marker %q", needle)
+		}
+	}
+}

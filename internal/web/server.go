@@ -1901,15 +1901,58 @@ func (s *Server) recoverRequiredToolMisjudgment(
 	return nil, chathub.Result{}, false
 }
 
+// adminModelSync force-updates the upstream model list: it re-reads the models
+// the upstream currently offers for this account and rewrites the upstream
+// mapping set from it — new models are appended, models that disappeared are
+// deleted, and mappings a model route still points at are kept (reported as
+// unavailable) because a route referencing a missing mapping cannot be saved.
 func (s *Server) adminModelSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	syncUpstreamTones()
-	tones := liveUpstreamTones()
-	jsonOut(w, map[string]any{"synced": true, "upstream_tones": tones, "count": len(tones)})
+	ctx, cancel := context.WithTimeout(r.Context(), upstreamSyncTimeout)
+	defer cancel()
+	started := time.Now()
+	models, err := upstreamModelFetcher(ctx, s)
+	if err != nil {
+		log.Printf("[model-sync] upstream model list refresh failed after %s: %v", time.Since(started).Round(time.Millisecond), err)
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "拉取上游模型列表失败："+err.Error())
+		return
+	}
+	cacheUpstreamTones(models)
+
+	cur := s.settings.get()
+	merged, added, removed, unavailable := syncUpstreamMappings(
+		effectiveUpstreamMappings(cur.UpstreamMappings), models, referencedMappingNames(cur.ModelMappings))
+	if len(added) > 0 || len(removed) > 0 {
+		next := cur
+		next.UpstreamMappings = merged
+		if err := s.settings.save(next); err != nil {
+			log.Printf("[model-sync] fetched %d upstream models but persisting the mapping set failed: %v", len(models), err)
+			writeOpenAIError(w, http.StatusInternalServerError, "internal_error", "已拉取上游模型列表，但保存上游映射失败："+err.Error())
+			return
+		}
+	}
+	log.Printf("[model-sync] %d upstream models in %s (+%d/-%d, %d unavailable but in use)",
+		len(models), time.Since(started).Round(time.Millisecond), len(added), len(removed), len(unavailable))
+	// Report empty lists as [] rather than null so clients can count them.
+	for _, list := range []*[]string{&added, &removed, &unavailable} {
+		if *list == nil {
+			*list = []string{}
+		}
+	}
+	jsonOut(w, map[string]any{
+		"synced":           true,
+		"upstream_tones":   models,
+		"count":            len(models),
+		"added":            added,
+		"removed":          removed,
+		"unavailable":      unavailable,
+		"upstreamMappings": merged,
+		"synced_at":        upstreamTonesSyncedAt().Format(time.RFC3339),
+	})
 }
 
 func (s *Server) adminModels(w http.ResponseWriter, r *http.Request) {
