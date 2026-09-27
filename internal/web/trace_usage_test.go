@@ -261,9 +261,21 @@ func TestUsageSnapshotFieldsAndBreakdownsStayConsistent(t *testing.T) {
 
 func TestAccountStatsNilLocationUsesSafeFallback(t *testing.T) {
 	now := time.Now()
+	// "One hour ago" crosses local midnight when the suite runs between
+	// 00:00 and 01:00, and the record then legitimately falls outside
+	// TodayTokens' day window (accountStats uses the +0800 day boundary).
+	// Clamp the sample into today so the assertion stays time-of-day
+	// independent.
+	recordAt := now.Add(-time.Hour)
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	localNow := now.In(loc)
+	todayStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
+	if recordAt.Before(todayStart) {
+		recordAt = now.Add(-time.Minute)
+	}
 	s := &usageLog{records: []UsageRecord{
 		{
-			Time:         now.Add(-time.Hour),
+			Time:         recordAt,
 			AccountEmail: "fallback@example.com",
 			InputTokens:  40,
 			CacheTokens:  60,
