@@ -39,6 +39,13 @@ func main() {
 		s.RefreshExpiredTokens()
 		log.Println("[token-refresh] background sweep finished")
 	}()
+	// The startup sweep above only covers accounts that are already expired at
+	// boot. A long-running gateway also needs to renew idle accounts: without a
+	// timer an account whose access token lapses between requests stays expired
+	// (and shows offline) until something happens to use it, and its refresh
+	// token eventually falls out of AAD's sliding window and needs a fresh
+	// authorization.
+	s.StartTokenRefreshLoop()
 	listen := "127.0.0.1:9090"
 	if v := os.Getenv("M365_LISTEN"); v != "" {
 		listen = v

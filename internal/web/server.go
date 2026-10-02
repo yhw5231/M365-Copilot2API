@@ -795,27 +795,29 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 	inflight, _ := concurrency["inflight"].(map[string]int)
 
 	type view struct {
-		ID                 string     `json:"id"`
-		Email              string     `json:"email"`
-		DisplayName        string     `json:"displayName,omitempty"`
-		Status             string     `json:"status"`
-		ScheduleEnabled    bool       `json:"scheduleEnabled"`
-		CallCount          int64      `json:"callCount"`
-		TodayTokens        int64      `json:"todayTokens"`
-		LastRequestAt      *time.Time `json:"lastRequestAt,omitempty"`
-		CurrentConcurrency int        `json:"currentConcurrency"`
-		MaxConcurrency     int        `json:"maxConcurrency"`
-		QueuePosition      int        `json:"queuePosition"`
-		RateLimited        bool       `json:"rateLimited"`
-		CooldownUntil      *time.Time `json:"cooldownUntil,omitempty"`
-		OID                string     `json:"oid,omitempty"`
-		TID                string     `json:"tid,omitempty"`
-		ExpiresAt          time.Time  `json:"expiresAt,omitempty"`
-		ImportedAt         time.Time  `json:"importedAt,omitempty"`
-		UpdatedAt          time.Time  `json:"updatedAt,omitempty"`
-		BoundProxy         string     `json:"boundProxy,omitempty"`
+		ID                 string             `json:"id"`
+		Email              string             `json:"email"`
+		DisplayName        string             `json:"displayName,omitempty"`
+		Status             string             `json:"status"`
+		ScheduleEnabled    bool               `json:"scheduleEnabled"`
+		CallCount          int64              `json:"callCount"`
+		TodayTokens        int64              `json:"todayTokens"`
+		LastRequestAt      *time.Time         `json:"lastRequestAt,omitempty"`
+		CurrentConcurrency int                `json:"currentConcurrency"`
+		MaxConcurrency     int                `json:"maxConcurrency"`
+		QueuePosition      int                `json:"queuePosition"`
+		RateLimited        bool               `json:"rateLimited"`
+		CooldownUntil      *time.Time         `json:"cooldownUntil,omitempty"`
+		OID                string             `json:"oid,omitempty"`
+		TID                string             `json:"tid,omitempty"`
+		ExpiresAt          time.Time          `json:"expiresAt,omitempty"`
+		ImportedAt         time.Time          `json:"importedAt,omitempty"`
+		UpdatedAt          time.Time          `json:"updatedAt,omitempty"`
+		BoundProxy         string             `json:"boundProxy,omitempty"`
+		Refresh            *auth.RefreshState `json:"refresh,omitempty"`
 	}
 	out := make([]view, 0, len(list))
+	refreshStates := s.tokens.RefreshState()
 	for i, a := range list {
 		status := a.Status
 		var cooldownUntil *time.Time
@@ -840,6 +842,11 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			value := stat.LastRequestAt
 			lastRequestAt = &value
 		}
+		var refreshState *auth.RefreshState
+		if state, ok := refreshStates[a.ID]; ok {
+			copied := state
+			refreshState = &copied
+		}
 		out = append(out, view{
 			ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
 			Status: status, ScheduleEnabled: !a.ScheduleDisabled,
@@ -847,6 +854,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			CurrentConcurrency: inflight[a.ID], MaxConcurrency: limit, QueuePosition: i + 1,
 			RateLimited: rateLimited, CooldownUntil: cooldownUntil, OID: a.OID, TID: a.TID,
 			ExpiresAt: a.ExpiresAt, ImportedAt: a.ImportedAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
+			Refresh: refreshState,
 		})
 	}
 	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot(), "accountConcurrency": concurrency, "gatewayConcurrency": s.gatewayConcurrency.Snapshot(), "timeZone": cfg.TimeZone})
@@ -912,18 +920,24 @@ func (s *Server) tokenHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list := s.tokens.List()
+	refreshStates := s.tokens.RefreshState()
 	now := time.Now()
 	type entry struct {
-		ID        string    `json:"id"`
-		Email     string    `json:"email"`
-		Status    string    `json:"status"`
-		ExpiresAt time.Time `json:"expires_at"`
-		Expired   bool      `json:"expired"`
-		ExpiresIn string    `json:"expires_in"`
+		ID        string             `json:"id"`
+		Email     string             `json:"email"`
+		Status    string             `json:"status"`
+		ExpiresAt time.Time          `json:"expires_at"`
+		Expired   bool               `json:"expired"`
+		ExpiresIn string             `json:"expires_in"`
+		Refresh   *auth.RefreshState `json:"refresh,omitempty"`
 	}
 	out := make([]entry, 0, len(list))
 	for _, a := range list {
 		e := entry{ID: a.ID, Email: a.Email, Status: a.Status, ExpiresAt: a.ExpiresAt}
+		if state, ok := refreshStates[a.ID]; ok {
+			copied := state
+			e.Refresh = &copied
+		}
 		if now.After(a.ExpiresAt) {
 			e.Expired = true
 			e.ExpiresIn = "expired"

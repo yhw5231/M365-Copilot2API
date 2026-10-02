@@ -88,7 +88,39 @@ type Store struct {
 	data     Cache
 	nextIdx  int
 	inflight map[string]*inflightRefresh
+	// refreshFailures tracks consecutive background-refresh failures per
+	// account. A transient token-endpoint outage backs off exponentially
+	// instead of hammering AAD every interval, and an account that needs a
+	// fresh authorization is not retried every sweep.
+	refreshFailures map[string]*refreshFailure
 }
+
+// refreshFailure is the in-memory backoff state of one account's refresh
+// attempts. It is deliberately not persisted: a restart is itself a fresh
+// signal to try again, and a stale permanent flag must not outlive the
+// re-authorization that fixed it.
+type refreshFailure struct {
+	Failures    int
+	LastAttempt time.Time
+	NextAttempt time.Time
+	Permanent   bool
+	LastError   string
+}
+
+// Background refresh backoff bounds. A transient failure (network, 5xx,
+// throttling) retries with exponential backoff; an account whose refresh token
+// is gone is parked for much longer because only a new authorization can fix
+// it.
+const (
+	refreshBackoffBase      = 5 * time.Minute
+	refreshBackoffMax       = 30 * time.Minute
+	refreshPermanentBackoff = 6 * time.Hour
+)
+
+// refreshToken redeems an account refresh token. It is a package variable so
+// tests can drive the whole refresh path (classification, backoff, status)
+// without a live AAD endpoint.
+var refreshToken = Refresh
 
 // inflightRefresh coalesces concurrent EnsureValid refreshes for the same
 // account: AAD refresh tokens can only be redeemed once, so a stampede of
@@ -141,10 +173,11 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("create accounts directory %q: %w", dir, err)
 	}
 	s := &Store{
-		dir:   dir,
-		files: map[string]string{},
-		taken: map[string]string{},
-		data:  Cache{Accounts: []AccountToken{}},
+		dir:             dir,
+		files:           map[string]string{},
+		taken:           map[string]string{},
+		data:            Cache{Accounts: []AccountToken{}},
+		refreshFailures: map[string]*refreshFailure{},
 	}
 	aead, err := tokenCipher()
 	if err != nil {
@@ -581,13 +614,22 @@ func (s *Store) Upsert(tok TokenSet) (AccountToken, error) {
 		UpdatedAt:    time.Now(),
 		OID:          firstNonEmpty(tok.HomeOID, id),
 		TID:          tok.TenantID,
-		ClientID:     ClientID(),
+		ClientID:     strings.TrimSpace(tok.ClientID),
+	}
+	if acc.ClientID == "" {
+		acc.ClientID = ClientID()
 	}
 	found := false
 	for i, existing := range s.data.Accounts {
 		if existing.ID == acc.ID || (acc.Email != "" && existing.Email == acc.Email) {
 			if acc.RefreshToken == "" {
 				acc.RefreshToken = existing.RefreshToken
+			}
+			// A refresh rotation carries no client id of its own: keep the one
+			// that issued the refresh token instead of silently rewriting a
+			// device-code account to the browser PKCE client.
+			if strings.TrimSpace(tok.ClientID) == "" && existing.ClientID != "" {
+				acc.ClientID = existing.ClientID
 			}
 			if acc.TID == "" {
 				acc.TID = existing.TID
@@ -789,16 +831,25 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 	if acc.ClientID == DeviceClientID() {
 		endpoint = DeviceTokenEndpoint()
 	}
-	tok, err := Refresh(acc.RefreshToken, acc.ClientID, endpoint)
+	tok, err := refreshToken(acc.RefreshToken, acc.ClientID, endpoint)
 	if err != nil {
+		// Only a token endpoint that says the grant is gone may mark the
+		// account expired. A network blip, a proxy reset or a 5xx used to be
+		// persisted as "expired" too, which is why a healthy account turned
+		// offline in the admin UI after a single failed refresh and stayed
+		// that way until something happened to retry it.
+		permanent := IsPermanentRefreshError(err)
 		s.mu.Lock()
-		for i, a := range s.data.Accounts {
-			if a.ID == acc.ID {
-				s.data.Accounts[i].Status = "expired"
-				_ = s.persistTokenFileLocked(s.data.Accounts[i])
-				break
+		if permanent {
+			for i, a := range s.data.Accounts {
+				if a.ID == acc.ID {
+					s.data.Accounts[i].Status = "expired"
+					_ = s.persistTokenFileLocked(s.data.Accounts[i])
+					break
+				}
 			}
 		}
+		s.recordRefreshFailureLocked(acc.ID, err, permanent)
 		s.mu.Unlock()
 		f.acc, f.err = acc, err
 	} else {
@@ -814,7 +865,13 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 		if tok.TenantID == "" {
 			tok.TenantID = acc.TID
 		}
+		if strings.TrimSpace(tok.ClientID) == "" {
+			tok.ClientID = acc.ClientID
+		}
 		f.acc, f.err = s.Upsert(tok)
+		if f.err == nil {
+			s.clearRefreshFailure(acc.ID)
+		}
 	}
 	close(f.done)
 	s.mu.Lock()
@@ -823,10 +880,78 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 	return f.acc, f.err
 }
 
-func fmtExpired() error {
-	return errors.New("token_expired: refresh token missing or expired")
+// recordRefreshFailureLocked advances the backoff window of one account. The
+// caller must hold s.mu.
+func (s *Store) recordRefreshFailureLocked(id string, err error, permanent bool) {
+	if s.refreshFailures == nil {
+		s.refreshFailures = map[string]*refreshFailure{}
+	}
+	f := s.refreshFailures[id]
+	if f == nil {
+		f = &refreshFailure{}
+		s.refreshFailures[id] = f
+	}
+	f.Failures++
+	f.LastAttempt = time.Now()
+	f.Permanent = permanent
+	f.LastError = err.Error()
+	if permanent {
+		f.NextAttempt = time.Now().Add(refreshPermanentBackoff)
+		return
+	}
+	backoff := refreshBackoffBase << (f.Failures - 1)
+	if backoff > refreshBackoffMax || backoff <= 0 {
+		backoff = refreshBackoffMax
+	}
+	f.NextAttempt = time.Now().Add(backoff)
 }
 
+func (s *Store) clearRefreshFailure(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.refreshFailures, id)
+}
+
+// RefreshState returns a copy of the per-account refresh backoff state for the
+// admin UI, so "offline" can be told apart from "retrying after a network
+// error" and from "needs re-authorization".
+func (s *Store) RefreshState() map[string]RefreshState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]RefreshState, len(s.refreshFailures))
+	for id, f := range s.refreshFailures {
+		out[id] = RefreshState{
+			Failures:    f.Failures,
+			LastAttempt: f.LastAttempt,
+			NextAttempt: f.NextAttempt,
+			Permanent:   f.Permanent,
+			LastError:   f.LastError,
+		}
+	}
+	return out
+}
+
+// RefreshState is a snapshot of one account's refresh backoff state.
+type RefreshState struct {
+	Failures    int       `json:"failures"`
+	LastAttempt time.Time `json:"lastAttempt,omitempty"`
+	NextAttempt time.Time `json:"nextAttempt,omitempty"`
+	Permanent   bool      `json:"permanent,omitempty"`
+	LastError   string    `json:"lastError,omitempty"`
+}
+
+// errTokenExpired is returned when an account cannot be refreshed at all
+// because it carries no refresh token (or the grant is gone). It is a sentinel
+// so callers can classify it as a permanent failure.
+var errTokenExpired = errors.New("token_expired: refresh token missing or expired")
+
+func fmtExpired() error {
+	return errTokenExpired
+}
+
+// RefreshAllExpired refreshes every account whose access token is already
+// expired. It ignores the failure backoff because its callers (startup and the
+// explicit admin refresh) are deliberate one-off sweeps rather than a timer.
 func (s *Store) RefreshAllExpired() []TokenRefreshResult {
 	s.mu.Lock()
 	candidates := make([]AccountToken, 0, len(s.data.Accounts))
@@ -836,13 +961,46 @@ func (s *Store) RefreshAllExpired() []TokenRefreshResult {
 		}
 	}
 	s.mu.Unlock()
-	var results []TokenRefreshResult
+	return s.refreshAccounts(candidates)
+}
+
+// RefreshDue renews every account whose access token expires within lead, plus
+// every account already expired, skipping the ones still inside a failure
+// backoff window. It is the timer-safe counterpart of RefreshAllExpired: an
+// idle gateway keeps its refresh tokens alive (AAD refresh tokens expire after
+// a sliding window of disuse) and a failing endpoint is not hammered.
+func (s *Store) RefreshDue(lead time.Duration) []TokenRefreshResult {
+	if lead < 0 {
+		lead = 0
+	}
+	s.mu.Lock()
+	now := time.Now()
+	candidates := make([]AccountToken, 0, len(s.data.Accounts))
+	for _, a := range s.data.Accounts {
+		if strings.TrimSpace(a.RefreshToken) == "" {
+			continue
+		}
+		if now.Before(a.ExpiresAt.Add(-lead)) {
+			continue
+		}
+		if f := s.refreshFailures[a.ID]; f != nil && now.Before(f.NextAttempt) {
+			continue
+		}
+		candidates = append(candidates, a)
+	}
+	s.mu.Unlock()
+	return s.refreshAccounts(candidates)
+}
+
+func (s *Store) refreshAccounts(candidates []AccountToken) []TokenRefreshResult {
+	results := make([]TokenRefreshResult, 0, len(candidates))
 	for _, a := range candidates {
 		acc, err := s.EnsureValid(a.ID)
 		r := TokenRefreshResult{ID: a.ID, Email: a.Email}
 		if err != nil {
 			r.Success = false
 			r.Error = err.Error()
+			r.Permanent = IsPermanentRefreshError(err) || errors.Is(err, errTokenExpired)
 		} else {
 			r.Success = true
 			r.ExpiresAt = acc.ExpiresAt
@@ -858,4 +1016,8 @@ type TokenRefreshResult struct {
 	Success   bool      `json:"success"`
 	Error     string    `json:"error,omitempty"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	// Permanent marks a failure that only a new authorization can fix, as
+	// opposed to a transient token-endpoint or network error that will be
+	// retried automatically.
+	Permanent bool `json:"permanent,omitempty"`
 }

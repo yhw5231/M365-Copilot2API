@@ -1147,6 +1147,8 @@ const localeText={
   'URL': {'zh-CN':'地址','zh-TW':'位址','ja':'URL','ko':'URL','es':'URL','fr':'URL','de':'URL','pt-BR':'URL','ru':'URL','ar':'العنوان'},
   'Failures': {'zh-CN':'失败次数','zh-TW':'失敗次數','ja':'失敗回数','ko':'실패 횟수','es':'Fallos','fr':'Échecs','de':'Fehlversuche','pt-BR':'Falhas','ru':'Сбои','ar':'مرات الفشل'},
   'Cooldown until': {'zh-CN':'冷却至','zh-TW':'冷卻至','ja':'クールダウンまで','ko':'쿨다운까지','es':'Enfriamiento hasta','fr':'Temps d\'attente jusqu\'à','de':'Abkühlung bis','pt-BR':'Resfriamento até','ru':'До окончания ожидания','ar':'حتى انتهاء التهدئة'},
+  'Needs re-authorization': {'en':'Needs re-authorization','zh-CN':'需重新授权','zh-TW':'需重新授權','ja':'再認証が必要','ko':'재인증 필요'},
+  'Refresh retrying': {'en':'Refresh retrying','zh-CN':'续期失败，稍后自动重试','zh-TW':'續期失敗，稍後自動重試','ja':'更新に失敗、後で再試行','ko':'갱신 실패, 나중에 재시도'},
   'Send a minimal request to each model to verify availability': {'zh-CN':'对各模型发送最小请求，验证可用性','zh-TW':'對各模型傳送最小要求，驗證可用性','ja':'各モデルに最小リクエストを送信して可用性を確認','ko':'각 모델에 최소 요청을 보내 가용성 확인','es':'Envíe una solicitud mínima a cada modelo para verificar su disponibilidad','fr':'Envoyez une requête minimale à chaque modèle pour vérifier la disponibilité','de':'Senden Sie eine minimale Anfrage an jedes Modell, um die Verfügbarkeit zu prüfen','pt-BR':'Envie uma solicitação mínima a cada modelo para verificar a disponibilidade','ru':'Отправьте минимальный запрос каждой модели для проверки доступности','ar':'أرسل طلبًا بسيطًا لكل نموذج للتحقق من توفره'},
   'Test all': {'zh-CN':'测试全部','zh-TW':'測試全部','ja':'すべてテスト','ko':'모두 테스트','es':'Probar todo','fr':'Tout tester','de':'Alle testen','pt-BR':'Testar tudo','ru':'Протестировать все','ar':'اختبار الكل'},
   'Reply': {'zh-CN':'回复','zh-TW':'回覆','ja':'返信','ko':'답변','es':'Respuesta','fr':'Réponse','de':'Antwort','pt-BR':'Resposta','ru':'Ответ','ar':'الرد'},
@@ -1974,6 +1976,14 @@ function renderAccounts(){
       cooldown.style.cssText='font-size:11px;color:var(--muted);margin-top:3px';
       cooldown.textContent=translateText('Cooldown until')+' '+formatSystemTime(x.cooldownUntil);
       statusTd.appendChild(cooldown);
+    }
+    if(x.refresh&&x.refresh.failures>0){
+      const note=document.createElement('div');
+      note.style.cssText='font-size:11px;margin-top:3px;color:'+(x.refresh.permanent?'#b9770e':'var(--muted)');
+      note.textContent=translateText(x.refresh.permanent?'Needs re-authorization':'Refresh retrying');
+      if(x.refresh.nextAttempt)note.textContent+=' · '+formatSystemTime(x.refresh.nextAttempt);
+      if(x.refresh.lastError)note.title=x.refresh.lastError;
+      statusTd.appendChild(note);
     }
 
     const scheduleTd=document.createElement('td');

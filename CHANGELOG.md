@@ -49,6 +49,30 @@
   只能用内置默认值；二是只扫脚本分片，分片里只有应用的通用 tone 表（GPT 5.2~5.4
   与 Claude 系列），新的 GPT 5.6 只出现在文档清单里，所以一直抓不到。
 
+### 修复
+
+- **闲置账号不再掉线：后台定时续期 + 刷新失败分类**。此前令牌续期只有两个触发点
+  ——进程启动时的一次性扫描和请求真正轮到某账号时的惰性刷新，没有任何定时器。
+  于是长期闲置的账号 access token 到期后无人续期，一直显示离线；更糟的是
+  `refreshInflight` 对**任何**刷新失败都落盘 `status=expired`，一次网络抖动、
+  代理超时或上游 5xx 就会把健康账号标记成离线，且只有等到有请求轮到它、重启
+  或手动刷新才会恢复。现在：
+  - 新增后台续期循环（`M365_TOKEN_REFRESH`，默认开启；周期
+    `M365_TOKEN_REFRESH_INTERVAL_SECONDS` 默认 300 秒，提前量
+    `M365_TOKEN_REFRESH_LEAD_SECONDS` 默认 300 秒），按到期时间主动续期，
+    让闲置账号保持在线，同时避免 refresh token 因长期不用滑出 AAD 的有效窗口。
+  - 刷新失败按类型区分：只有令牌端点明确判定为永久失效的响应
+    （`invalid_grant` / `invalid_client` / `unauthorized_client` /
+    `interaction_required` / `login_required` / `consent_required`）才标记
+    `expired`；传输类错误与 5xx 保持账号原状态，并按 5 分钟起指数退避重试
+    （上限 30 分钟），永久失效的账号退避 6 小时不再空转。
+  - `tokenHealth` 与账号列表新增 `refresh` 字段（失败次数、下次重试时间、是否
+    需重新授权、最后错误），控制台在离线徽标下显示「续期失败，稍后自动重试」
+    或「需重新授权」。
+  - 顺带修复：设备码（FOCI）账号刷新后被改写为浏览器 PKCE client id，导致后续
+    刷新一律 `invalid_grant`。`Upsert` 现在保留原 client id，仅在新授权显式
+    携带时才覆盖。
+
 ## [v0.5.1] - 2026-09-03
 
 ### 变更

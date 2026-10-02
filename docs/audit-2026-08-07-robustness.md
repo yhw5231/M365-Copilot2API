@@ -166,7 +166,8 @@ web 包失败用例（已复现，稳定失败）：
 
 ## 修复状态（2026-08-07 第二批后）
 
-- **[已修复] H4（token 刷新惊群）**：`internal/auth/cache.go` `refreshInflight` 按账号单飞合并，失败不再立即落盘 expired（waiters 阻塞共享 channel）。
+- **[已修复] H4（token 刷新惊群）**：`internal/auth/cache.go` `refreshInflight` 按账号单飞合并（waiters 阻塞共享 channel 复用胜者结果），不再出现并发兑换同一个一次性 refresh token 导致的惊群。
+  - **勘误（2026-10-02）**：原文"失败不再立即落盘 expired"并不成立——合并只消除了 waiters 各自兑换的问题，`refreshInflight` 的错误分支仍对**任何**失败落盘 `status=expired`，包括网络抖动、代理超时与上游 5xx。现已按错误类型区分：只有 `invalid_grant` / `invalid_client` / `interaction_required` 等令牌端点明确判定为永久失效的响应才标记 `expired`；传输类与 5xx 失败保持账号原状态，并进入指数退避（5 分钟起，上限 30 分钟）。
 - **[已修复] H2（SSE 写背压/悬挂）**：统一 `writeSSE`/`sseWriteFrame`/`sseDataRaw`/`sseSafeRaw`（`stream.go`/`protocol_response.go`），所有流式写路径写前检查 `r.Context().Err()`、写后检查错误并中止 handler；每次写前设 30s write deadline（抵消 `WriteTimeout: 0`）；server.go emitText/writeChunk/connected/DONE/错误帧全部走安全写。
 - **[已修复] H3（附件）**：SSRF 校验（`chathub/ssrf.go`）+ `maxAttachments = 10` + `/api/chat`、`/api/chat/stream` 10MiB body 限制。
 - **[已修复] M1（mcp 竞态/泄漏）**：provider 加锁、Dequeue 轮询、stdlib 接口、Close/setConnected 原子化。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"m365-copilot2api/internal/outbound"
@@ -33,6 +34,11 @@ type TokenSet struct {
 	DisplayName  string    `json:"display_name,omitempty"`
 	HomeOID      string    `json:"home_oid,omitempty"`
 	TenantID     string    `json:"tenant_id,omitempty"`
+	// ClientID records which OAuth client issued the refresh token. AAD binds a
+	// refresh token to its client (or its FOCI family), so the value must
+	// survive a token rotation: overwriting a device-code account with the
+	// browser PKCE client id made every later refresh fail with invalid_grant.
+	ClientID string `json:"client_id,omitempty"`
 }
 
 type tokenResponse struct {
@@ -49,15 +55,24 @@ type tokenResponse struct {
 }
 
 type OAuthError struct {
+	// Stage names the caller that hit the token endpoint (Refresh, ROPC, ...)
+	// so a refresh failure is still distinguishable from a code exchange in
+	// logs after the error became a typed value.
+	Stage         string
 	Code          string
 	AADSTS        string
+	Description   string
 	HTTPStatus    int
 	CorrelationID string
 	TraceID       string
 }
 
 func (e *OAuthError) Error() string {
-	parts := []string{e.Code}
+	parts := make([]string, 0, 4)
+	if e.Stage != "" {
+		parts = append(parts, e.Stage)
+	}
+	parts = append(parts, e.Code)
 	if e.AADSTS != "" {
 		parts = append(parts, e.AADSTS)
 	}
@@ -65,6 +80,60 @@ func (e *OAuthError) Error() string {
 		parts = append(parts, fmt.Sprintf("HTTP %d", e.HTTPStatus))
 	}
 	return strings.Join(parts, ": ")
+}
+
+// permanentRefreshCodes are token-endpoint OAuth error codes that mean the
+// refresh token can never be redeemed again: the grant expired, was revoked by
+// a password change or an admin action, or the client is no longer allowed to
+// use it. Retrying cannot help — the account needs a fresh authorization.
+var permanentRefreshCodes = map[string]bool{
+	"invalid_grant":        true,
+	"invalid_client":       true,
+	"unauthorized_client":  true,
+	"interaction_required": true,
+	"login_required":       true,
+	"consent_required":     true,
+}
+
+// transientRefreshCodes are token-endpoint codes that explicitly ask for a
+// retry later. They must never mark an account as needing re-authorization.
+var transientRefreshCodes = map[string]bool{
+	"temporarily_unavailable": true,
+	"server_error":            true,
+	"slow_down":               true,
+	"request_timeout":         true,
+	"timeout":                 true,
+}
+
+// IsPermanentRefreshError reports whether a failed refresh means the account
+// must be authorized again, as opposed to a transient token-endpoint or
+// network problem worth retrying. Only a token-endpoint response that names a
+// permanent failure counts: a transport error (dial timeout, proxy reset, TLS
+// failure) carries no OAuthError and is therefore always transient — the old
+// code marked the account expired for those too, which is what made a healthy
+// account show up as offline after a single network blip.
+func IsPermanentRefreshError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var oauthErr *OAuthError
+	if !errors.As(err, &oauthErr) {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(oauthErr.Code))
+	if transientRefreshCodes[code] {
+		return false
+	}
+	// Server-side and throttling responses are retryable regardless of code.
+	if oauthErr.HTTPStatus >= 500 || oauthErr.HTTPStatus == http.StatusTooManyRequests {
+		return false
+	}
+	if permanentRefreshCodes[code] {
+		return true
+	}
+	// An unrecognized 4xx naming an error code is a client/consent problem, not
+	// a network blip: treat it as permanent instead of retrying forever.
+	return code != "" && oauthErr.HTTPStatus >= 400 && oauthErr.HTTPStatus < 500
 }
 
 func (t TokenSet) Valid() bool {
@@ -82,7 +151,12 @@ func ExchangeCode(ctx context.Context, code, verifier, redirect string) (TokenSe
 	form.Set("redirect_uri", redirect)
 	form.Set("code_verifier", verifier)
 	form.Set("scope", Scope())
-	return requestToken(ctx, form)
+	set, err := requestToken(ctx, form)
+	if err != nil {
+		return set, err
+	}
+	set.ClientID = form.Get("client_id")
+	return set, nil
 }
 
 func Refresh(refreshToken, clientID, tokenEndpoint string) (TokenSet, error) {
@@ -99,7 +173,12 @@ func Refresh(refreshToken, clientID, tokenEndpoint string) (TokenSet, error) {
 	form.Set("scope", Scope())
 	ctx, cancel := context.WithTimeout(context.Background(), TokenExchangeTimeout)
 	defer cancel()
-	return requestTokenTenant(ctx, form, tokenEndpoint, "Refresh")
+	set, err := requestTokenTenant(ctx, form, tokenEndpoint, "Refresh")
+	if err != nil {
+		return set, err
+	}
+	set.ClientID = form.Get("client_id")
+	return set, nil
 }
 
 // RefreshWithScope redeems the same account refresh token for a separately
@@ -117,7 +196,12 @@ func RefreshWithScope(refreshToken, clientID, scope string) (TokenSet, error) {
 	form.Set("scope", scope)
 	ctx, cancel := context.WithTimeout(context.Background(), TokenExchangeTimeout)
 	defer cancel()
-	return requestToken(ctx, form)
+	set, err := requestToken(ctx, form)
+	if err != nil {
+		return set, err
+	}
+	set.ClientID = form.Get("client_id")
+	return set, nil
 }
 
 func ROPC(username, password string) (TokenSet, error) {
@@ -129,7 +213,12 @@ func ROPC(username, password string) (TokenSet, error) {
 	form.Set("scope", Scope())
 	ctx, cancel := context.WithTimeout(context.Background(), TokenExchangeTimeout)
 	defer cancel()
-	return requestTokenTenant(ctx, form, Authority()+"/organizations/oauth2/v2.0/token", "ROPC")
+	set, err := requestTokenTenant(ctx, form, Authority()+"/organizations/oauth2/v2.0/token", "ROPC")
+	if err != nil {
+		return set, err
+	}
+	set.ClientID = form.Get("client_id")
+	return set, nil
 }
 
 func requestTokenTenant(ctx context.Context, form url.Values, endpoint string, caller string) (TokenSet, error) {
@@ -152,7 +241,18 @@ func requestTokenTenant(ctx context.Context, form url.Values, endpoint string, c
 		return TokenSet{}, fmt.Errorf("decode token response: %w", err)
 	}
 	if tr.Error != "" {
-		return TokenSet{}, fmt.Errorf("%s %s: %s", caller, tr.Error, tr.ErrorDesc)
+		return TokenSet{}, &OAuthError{
+			Stage:         caller,
+			Code:          tr.Error,
+			AADSTS:        aadstsCode(tr.ErrorDesc),
+			Description:   tr.ErrorDesc,
+			HTTPStatus:    resp.StatusCode,
+			CorrelationID: firstNonEmpty(tr.CorrelationID, resp.Header.Get("client-request-id")),
+			TraceID:       firstNonEmpty(tr.TraceID, resp.Header.Get("x-ms-request-id")),
+		}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return TokenSet{}, fmt.Errorf("%s token endpoint HTTP %d", caller, resp.StatusCode)
 	}
 	if tr.AccessToken == "" {
 		return TokenSet{}, fmt.Errorf("%s HTTP %d: empty access token", caller, resp.StatusCode)
@@ -198,6 +298,7 @@ func requestToken(ctx context.Context, form url.Values) (TokenSet, error) {
 		return TokenSet{}, &OAuthError{
 			Code:          tr.Error,
 			AADSTS:        aadstsCode(tr.ErrorDesc),
+			Description:   tr.ErrorDesc,
 			HTTPStatus:    resp.StatusCode,
 			CorrelationID: firstNonEmpty(tr.CorrelationID, resp.Header.Get("client-request-id")),
 			TraceID:       firstNonEmpty(tr.TraceID, resp.Header.Get("x-ms-request-id")),
